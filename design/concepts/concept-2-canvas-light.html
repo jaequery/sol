@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Concept 2 — Canvas Light</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  :root{
+    --bg:#f4f5f9; --paper:#ffffff; --line:#e4e6ee; --line-2:#eef0f6;
+    --ink:#16182a; --ink-2:#5b6076; --ink-3:#8e93a8;
+    --accent:#2f6bff; --accent-soft:#eaf0ff; --accent-line:#c3d5ff;
+    --ok:#0ea86f; --amber:#e08a00;
+    --font:"Inter","SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+    --sh:0 1px 2px rgba(20,24,45,.06),0 8px 24px rgba(20,24,45,.08);
+    --sh-lg:0 2px 6px rgba(20,24,45,.07),0 22px 50px rgba(20,24,45,.14);
+  }
+  body{margin:0;background:#e9ebf2;color:var(--ink);font-family:var(--font);font-size:13px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1240px;margin:0 auto;padding:28px 20px 64px}
+  .cap{margin:0 0 4px;font-size:20px;font-weight:650;letter-spacing:-.02em}
+  .sub{margin:0 0 22px;color:#5b6076;font-size:13px;line-height:1.6;max-width:70ch}
+  .badge{display:inline-block;font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--accent);
+    border:1px solid var(--accent-line);background:var(--accent-soft);padding:5px 8px;border-radius:5px;margin-bottom:12px}
+
+  .app{background:var(--bg);border:1px solid #d9dce7;border-radius:14px;overflow:hidden;box-shadow:var(--sh-lg);position:relative}
+  .titlebar{height:44px;display:flex;align-items:center;gap:12px;padding:0 14px;background:var(--paper);border-bottom:1px solid var(--line)}
+  .dots{display:flex;gap:6px}.dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .dots i:nth-child(1){background:#ff5f57}.dots i:nth-child(2){background:#febc2e}.dots i:nth-child(3){background:#28c840}
+  .doc{font-size:12.5px;font-weight:600}.doc span{color:var(--ink-3);font-weight:450}
+  .tb-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .btn{border:1px solid var(--line);background:var(--paper);color:var(--ink);border-radius:8px;padding:7px 13px;font-size:12px;font-weight:550;cursor:pointer;box-shadow:0 1px 1px rgba(20,24,45,.04)}
+  .btn.primary{background:var(--accent);border-color:#1f57e0;color:#fff;box-shadow:0 1px 2px rgba(47,107,255,.35)}
+
+  .stagewrap{position:relative;height:498px;display:grid;grid-template-columns:1fr 300px}
+  .stage{position:relative;display:grid;place-items:center;padding:26px 26px 190px;
+    background-image:radial-gradient(circle,#d5d9e6 1px,transparent 1px);background-size:22px 22px}
+  .canvas{width:100%;max-width:520px;aspect-ratio:16/9;border-radius:12px;position:relative;overflow:hidden;
+    box-shadow:var(--sh-lg);border:1px solid #fff}
+  .canvas .img{position:absolute;inset:0;transform:scale(1.12) translate(-2%,1%)}
+  .sel-box{position:absolute;inset:16% 12%;border:1.5px solid var(--accent);border-radius:3px}
+  .sel-box i{position:absolute;width:9px;height:9px;background:#fff;border:1.5px solid var(--accent);border-radius:2px}
+  .sel-box i:nth-child(1){left:-5px;top:-5px}.sel-box i:nth-child(2){right:-5px;top:-5px}
+  .sel-box i:nth-child(3){left:-5px;bottom:-5px}.sel-box i:nth-child(4){right:-5px;bottom:-5px}
+  .sel-tag{position:absolute;left:12%;top:calc(16% - 22px);background:var(--accent);color:#fff;font:600 10px/1 var(--font);padding:4px 7px;border-radius:5px}
+
+  /* floating canvas toolbar */
+  .float-tools{position:absolute;left:50%;transform:translateX(-50%);bottom:206px;display:flex;gap:4px;background:var(--paper);
+    border:1px solid var(--line);border-radius:11px;padding:5px;box-shadow:var(--sh)}
+  .ft{width:32px;height:30px;border-radius:7px;display:grid;place-items:center;color:var(--ink-2);font-size:13px;cursor:pointer}
+  .ft.on{background:var(--accent-soft);color:var(--accent)}
+  .ft.wide{width:auto;padding:0 11px;font-size:12px;font-weight:600;gap:5px}
+  .ftsep{width:1px;background:var(--line-2);margin:4px 3px}
+
+  /* right inspector */
+  .insp{background:var(--paper);border-left:1px solid var(--line);display:flex;flex-direction:column;overflow:hidden}
+  .itabs{display:flex;padding:10px 12px 0;gap:4px;border-bottom:1px solid var(--line)}
+  .itab{padding:8px 11px;font-size:12px;font-weight:600;color:var(--ink-3);border-bottom:2px solid transparent;cursor:pointer}
+  .itab.on{color:var(--ink);border-bottom-color:var(--accent)}
+  .ibody{padding:14px;overflow:auto;display:flex;flex-direction:column;gap:16px}
+  .grp{}
+  .glabel{font:600 10.5px/1 var(--font);letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3);margin-bottom:9px}
+  .fields{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .field{border:1px solid var(--line);border-radius:9px;padding:7px 9px;background:#fbfcfe}
+  .field span{display:block;font-size:10px;color:var(--ink-3);margin-bottom:3px}
+  .field b{font:600 12px/1 var(--mono)}
+  .prompt-card{border:1px solid var(--accent-line);background:linear-gradient(180deg,#f7faff,#fff);border-radius:12px;padding:12px}
+  .pc-hd{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:650;margin-bottom:9px}
+  .pc-hd .kfp{display:flex;align-items:center;gap:4px;font:600 10px/1 var(--mono);color:var(--accent);background:var(--accent-soft);
+    border:1px solid var(--accent-line);padding:4px 6px;border-radius:5px;margin-left:auto}
+  textarea{width:100%;min-height:74px;resize:none;border:1px solid var(--line);border-radius:9px;padding:9px;font-family:var(--font);
+    font-size:12px;line-height:1.55;color:var(--ink);outline:none;background:#fff}
+  .opts{display:flex;gap:7px;margin-top:9px}
+  .opt{flex:1;border:1px solid var(--line);border-radius:8px;padding:7px;text-align:center;background:#fff;cursor:pointer}
+  .opt.on{border-color:var(--accent);background:var(--accent-soft)}
+  .opt b{display:block;font-size:11.5px;font-weight:650}
+  .opt span{font-size:10px;color:var(--ink-3)}
+  .gen{width:100%;margin-top:10px;padding:10px;border-radius:9px;border:1px solid #1f57e0;background:var(--accent);color:#fff;font-weight:650;font-size:12.5px;cursor:pointer;box-shadow:0 1px 2px rgba(47,107,255,.35)}
+  .meta{margin-top:8px;font-size:11px;color:var(--ink-3);text-align:center}
+
+  /* floating timeline card */
+  .tlcard{position:absolute;left:18px;right:318px;bottom:16px;background:var(--paper);border:1px solid var(--line);
+    border-radius:14px;box-shadow:var(--sh-lg);overflow:hidden}
+  .tlhd{display:flex;align-items:center;gap:9px;padding:9px 12px;border-bottom:1px solid var(--line-2)}
+  .tlhd .t{font-size:12px;font-weight:650}
+  .pill{font:600 10px/1 var(--mono);color:var(--ink-2);border:1px solid var(--line);background:#fafbfd;padding:4px 7px;border-radius:99px}
+  .tlhd .r{margin-left:auto;display:flex;gap:6px;align-items:center;color:var(--ink-3);font:600 10px/1 var(--mono)}
+  .zbar{width:70px;height:4px;background:#eef0f6;border-radius:3px;position:relative}
+  .zbar i{position:absolute;inset:0 40% 0 0;background:var(--ink-3);border-radius:3px}
+
+  .ruler{height:20px;position:relative;background:#fafbfd;border-bottom:1px solid var(--line-2)}
+  .ruler span{position:absolute;top:5px;font:600 9px/1 var(--mono);color:var(--ink-3)}
+  .ruler i{position:absolute;top:0;bottom:0;width:1px;background:#e7e9f1}
+  .track{position:relative;padding:12px;height:104px}
+  .clips{position:relative;height:56px}
+  .clip{position:absolute;top:0;bottom:0;border-radius:9px;overflow:hidden;border:1px solid rgba(20,24,45,.1);box-shadow:0 1px 3px rgba(20,24,45,.12);cursor:pointer}
+  .clip .fill{position:absolute;inset:0}
+  .clip .strip{position:absolute;inset:0;display:flex}.clip .strip div{flex:1;border-right:1px solid rgba(255,255,255,.35)}
+  .clip .name{position:absolute;left:8px;top:7px;font:600 10px/1 var(--font);color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.45)}
+  .clip .dur{position:absolute;right:8px;bottom:7px;font:600 9px/1 var(--mono);color:rgba(255,255,255,.92);text-shadow:0 1px 3px rgba(0,0,0,.45)}
+  .clip.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(47,107,255,.28),0 4px 14px rgba(47,107,255,.2)}
+  .g1{background:linear-gradient(135deg,#ffd08a,#ff7fa3 55%,#8a5cf0)}
+  .g2{background:linear-gradient(135deg,#8fe7dd,#4b96e0 60%,#2b3a8c)}
+  .g5{background:linear-gradient(200deg,#22333d,#3f6b80 60%,#95bdd6)}
+
+  /* keyframe rail BELOW the clip (distinct from concept 1) */
+  .kfrail{position:absolute;left:0;right:0;bottom:-22px;height:20px}
+  .kfrail .line{position:absolute;left:0;right:0;top:9px;height:2px;background:#e7e9f1;border-radius:2px}
+  .kf{position:absolute;top:4px;width:12px;height:12px;background:#fff;border:2px solid var(--accent);transform:translateX(-50%) rotate(45deg);border-radius:2px;box-shadow:0 1px 3px rgba(20,24,45,.2)}
+  .kf.on{background:var(--accent)}
+  .segline{position:absolute;top:9px;height:2px;background:var(--accent);border-radius:2px}
+  .segchip{position:absolute;top:-16px;transform:translateX(-50%);white-space:nowrap;font:600 9.5px/1 var(--font);
+    background:var(--accent);color:#fff;padding:4px 8px;border-radius:99px;box-shadow:0 2px 6px rgba(47,107,255,.35)}
+  .gen-clip{position:absolute;top:0;bottom:0;border-radius:9px;border:1.5px dashed var(--accent-line);background:var(--accent-soft);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;color:var(--accent);font:600 10px/1 var(--font)}
+  .bar{width:64%;height:3px;background:#d3e0ff;border-radius:3px;position:relative;overflow:hidden}
+  .bar i{position:absolute;left:0;top:0;bottom:0;width:46%;background:var(--accent);border-radius:3px}
+  .play-head{position:absolute;top:-24px;bottom:-24px;width:2px;background:#ff3b5c;left:33%;z-index:5}
+  .play-head::before{content:"";position:absolute;top:-2px;left:50%;transform:translateX(-50%);width:11px;height:11px;border-radius:50%;background:#ff3b5c;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+
+  .legend{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+  .lg{font-size:11px;color:#5b6076;border:1px solid #dcdfea;background:#fff;padding:6px 10px;border-radius:99px}
+  .lg b{color:#16182a;font-weight:650}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="badge">Concept 2 of 5</div>
+  <h1 class="cap">Canvas Light</h1>
+  <p class="sub">A bright, Figma-flavoured take. The preview <em>is</em> the workspace — you drag the photo directly on an infinite dotted canvas to set each keyframe's framing, and the timeline floats over it as a card you can collapse. No media bin taking permanent space; keyframes sit on a rail beneath the clip so they never crowd the thumbnail. Best if the app should feel like a modern design tool rather than an NLE.</p>
+
+  <div class="app">
+    <div class="titlebar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="doc">beach-trip <span>· saved just now</span></div>
+      <div class="tb-right">
+        <button class="btn">Import media</button>
+        <button class="btn primary">Export MP4</button>
+      </div>
+    </div>
+
+    <div class="stagewrap">
+      <div class="stage">
+        <div class="canvas">
+          <div class="img g1"></div>
+          <div class="sel-box"><i></i><i></i><i></i><i></i></div>
+          <div class="sel-tag">Keyframe 2 · scale 112% · x −2 y +1</div>
+        </div>
+
+        <div class="float-tools">
+          <div class="ft on">⌖</div><div class="ft">✥</div><div class="ft">⟳</div><div class="ft">✂</div>
+          <div class="ftsep"></div>
+          <div class="ft wide on">◆ Keyframe</div>
+          <div class="ftsep"></div>
+          <div class="ft">⏮</div><div class="ft">▶</div><div class="ft">⏭</div>
+        </div>
+
+        <!-- floating timeline -->
+        <div class="tlcard">
+          <div class="tlhd">
+            <div class="t">Timeline</div>
+            <div class="pill">1 track</div><div class="pill">00:04.1 / 00:21.0</div>
+            <div class="r">ZOOM <div class="zbar"><i></i></div></div>
+          </div>
+          <div class="ruler">
+            <i style="left:3%"></i><span style="left:3.7%">0s</span>
+            <i style="left:22%"></i><span style="left:22.7%">3s</span>
+            <i style="left:41%"></i><span style="left:41.7%">6s</span>
+            <i style="left:60%"></i><span style="left:60.7%">9s</span>
+            <i style="left:79%"></i><span style="left:79.7%">12s</span>
+            <i style="left:96%"></i><span style="left:96.7%">15s</span>
+          </div>
+          <div class="track">
+            <div class="clips">
+              <div class="clip sel" style="left:0;width:38%">
+                <div class="fill g1"></div><div class="name">sunset.jpg</div><div class="dur">6.0s</div>
+                <div class="kfrail">
+                  <div class="line"></div>
+                  <div class="segline" style="left:16%;right:44%"></div>
+                  <div class="segchip" style="left:38%">“slow dolly-in over the water”</div>
+                  <div class="kf" style="left:16%"></div>
+                  <div class="kf on" style="left:56%"></div>
+                  <div class="kf" style="left:88%"></div>
+                </div>
+              </div>
+              <div class="gen-clip" style="left:39.5%;width:16%">Generating 46%<div class="bar"><i></i></div></div>
+              <div class="clip" style="left:57%;width:43%">
+                <div class="strip"><div class="g2"></div><div class="g5"></div><div class="g2"></div><div class="g5"></div><div class="g2"></div><div class="g5"></div><div class="g2"></div></div>
+                <div class="name">surf.mp4</div><div class="dur">9.0s</div>
+              </div>
+              <div class="play-head"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- inspector -->
+      <div class="insp">
+        <div class="itabs"><div class="itab on">Keyframe</div><div class="itab">Clip</div><div class="itab">Project</div></div>
+        <div class="ibody">
+          <div class="grp">
+            <div class="glabel">Transform at KF2</div>
+            <div class="fields">
+              <div class="field"><span>Scale</span><b>112%</b></div>
+              <div class="field"><span>Rotation</span><b>0.0°</b></div>
+              <div class="field"><span>Position X</span><b>−2.0</b></div>
+              <div class="field"><span>Position Y</span><b>+1.0</b></div>
+              <div class="field"><span>Opacity</span><b>100%</b></div>
+              <div class="field"><span>Easing</span><b>ease-out</b></div>
+            </div>
+          </div>
+
+          <div class="prompt-card">
+            <div class="pc-hd">Animate this segment <span class="kfp">◆ KF1 → KF2</span></div>
+            <textarea>slow dolly-in over the water, warm golden light, gentle waves rolling toward camera</textarea>
+            <div class="opts">
+              <div class="opt on"><b>3.2s</b><span>segment length</span></div>
+              <div class="opt"><b>Standard</b><span>quality</span></div>
+            </div>
+            <button class="gen">Generate with Higgsfield</button>
+            <div class="meta">Runs in the background · you can keep editing</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="lg"><b>Direct manipulation</b> — set framing on the canvas, not in number fields</div>
+    <div class="lg"><b>Timeline as a card</b> — floats over the canvas, collapsible</div>
+    <div class="lg"><b>Keyframe rail</b> — below the clip, thumbnail stays readable</div>
+    <div class="lg"><b>Light theme</b> — reads well in daylight, screenshots cleanly</div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Concept 1 — Midnight Studio</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  :root{
+    --bg:#0b0c10; --panel:#131520; --panel-2:#1a1d2b; --line:#262a3d;
+    --ink:#eef0f8; --ink-2:#9aa1bd; --ink-3:#646b8a;
+    --accent:#7c5cff; --accent-2:#a78bfa; --ok:#34d399; --warn:#fbbf24;
+    --radius:10px; --font:"Inter","SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  }
+  body{margin:0;background:#05060a;color:var(--ink);font-family:var(--font);font-size:13px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1240px;margin:0 auto;padding:28px 20px 64px}
+  .cap{margin:0 0 4px;font-size:20px;font-weight:650;letter-spacing:-.02em}
+  .sub{margin:0 0 22px;color:#7b8199;font-size:13px;line-height:1.6;max-width:70ch}
+  .badge{display:inline-block;font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--accent-2);
+    border:1px solid #3a2f6b;background:#1a1533;padding:5px 8px;border-radius:5px;margin-bottom:12px}
+
+  .app{background:var(--bg);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.6)}
+  /* title bar */
+  .titlebar{height:38px;display:flex;align-items:center;gap:10px;padding:0 12px;background:linear-gradient(180deg,#171a28,#101220);border-bottom:1px solid var(--line)}
+  .dots{display:flex;gap:6px}.dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .dots i:nth-child(1){background:#ff5f57}.dots i:nth-child(2){background:#febc2e}.dots i:nth-child(3){background:#28c840}
+  .doc{font-size:12px;color:var(--ink-2)}.doc b{color:var(--ink);font-weight:600}
+  .tb-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .btn{border:1px solid var(--line);background:var(--panel-2);color:var(--ink);border-radius:7px;padding:6px 12px;font-size:12px;font-weight:550;cursor:pointer}
+  .btn.primary{background:linear-gradient(180deg,var(--accent),#6a4ae0);border-color:#8b6bff;box-shadow:0 1px 0 rgba(255,255,255,.16) inset}
+  .btn.ghost{background:transparent}
+
+  .body{display:grid;grid-template-columns:224px 1fr 292px;height:452px}
+  .col{min-width:0;display:flex;flex-direction:column}
+  .col+.col{border-left:1px solid var(--line)}
+  .hd{height:36px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line);
+    font:600 11px/1 var(--font);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);background:#0f1119}
+  .hd .add{margin-left:auto;color:var(--ink-2);font-size:15px;line-height:1;cursor:pointer}
+
+  /* media bin */
+  .bin{padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;overflow:auto;background:var(--panel)}
+  .thumb{position:relative;aspect-ratio:16/10;border-radius:8px;overflow:hidden;border:1px solid var(--line);cursor:grab}
+  .thumb .t{position:absolute;inset:0}
+  .thumb .lbl{position:absolute;left:5px;bottom:5px;font:600 9px/1 var(--mono);letter-spacing:.04em;
+    background:rgba(6,7,12,.78);border:1px solid rgba(255,255,255,.09);padding:3px 5px;border-radius:4px;color:#dfe3f4}
+  .thumb .kind{position:absolute;right:5px;top:5px;width:16px;height:16px;border-radius:4px;background:rgba(6,7,12,.78);
+    display:grid;place-items:center;font-size:9px;border:1px solid rgba(255,255,255,.09)}
+  .g1{background:linear-gradient(135deg,#f6c17c,#e2688f 55%,#7b4bd6)}
+  .g2{background:linear-gradient(135deg,#7ee0d5,#3d8bd8 60%,#26307a)}
+  .g3{background:linear-gradient(160deg,#2a3550,#5c7fb8 45%,#c9dbf2)}
+  .g4{background:linear-gradient(135deg,#ffd6a5,#ff8fa3 50%,#b06ab3)}
+  .g5{background:linear-gradient(200deg,#0f2027,#2c5364 60%,#7ea8c4)}
+  .g6{background:linear-gradient(135deg,#3a1c71,#d76d77 55%,#ffaf7b)}
+
+  /* preview */
+  .stage{flex:1;display:grid;place-items:center;background:radial-gradient(120% 90% at 50% 0%,#151827,#0a0b12);padding:18px}
+  .canvas{width:100%;max-width:520px;aspect-ratio:16/9;border-radius:10px;position:relative;overflow:hidden;border:1px solid #2c3149;
+    box-shadow:0 18px 44px rgba(0,0,0,.55)}
+  .canvas .img{position:absolute;inset:0;transform:scale(1.14) translate(-3%,2%)}
+  .kf-hud{position:absolute;left:10px;top:10px;display:flex;gap:6px;align-items:center;background:rgba(8,9,16,.72);
+    backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:7px;padding:5px 8px;font:600 10px/1 var(--mono);color:#cfd5ee}
+  .kf-hud .dia{width:8px;height:8px;background:var(--accent-2);transform:rotate(45deg);border-radius:1px}
+  .frame-box{position:absolute;inset:18% 14%;border:1.5px dashed rgba(167,139,250,.85);border-radius:4px}
+  .frame-box::after{content:"";position:absolute;right:-5px;bottom:-5px;width:9px;height:9px;background:var(--accent-2);border-radius:2px}
+  .transport{height:44px;display:flex;align-items:center;gap:14px;justify-content:center;border-top:1px solid var(--line);background:#0f1119}
+  .tbtn{width:28px;height:28px;border-radius:7px;border:1px solid var(--line);background:var(--panel-2);display:grid;place-items:center;color:var(--ink-2);font-size:11px;cursor:pointer}
+  .tbtn.play{background:var(--ink);color:#0b0c10;border-color:var(--ink);width:32px;height:32px}
+  .tc{font:600 11px/1 var(--mono);color:var(--ink-2);letter-spacing:.04em}
+
+  /* inspector */
+  .insp{padding:12px;overflow:auto;background:var(--panel);display:flex;flex-direction:column;gap:14px}
+  .card{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel-2);overflow:hidden}
+  .card .ch{display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--line);font-size:12px;font-weight:600}
+  .card .cb{padding:11px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0}
+  .row label{color:var(--ink-2);font-size:11.5px}
+  .num{font:600 11px/1 var(--mono);background:#0e1018;border:1px solid var(--line);border-radius:6px;padding:5px 7px;min-width:58px;text-align:right;color:var(--ink)}
+  .slider{height:4px;border-radius:3px;background:#0e1018;position:relative;flex:1;border:1px solid var(--line)}
+  .slider i{position:absolute;left:0;top:-1px;bottom:-1px;width:62%;background:linear-gradient(90deg,#5b40d6,var(--accent-2));border-radius:3px}
+  .slider b{position:absolute;left:62%;top:50%;transform:translate(-50%,-50%);width:11px;height:11px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.6)}
+  textarea{width:100%;min-height:70px;resize:none;background:#0e1018;border:1px solid #33305e;border-radius:8px;color:var(--ink);
+    padding:9px;font-family:var(--font);font-size:12px;line-height:1.55;outline:none}
+  textarea::placeholder{color:var(--ink-3)}
+  .chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+  .chip{font-size:10.5px;color:var(--ink-2);border:1px solid var(--line);background:#0e1018;border-radius:99px;padding:4px 8px;cursor:pointer}
+  .gen{width:100%;margin-top:10px;padding:9px;border-radius:8px;border:1px solid #8b6bff;color:#fff;font-weight:650;font-size:12px;
+    background:linear-gradient(180deg,var(--accent),#6a4ae0);cursor:pointer}
+  .seg-note{font-size:11px;color:var(--ink-3);margin-top:7px;line-height:1.5}
+
+  /* timeline */
+  .tl{border-top:1px solid var(--line);background:#0d0f18}
+  .tl-bar{height:34px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line)}
+  .tool{width:26px;height:22px;border-radius:6px;border:1px solid var(--line);background:var(--panel-2);display:grid;place-items:center;font-size:11px;color:var(--ink-2);cursor:pointer}
+  .tool.on{background:#241d4d;border-color:#4c3ba8;color:#cbbcff}
+  .sep{width:1px;height:16px;background:var(--line)}
+  .zoom{margin-left:auto;display:flex;align-items:center;gap:7px;color:var(--ink-3);font:600 10px/1 var(--mono)}
+  .zbar{width:78px;height:3px;background:#191c2a;border-radius:2px;position:relative}
+  .zbar i{position:absolute;left:0;top:0;bottom:0;width:55%;background:var(--ink-3);border-radius:2px}
+
+  .ruler{height:22px;position:relative;border-bottom:1px solid var(--line);background:#0a0c14;overflow:hidden}
+  .ruler span{position:absolute;top:5px;font:600 9px/1 var(--mono);color:var(--ink-3)}
+  .ruler i{position:absolute;top:0;bottom:0;width:1px;background:#1d2130}
+  .track{position:relative;height:88px;padding:10px 0 0;overflow:hidden}
+  .clips{position:relative;height:62px;margin:0 12px}
+  .clip{position:absolute;top:0;bottom:0;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.1);cursor:pointer}
+  .clip .fill{position:absolute;inset:0;opacity:.92}
+  .clip .strip{position:absolute;inset:0;display:flex}
+  .clip .strip div{flex:1;border-right:1px solid rgba(0,0,0,.25)}
+  .clip .name{position:absolute;left:7px;top:6px;font:600 10px/1 var(--font);color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.7)}
+  .clip .dur{position:absolute;right:7px;bottom:6px;font:600 9px/1 var(--mono);color:rgba(255,255,255,.85);text-shadow:0 1px 3px rgba(0,0,0,.7)}
+  .clip.sel{border-color:var(--accent-2);box-shadow:0 0 0 1px var(--accent-2),0 6px 22px rgba(124,92,255,.35)}
+  .clip .grip{position:absolute;top:0;bottom:0;width:7px;background:rgba(0,0,0,.35);display:grid;place-items:center}
+  .clip .grip.l{left:0;border-right:1px solid rgba(255,255,255,.18)}
+  .clip .grip.r{right:0;border-left:1px solid rgba(255,255,255,.18)}
+  .clip .grip b{width:2px;height:16px;background:rgba(255,255,255,.6);border-radius:2px;display:block}
+
+  /* keyframe lane inside clip */
+  .kflane{position:absolute;left:0;right:0;bottom:0;height:20px;background:linear-gradient(180deg,rgba(6,7,12,.15),rgba(6,7,12,.82))}
+  .kf{position:absolute;bottom:5px;width:10px;height:10px;background:#fff;border:1.5px solid var(--accent);transform:translateX(-50%) rotate(45deg);border-radius:2px}
+  .kf.on{background:var(--accent-2);border-color:#fff}
+  .seg{position:absolute;bottom:9px;height:2px;background:repeating-linear-gradient(90deg,var(--accent-2) 0 5px,transparent 5px 9px);border-radius:2px}
+  .seg-pill{position:absolute;bottom:24px;transform:translateX(-50%);white-space:nowrap;font:600 9px/1 var(--font);
+    background:rgba(124,92,255,.9);color:#fff;padding:4px 7px;border-radius:99px;border:1px solid rgba(255,255,255,.25)}
+
+  .gen-clip{position:absolute;top:0;bottom:0;border-radius:8px;border:1.5px dashed #6f5bd6;background:repeating-linear-gradient(135deg,#1b1738 0 10px,#221c48 10px 20px);
+    display:flex;align-items:center;justify-content:center;gap:7px;color:#cbbcff;font:600 10px/1 var(--font)}
+  .spin{width:11px;height:11px;border-radius:50%;border:2px solid rgba(203,188,255,.3);border-top-color:#cbbcff}
+
+  .play-head{position:absolute;top:0;bottom:0;width:2px;background:#ff4d6d;left:34%;z-index:6}
+  .play-head::before{content:"";position:absolute;top:-1px;left:50%;transform:translateX(-50%);border-left:6px solid transparent;border-right:6px solid transparent;border-top:8px solid #ff4d6d}
+
+  .legend{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+  .lg{font-size:11px;color:#8189a5;border:1px solid #1e2130;background:#0e1018;padding:6px 10px;border-radius:99px}
+  .lg b{color:#c9cee4;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="badge">Concept 1 of 5</div>
+  <h1 class="cap">Midnight Studio</h1>
+  <p class="sub">The familiar pro-editor layout, tightened. Media bin left, preview centre, inspector right, one full-width timeline below. Keyframes live <em>inside</em> the photo clip on a dedicated lane, and the prompt for the segment between two selected keyframes is a first-class field in the inspector. Safest to learn if you have ever opened CapCut or Premiere.</p>
+
+  <div class="app">
+    <div class="titlebar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="doc">Untitled Project — <b>beach-trip.solproj</b></div>
+      <div class="tb-right">
+        <button class="btn ghost">Import</button>
+        <button class="btn primary">Export MP4</button>
+      </div>
+    </div>
+
+    <div class="body">
+      <!-- media bin -->
+      <div class="col">
+        <div class="hd">Media <span class="add">+</span></div>
+        <div class="bin">
+          <div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div>
+          <div class="thumb"><div class="t g2"></div><div class="kind">▶</div><div class="lbl">surf.mp4</div></div>
+          <div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div>
+          <div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div>
+          <div class="thumb"><div class="t g5"></div><div class="kind">▶</div><div class="lbl">drive.mov</div></div>
+          <div class="thumb"><div class="t g6"></div><div class="kind">▣</div><div class="lbl">neon.jpg</div></div>
+        </div>
+      </div>
+
+      <!-- preview -->
+      <div class="col">
+        <div class="hd">Preview <span style="margin-left:auto;color:#646b8a;text-transform:none;letter-spacing:0;font-weight:500">1920×1080 · 30 fps</span></div>
+        <div class="stage">
+          <div class="canvas">
+            <div class="img g1"></div>
+            <div class="frame-box"></div>
+            <div class="kf-hud"><span class="dia"></span> KEYFRAME 2 · 00:04.10</div>
+          </div>
+        </div>
+        <div class="transport">
+          <div class="tc">00:04.10</div>
+          <div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div>
+          <div class="tc" style="color:#4b5170">00:21.00</div>
+        </div>
+      </div>
+
+      <!-- inspector -->
+      <div class="col">
+        <div class="hd">Inspector</div>
+        <div class="insp">
+          <div class="card">
+            <div class="ch"><span class="dia" style="width:8px;height:8px;background:var(--accent-2);transform:rotate(45deg);display:block"></span> Keyframe 2 · Transform</div>
+            <div class="cb">
+              <div class="row"><label>Scale</label><div class="slider"><i></i><b></b></div><div class="num">114%</div></div>
+              <div class="row"><label>Position X</label><div class="slider"><i style="width:42%"></i><b style="left:42%"></b></div><div class="num">-3.0</div></div>
+              <div class="row"><label>Position Y</label><div class="slider"><i style="width:56%"></i><b style="left:56%"></b></div><div class="num">+2.0</div></div>
+              <div class="row"><label>Rotation</label><div class="slider"><i style="width:50%"></i><b style="left:50%"></b></div><div class="num">0°</div></div>
+              <div class="row"><label>Opacity</label><div class="slider"><i style="width:100%"></i><b style="left:100%"></b></div><div class="num">100%</div></div>
+            </div>
+          </div>
+
+          <div class="card" style="border-color:#3a2f6b">
+            <div class="ch" style="background:#1a1533;border-color:#3a2f6b">✨ AI Segment · KF1 → KF2</div>
+            <div class="cb">
+              <textarea placeholder="Describe the motion…">slow dolly-in over the water, warm golden light, gentle waves rolling toward camera</textarea>
+              <div class="chips"><span class="chip">+ dolly in</span><span class="chip">+ parallax</span><span class="chip">+ orbit left</span><span class="chip">+ handheld</span></div>
+              <button class="gen">Generate animation · 3.2s</button>
+              <div class="seg-note">Higgsfield renders the motion between the two keyframes and drops the clip back onto this segment.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- timeline -->
+    <div class="tl">
+      <div class="tl-bar">
+        <div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div>
+        <div class="sep"></div>
+        <div class="tool" style="width:auto;padding:0 9px;font-weight:600;color:#cbbcff;background:#241d4d;border-color:#4c3ba8">◆ Add keyframe</div>
+        <div class="zoom">ZOOM <div class="zbar"><i></i></div> 100%</div>
+      </div>
+
+      <div class="ruler">
+        <i style="left:2%"></i><span style="left:2.6%">00:00</span>
+        <i style="left:20%"></i><span style="left:20.6%">00:03</span>
+        <i style="left:38%"></i><span style="left:38.6%">00:06</span>
+        <i style="left:56%"></i><span style="left:56.6%">00:09</span>
+        <i style="left:74%"></i><span style="left:74.6%">00:12</span>
+        <i style="left:92%"></i><span style="left:92.6%">00:15</span>
+      </div>
+
+      <div class="track">
+        <div class="clips">
+          <!-- photo clip, selected, with keyframe lane -->
+          <div class="clip sel" style="left:0;width:41%">
+            <div class="fill g1"></div>
+            <div class="grip l"><b></b></div><div class="grip r"><b></b></div>
+            <div class="name">sunset.jpg</div><div class="dur">6.0s</div>
+            <div class="kflane">
+              <div class="seg" style="left:14%;right:46%"></div>
+              <div class="seg-pill" style="left:37%">“slow dolly-in over the water…”</div>
+              <div class="kf" style="left:14%"></div>
+              <div class="kf on" style="left:54%"></div>
+              <div class="kf" style="left:86%"></div>
+            </div>
+          </div>
+          <!-- generating segment -->
+          <div class="gen-clip" style="left:42%;width:17%"><span class="spin"></span> Generating…</div>
+          <!-- video clip -->
+          <div class="clip" style="left:60%;width:40%">
+            <div class="strip">
+              <div class="g2"></div><div class="g5"></div><div class="g2"></div><div class="g5"></div><div class="g2"></div><div class="g5"></div>
+            </div>
+            <div class="grip l"><b></b></div><div class="grip r"><b></b></div>
+            <div class="name">surf.mp4</div><div class="dur">9.0s</div>
+          </div>
+          <div class="play-head"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="lg"><b>Single track</b> — photos and videos share one lane</div>
+    <div class="lg"><b>Keyframes</b> — diamonds on a lane inside the photo clip</div>
+    <div class="lg"><b>Prompt</b> — inspector card, scoped to KF1→KF2</div>
+    <div class="lg"><b>Generating</b> — hatched placeholder holds the segment</div>
+  </div>
+</div>
+</body>
+</html>

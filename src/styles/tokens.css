@@ -1,0 +1,65 @@
+/*
+ * SolCut design system — "Midnight Studio" (Concept 1, approved).
+ * Every colour, radius, and type step in the app comes from here.
+ */
+:root {
+  /* surfaces, back to front */
+  --bg: #0b0c10;
+  --panel: #131520;
+  --panel-2: #1a1d2b;
+  --sunken: #0e1018;
+  --chrome: #0f1119;
+  --line: #262a3d;
+  --line-soft: #1d2130;
+
+  /* text */
+  --ink: #eef0f8;
+  --ink-2: #9aa1bd;
+  --ink-3: #646b8a;
+
+  /* accent + status */
+  --accent: #7c5cff;
+  --accent-2: #a78bfa;
+  --accent-dim: #241d4d;
+  --accent-line: #4c3ba8;
+  --accent-wash: #1a1533;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --err: #fb7185;
+  --err-wash: #2a1220;
+  --playhead: #ff4d6d;
+
+  /* geometry */
+  --r-sm: 6px;
+  --r: 8px;
+  --r-md: 10px;
+  --r-lg: 14px;
+
+  /* type */
+  --font: 'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --fs-xs: 10px;
+  --fs-sm: 11px;
+  --fs: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+
+  /* spacing */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+
+  /* chrome metrics — shared by the app shell and the mockups */
+  --h-titlebar: 38px;
+  --h-panelhead: 36px;
+  --h-transport: 44px;
+  --h-toolbar: 34px;
+  --h-ruler: 22px;
+  --w-bin: 224px;
+  --w-inspector: 292px;
+
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+  --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
