@@ -1,0 +1,15 @@
+[package]
+name = "solcut-render"
+description = "Turns a SolCut timeline into an MP4 with ffmpeg. No Tauri or GUI dependencies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

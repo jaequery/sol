@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Concept 5 — Studio Bold</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  :root{
+    --paper:#f7f3e8; --ink:#0d0d0d; --line:#0d0d0d;
+    --lime:#c8f31d; --coral:#ff5c39; --sky:#4d7cff; --lilac:#c9a7ff;
+    --font:"Inter","SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+    --sh:4px 4px 0 var(--ink);
+  }
+  body{margin:0;background:#e8e2d2;color:var(--ink);font-family:var(--font);font-size:13px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1240px;margin:0 auto;padding:28px 20px 64px}
+  .cap{margin:0 0 4px;font-size:20px;font-weight:800;letter-spacing:-.03em}
+  .sub{margin:0 0 22px;color:#4a4740;font-size:13px;line-height:1.6;max-width:70ch}
+  .badge{display:inline-block;font:800 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;
+    border:2px solid var(--ink);background:var(--lime);padding:5px 8px;margin-bottom:12px;box-shadow:3px 3px 0 var(--ink)}
+
+  .app{background:var(--paper);border:2.5px solid var(--ink);box-shadow:8px 8px 0 var(--ink);overflow:hidden}
+  .titlebar{height:46px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:2.5px solid var(--ink);background:var(--lime)}
+  .logo{font:800 13px/1 var(--font);letter-spacing:-.02em;border:2px solid var(--ink);background:var(--paper);padding:6px 9px;box-shadow:2px 2px 0 var(--ink)}
+  .doc{font:700 12px/1 var(--mono);letter-spacing:.02em}
+  .tb-right{margin-left:auto;display:flex;gap:9px}
+  .btn{border:2px solid var(--ink);background:var(--paper);color:var(--ink);padding:7px 13px;font-size:12px;font-weight:800;cursor:pointer;box-shadow:3px 3px 0 var(--ink)}
+  .btn.primary{background:var(--coral);color:#fff}
+
+  .body{display:grid;grid-template-columns:200px 1fr 288px;height:436px}
+  .col{min-width:0;display:flex;flex-direction:column}
+  .col+.col{border-left:2.5px solid var(--ink)}
+  .hd{height:34px;display:flex;align-items:center;gap:8px;padding:0 11px;border-bottom:2.5px solid var(--ink);
+    font:800 10.5px/1 var(--font);letter-spacing:.1em;text-transform:uppercase;background:var(--ink);color:var(--paper)}
+  .hd .r{margin-left:auto;font-family:var(--mono);font-weight:700;letter-spacing:.06em;opacity:.7}
+
+  .bin{padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:9px;overflow:auto}
+  .thumb{position:relative;aspect-ratio:1/1;border:2px solid var(--ink);overflow:hidden;box-shadow:3px 3px 0 var(--ink);cursor:grab}
+  .thumb .t{position:absolute;inset:0}
+  .thumb .lbl{position:absolute;left:0;right:0;bottom:0;font:700 8.5px/1 var(--mono);background:var(--paper);
+    border-top:2px solid var(--ink);padding:4px 5px;letter-spacing:.02em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .thumb .kind{position:absolute;right:4px;top:4px;font:800 8px/1 var(--mono);background:var(--ink);color:var(--paper);padding:3px 4px}
+  .g1{background:linear-gradient(135deg,#ffd166,#ff5c39 55%,#c9a7ff)}
+  .g2{background:linear-gradient(135deg,#8ef0e2,#4d7cff 60%,#1b2a80)}
+  .g3{background:linear-gradient(160deg,#243a5e,#7ea1d6 45%,#e8f0fb)}
+  .g4{background:linear-gradient(135deg,#ffe29a,#ff8fa3 50%,#a56cd6)}
+  .g5{background:linear-gradient(200deg,#16242b,#3b6d85 60%,#a4c8dd)}
+  .g6{background:linear-gradient(135deg,#4b1f9e,#e05a72 55%,#ffc46b)}
+
+  .stage{flex:1;display:grid;place-items:center;padding:18px;background:
+    repeating-linear-gradient(45deg,#efe9db 0 8px,#f7f3e8 8px 16px)}
+  .canvas{width:100%;max-width:470px;aspect-ratio:16/9;position:relative;overflow:hidden;border:2.5px solid var(--ink);box-shadow:6px 6px 0 var(--ink)}
+  .canvas .img{position:absolute;inset:0;transform:scale(1.12) translate(-2%,1%)}
+  .selbox{position:absolute;inset:16% 12%;border:2.5px solid var(--ink)}
+  .selbox i{position:absolute;width:11px;height:11px;background:var(--lime);border:2px solid var(--ink)}
+  .selbox i:nth-child(1){left:-6px;top:-6px}.selbox i:nth-child(2){right:-6px;top:-6px}
+  .selbox i:nth-child(3){left:-6px;bottom:-6px}.selbox i:nth-child(4){right:-6px;bottom:-6px}
+  .stamp{position:absolute;left:10px;top:10px;font:800 9.5px/1 var(--mono);letter-spacing:.08em;background:var(--lime);
+    border:2px solid var(--ink);padding:5px 7px;box-shadow:2px 2px 0 var(--ink)}
+  .transport{height:46px;display:flex;align-items:center;gap:10px;justify-content:center;border-top:2.5px solid var(--ink);background:var(--paper)}
+  .tbtn{width:30px;height:30px;border:2px solid var(--ink);background:var(--paper);display:grid;place-items:center;font-size:11px;box-shadow:2px 2px 0 var(--ink);cursor:pointer}
+  .tbtn.play{background:var(--sky);color:#fff;width:36px;height:32px}
+  .tc{font:800 11px/1 var(--mono);letter-spacing:.04em}
+
+  .insp{padding:11px;display:flex;flex-direction:column;gap:11px;overflow:auto}
+  .box{border:2.5px solid var(--ink);background:var(--paper);box-shadow:4px 4px 0 var(--ink)}
+  .box>.bh{padding:8px 10px;border-bottom:2.5px solid var(--ink);font:800 11px/1 var(--font);letter-spacing:.02em;display:flex;align-items:center;gap:7px}
+  .box>.bb{padding:10px}
+  .bh.lilac{background:var(--lilac)}.bh.sky{background:var(--sky);color:#fff}
+  .row{display:flex;align-items:center;gap:8px;padding:4px 0}
+  .row label{flex:0 0 62px;font:700 10.5px/1 var(--font);text-transform:uppercase;letter-spacing:.05em}
+  .track-b{flex:1;height:8px;border:2px solid var(--ink);background:var(--paper);position:relative}
+  .track-b i{position:absolute;left:0;top:0;bottom:0;background:var(--sky)}
+  .track-b b{position:absolute;top:-4px;width:12px;height:14px;background:var(--lime);border:2px solid var(--ink);transform:translateX(-50%)}
+  .num{font:800 10.5px/1 var(--mono);border:2px solid var(--ink);padding:4px 5px;min-width:52px;text-align:right;background:var(--paper)}
+  textarea{width:100%;min-height:74px;resize:none;border:2px solid var(--ink);background:var(--paper);padding:9px;
+    font-family:var(--font);font-size:12px;line-height:1.5;outline:none;color:var(--ink)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+  .chip{font:700 10px/1 var(--mono);border:2px solid var(--ink);background:var(--paper);padding:4px 7px;cursor:pointer;box-shadow:2px 2px 0 var(--ink)}
+  .go{width:100%;margin-top:11px;padding:10px;border:2.5px solid var(--ink);background:var(--coral);color:#fff;
+    font-weight:800;font-size:12.5px;cursor:pointer;box-shadow:4px 4px 0 var(--ink);letter-spacing:.02em}
+  .note{margin-top:8px;font:600 10px/1.5 var(--mono);letter-spacing:.01em;color:#4a4740}
+
+  .tl{border-top:2.5px solid var(--ink);background:var(--paper)}
+  .tlbar{height:38px;display:flex;align-items:center;gap:7px;padding:0 12px;border-bottom:2.5px solid var(--ink)}
+  .tool{border:2px solid var(--ink);background:var(--paper);padding:5px 9px;font:800 10px/1 var(--mono);letter-spacing:.06em;box-shadow:2px 2px 0 var(--ink);cursor:pointer}
+  .tool.on{background:var(--lime)}
+  .tlbar .r{margin-left:auto;font:800 10px/1 var(--mono);letter-spacing:.08em}
+
+  .ruler{height:22px;position:relative;border-bottom:2.5px solid var(--ink);background:var(--ink)}
+  .ruler span{position:absolute;top:6px;font:800 9px/1 var(--mono);color:var(--paper);letter-spacing:.06em}
+  .ruler i{position:absolute;top:0;bottom:0;width:2px;background:var(--paper);opacity:.45}
+  .track{position:relative;padding:16px 12px 26px}
+  .clips{position:relative;height:60px}
+  .clip{position:absolute;top:0;bottom:0;border:2.5px solid var(--ink);overflow:hidden;box-shadow:4px 4px 0 var(--ink);cursor:pointer}
+  .clip .fill{position:absolute;inset:0}
+  .clip .strip{position:absolute;inset:0;display:flex}.clip .strip div{flex:1;border-right:2px solid var(--ink)}
+  .clip .name{position:absolute;left:0;bottom:0;font:800 9px/1 var(--mono);background:var(--paper);border-top:2px solid var(--ink);
+    border-right:2px solid var(--ink);padding:4px 6px;letter-spacing:.04em}
+  .clip.sel{box-shadow:0 0 0 3px var(--lime),4px 4px 0 var(--ink)}
+  .kfr{position:absolute;left:0;right:0;bottom:-20px;height:18px}
+  .kfr .base{position:absolute;left:0;right:0;top:8px;height:2px;background:var(--ink)}
+  .kf{position:absolute;top:2px;width:14px;height:14px;background:var(--paper);border:2.5px solid var(--ink);transform:translateX(-50%) rotate(45deg)}
+  .kf.on{background:var(--lime)}
+  .segl{position:absolute;top:6px;height:6px;background:var(--coral);border:2px solid var(--ink)}
+  .segtag{position:absolute;top:-26px;transform:translateX(-50%);white-space:nowrap;font:800 9px/1 var(--mono);
+    background:var(--lilac);border:2px solid var(--ink);padding:4px 7px;box-shadow:2px 2px 0 var(--ink)}
+  .gen{position:absolute;top:0;bottom:0;border:2.5px dashed var(--ink);background:repeating-linear-gradient(135deg,var(--lilac) 0 9px,#e3d1ff 9px 18px);
+    display:grid;place-items:center;font:800 10px/1 var(--mono);letter-spacing:.06em;box-shadow:4px 4px 0 var(--ink)}
+  .ph{position:absolute;top:-8px;bottom:-26px;width:3px;background:var(--coral);left:32%;border-left:1px solid var(--ink);border-right:1px solid var(--ink)}
+  .ph::before{content:"";position:absolute;top:-8px;left:50%;transform:translateX(-50%);width:14px;height:12px;background:var(--coral);border:2px solid var(--ink)}
+
+  .legend{margin-top:14px;display:flex;flex-wrap:wrap;gap:9px}
+  .lg{font:600 11px/1 var(--font);border:2px solid var(--ink);background:var(--paper);padding:7px 11px;box-shadow:3px 3px 0 var(--ink)}
+  .lg b{font-weight:800}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="badge">Concept 5 of 5</div>
+  <h1 class="cap">Studio Bold</h1>
+  <p class="sub">Opinionated and high-contrast: hard black borders, flat colour blocks, monospaced numerals, chunky keyframe diamonds you cannot mis-click. Same three-pane structure as Concept 1 but with none of the grey — every control announces itself, and state is carried by colour (lime = selected, coral = generating/record, lilac = AI). Best if the app should look like nothing else on the dock and be readable on a laptop screen in a café.</p>
+
+  <div class="app">
+    <div class="titlebar">
+      <div class="logo">SOL CUT</div>
+      <div class="doc">BEACH-TRIP.SOLPROJ</div>
+      <div class="tb-right">
+        <button class="btn">IMPORT</button>
+        <button class="btn primary">EXPORT MP4</button>
+      </div>
+    </div>
+
+    <div class="body">
+      <div class="col">
+        <div class="hd">Media <span class="r">6</span></div>
+        <div class="bin">
+          <div class="thumb"><div class="t g1"></div><div class="kind">IMG</div><div class="lbl">sunset.jpg</div></div>
+          <div class="thumb"><div class="t g2"></div><div class="kind">VID</div><div class="lbl">surf.mp4</div></div>
+          <div class="thumb"><div class="t g3"></div><div class="kind">IMG</div><div class="lbl">cliff.png</div></div>
+          <div class="thumb"><div class="t g4"></div><div class="kind">IMG</div><div class="lbl">market.jpg</div></div>
+          <div class="thumb"><div class="t g5"></div><div class="kind">VID</div><div class="lbl">drive.mov</div></div>
+          <div class="thumb"><div class="t g6"></div><div class="kind">IMG</div><div class="lbl">neon.jpg</div></div>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="hd">Preview <span class="r">1920×1080 · 30FPS</span></div>
+        <div class="stage">
+          <div class="canvas">
+            <div class="img g1"></div>
+            <div class="selbox"><i></i><i></i><i></i><i></i></div>
+            <div class="stamp">◆ KEYFRAME 2 / 00:04.10</div>
+          </div>
+        </div>
+        <div class="transport">
+          <div class="tc">00:04.10</div>
+          <div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div>
+          <div class="tc">00:21.00</div>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="hd">Inspector</div>
+        <div class="insp">
+          <div class="box">
+            <div class="bh sky">◆ KEYFRAME 2 — TRANSFORM</div>
+            <div class="bb">
+              <div class="row"><label>Scale</label><div class="track-b"><i style="width:62%"></i><b style="left:62%"></b></div><div class="num">114%</div></div>
+              <div class="row"><label>Pos X</label><div class="track-b"><i style="width:42%"></i><b style="left:42%"></b></div><div class="num">−3.0</div></div>
+              <div class="row"><label>Pos Y</label><div class="track-b"><i style="width:56%"></i><b style="left:56%"></b></div><div class="num">+2.0</div></div>
+              <div class="row"><label>Rotate</label><div class="track-b"><i style="width:50%"></i><b style="left:50%"></b></div><div class="num">0°</div></div>
+            </div>
+          </div>
+
+          <div class="box">
+            <div class="bh lilac">✦ ANIMATE KF1 → KF2</div>
+            <div class="bb">
+              <textarea>slow dolly-in over the water, warm golden light, gentle waves rolling toward camera</textarea>
+              <div class="chips"><span class="chip">DOLLY IN</span><span class="chip">PARALLAX</span><span class="chip">ORBIT</span><span class="chip">HANDHELD</span></div>
+              <button class="go">GENERATE · 3.2s</button>
+              <div class="note">HIGGSFIELD RENDERS THIS SEGMENT<br>AND DROPS IT ON THE TRACK.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tl">
+      <div class="tlbar">
+        <span class="tool on">SELECT</span><span class="tool">SPLIT</span><span class="tool on">◆ KEYFRAME</span><span class="tool">DELETE</span>
+        <span class="r">1 TRACK · ZOOM 100%</span>
+      </div>
+      <div class="ruler">
+        <i style="left:2%"></i><span style="left:3%">00:00</span>
+        <i style="left:21%"></i><span style="left:22%">00:03</span>
+        <i style="left:40%"></i><span style="left:41%">00:06</span>
+        <i style="left:59%"></i><span style="left:60%">00:09</span>
+        <i style="left:78%"></i><span style="left:79%">00:12</span>
+        <i style="left:95%"></i><span style="left:96%">00:15</span>
+      </div>
+      <div class="track">
+        <div class="clips">
+          <div class="clip sel" style="left:0;width:37%">
+            <div class="fill g1"></div><div class="name">SUNSET.JPG · 6.0s</div>
+            <div class="kfr">
+              <div class="base"></div>
+              <div class="segl" style="left:16%;right:44%"></div>
+              <div class="segtag" style="left:38%">“SLOW DOLLY-IN OVER THE WATER”</div>
+              <div class="kf" style="left:16%"></div><div class="kf on" style="left:56%"></div><div class="kf" style="left:88%"></div>
+            </div>
+          </div>
+          <div class="gen" style="left:39%;width:17%">RENDERING 46%</div>
+          <div class="clip" style="left:58%;width:42%">
+            <div class="strip"><div class="g2"></div><div class="g5"></div><div class="g2"></div><div class="g5"></div><div class="g2"></div></div>
+            <div class="name">SURF.MP4 · 9.0s</div>
+          </div>
+          <div class="ph"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="lg"><b>Colour = state</b> — lime selected, coral generating, lilac AI</div>
+    <div class="lg"><b>Big hit targets</b> — 14px keyframe diamonds, chunky buttons</div>
+    <div class="lg"><b>Zero grey</b> — every affordance is visible without hover</div>
+    <div class="lg"><b>Distinctive</b> — does not look like every other editor</div>
+  </div>
+</div>
+</body>
+</html>

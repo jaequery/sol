@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Concept 4 — Prompt Console</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  :root{
+    --bg:#0a0f1a; --panel:#0f1626; --panel-2:#141d31; --line:#1f2b45; --line-2:#2a3a5c;
+    --ink:#eaf0ff; --ink-2:#93a3c4; --ink-3:#5f6f92;
+    --teal:#2dd4bf; --indigo:#6366f1; --violet:#a78bfa; --pink:#f472b6;
+    --ok:#34d399; --err:#fb7185;
+    --font:"Inter","SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  }
+  body{margin:0;background:#05080f;color:var(--ink);font-family:var(--font);font-size:13px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1240px;margin:0 auto;padding:28px 20px 64px}
+  .cap{margin:0 0 4px;font-size:20px;font-weight:650;letter-spacing:-.02em}
+  .sub{margin:0 0 22px;color:#7e8cad;font-size:13px;line-height:1.6;max-width:70ch}
+  .badge{display:inline-block;font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--teal);
+    border:1px solid #10403c;background:#08201f;padding:5px 8px;border-radius:5px;margin-bottom:12px}
+
+  .app{background:var(--bg);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.7)}
+  .titlebar{height:42px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line);
+    background:linear-gradient(90deg,rgba(99,102,241,.14),rgba(45,212,191,.08))}
+  .dots{display:flex;gap:6px}.dots i{width:11px;height:11px;border-radius:50%;display:block}
+  .dots i:nth-child(1){background:#ff5f57}.dots i:nth-child(2){background:#febc2e}.dots i:nth-child(3){background:#28c840}
+  .doc{font-size:12.5px;font-weight:600}.doc span{color:var(--ink-3);font-weight:450}
+  .credits{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .cpill{font:600 10px/1 var(--mono);color:var(--teal);border:1px solid #10403c;background:#08201f;padding:5px 9px;border-radius:99px}
+  .btn{border:1px solid var(--line-2);background:var(--panel-2);color:var(--ink);border-radius:8px;padding:7px 13px;font-size:12px;font-weight:600;cursor:pointer}
+  .btn.primary{background:linear-gradient(135deg,var(--indigo),#4f46e5);border-color:#6366f1}
+
+  .body{display:grid;grid-template-columns:1fr 344px;height:470px}
+  .left{display:flex;flex-direction:column;min-width:0}
+  .stage{flex:1;display:grid;place-items:center;padding:20px;background:
+    radial-gradient(80% 60% at 20% 0%,rgba(99,102,241,.14),transparent 60%),
+    radial-gradient(70% 60% at 90% 20%,rgba(45,212,191,.10),transparent 60%),#080d17}
+  .canvas{width:100%;max-width:500px;aspect-ratio:16/9;border-radius:12px;position:relative;overflow:hidden;
+    border:1px solid rgba(255,255,255,.09);box-shadow:0 20px 50px rgba(0,0,0,.6)}
+  .canvas .img{position:absolute;inset:0;transform:scale(1.1)}
+  .g1{background:linear-gradient(135deg,#ffc98a,#f0688c 52%,#6d3fd0)}
+  .g2{background:linear-gradient(135deg,#83ded2,#3b86d4 60%,#1e2a70)}
+  .g5{background:linear-gradient(200deg,#101c22,#2f5f74 60%,#8fb8cf)}
+  .badge-live{position:absolute;left:10px;top:10px;display:flex;align-items:center;gap:6px;background:rgba(6,10,20,.75);
+    border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(8px);border-radius:99px;padding:5px 10px;font:600 10px/1 var(--mono);color:var(--teal)}
+  .badge-live i{width:6px;height:6px;border-radius:50%;background:var(--teal);box-shadow:0 0 8px var(--teal)}
+  .transport{height:42px;display:flex;align-items:center;justify-content:center;gap:12px;border-top:1px solid var(--line);background:#0a1120}
+  .tbtn{width:28px;height:28px;border-radius:8px;border:1px solid var(--line);background:var(--panel-2);display:grid;place-items:center;color:var(--ink-2);font-size:11px}
+  .tbtn.play{background:var(--ink);color:#0a0f1a;border-color:var(--ink)}
+  .tc{font:600 11px/1 var(--mono);color:var(--ink-2)}
+
+  /* timeline strip */
+  .tl{border-top:1px solid var(--line);background:#0a1120;padding:10px 12px 14px}
+  .tlhd{display:flex;align-items:center;gap:8px;margin-bottom:9px}
+  .tlhd .t{font:600 10.5px/1 var(--font);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+  .mini{margin-left:auto;display:flex;gap:5px}
+  .mbtn{font-size:10.5px;font-weight:600;color:var(--ink-2);border:1px solid var(--line);background:var(--panel-2);border-radius:6px;padding:4px 9px;cursor:pointer}
+  .mbtn.on{color:var(--violet);border-color:#3b3576;background:#1a1b3d}
+  .clips{position:relative;height:58px}
+  .clip{position:absolute;top:0;bottom:0;border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.1)}
+  .clip .fill{position:absolute;inset:0}
+  .clip .strip{position:absolute;inset:0;display:flex}.clip .strip div{flex:1;border-right:1px solid rgba(0,0,0,.3)}
+  .clip .name{position:absolute;left:7px;top:6px;font:600 10px/1 var(--font);color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.6)}
+  .clip.sel{border-color:var(--violet);box-shadow:0 0 0 1px var(--violet)}
+  .kfr{position:absolute;left:0;right:0;bottom:4px;height:12px}
+  .kf{position:absolute;bottom:0;width:10px;height:10px;background:#0a1120;border:2px solid var(--violet);transform:translateX(-50%) rotate(45deg);border-radius:2px}
+  .kf.on{background:var(--violet)}
+  .segl{position:absolute;bottom:4px;height:2px;background:linear-gradient(90deg,var(--violet),var(--teal));border-radius:2px}
+  .genc{position:absolute;top:0;bottom:0;border-radius:8px;border:1.5px solid #3b3576;
+    background:linear-gradient(120deg,#151b3a,#122a35);display:grid;place-items:center;font:600 10px/1 var(--mono);color:var(--violet)}
+  .genc .pb{position:absolute;left:8px;right:8px;bottom:7px;height:3px;background:rgba(255,255,255,.12);border-radius:3px;overflow:hidden}
+  .genc .pb i{position:absolute;left:0;top:0;bottom:0;width:46%;background:linear-gradient(90deg,var(--violet),var(--teal));border-radius:3px}
+  .ph{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--pink);left:30%}
+  .ph::before{content:"";position:absolute;top:-4px;left:50%;transform:translateX(-50%);width:9px;height:9px;background:var(--pink);border-radius:50%}
+
+  /* right: AI console */
+  .console{border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-width:0}
+  .chd{padding:13px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px}
+  .chd .icon{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--indigo),var(--teal));display:grid;place-items:center;font-size:12px}
+  .chd .t{font-size:13px;font-weight:650}
+  .chd .s{font-size:10.5px;color:var(--ink-3)}
+  .compose{padding:13px 14px;border-bottom:1px solid var(--line);background:var(--panel-2)}
+  .ctx{display:flex;align-items:center;gap:6px;margin-bottom:9px}
+  .ctag{font:600 10px/1 var(--mono);border-radius:6px;padding:5px 7px;border:1px solid #3b3576;background:#1a1b3d;color:var(--violet)}
+  .ctag.alt{border-color:#10403c;background:#08201f;color:var(--teal)}
+  textarea{width:100%;min-height:76px;resize:none;background:#080d17;border:1px solid var(--line-2);border-radius:10px;color:var(--ink);
+    padding:10px;font-family:var(--font);font-size:12.5px;line-height:1.55;outline:none}
+  textarea:focus{border-color:var(--indigo)}
+  .presets{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}
+  .preset{font-size:10.5px;color:var(--ink-2);border:1px solid var(--line);background:#0d1424;border-radius:99px;padding:4px 9px;cursor:pointer}
+  .send{width:100%;margin-top:10px;padding:10px;border-radius:10px;border:0;color:#fff;font-weight:700;font-size:12.5px;cursor:pointer;
+    background:linear-gradient(135deg,var(--indigo),#7c3aed);box-shadow:0 6px 18px rgba(99,102,241,.35)}
+  .cost{margin-top:7px;display:flex;justify-content:space-between;font-size:10.5px;color:var(--ink-3)}
+
+  .jobs{flex:1;overflow:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+  .jlabel{font:600 10px/1 var(--font);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+  .job{border:1px solid var(--line);border-radius:11px;background:var(--panel-2);padding:10px;display:flex;gap:10px}
+  .job .th{width:52px;height:34px;border-radius:6px;overflow:hidden;flex:0 0 auto;position:relative}
+  .job .meta{min-width:0;flex:1}
+  .job .tt{font-size:11.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .job .st{margin-top:4px;font:600 10px/1 var(--mono);display:flex;align-items:center;gap:5px}
+  .st.run{color:var(--violet)}.st.done{color:var(--ok)}.st.err{color:var(--err)}.st.queue{color:var(--ink-3)}
+  .pbar{margin-top:6px;height:3px;background:rgba(255,255,255,.1);border-radius:3px;position:relative;overflow:hidden}
+  .pbar i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--violet),var(--teal));border-radius:3px}
+  .jact{margin-top:6px;display:flex;gap:6px}
+  .ja{font-size:10px;font-weight:600;color:var(--ink-2);border:1px solid var(--line);border-radius:6px;padding:3px 7px;cursor:pointer}
+  .ja.pri{color:var(--teal);border-color:#10403c;background:#08201f}
+
+  .legend{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+  .lg{font-size:11px;color:#7e8cad;border:1px solid #1b2438;background:#0b1120;padding:6px 10px;border-radius:99px}
+  .lg b{color:#d6e0f5;font-weight:650}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="badge">Concept 4 of 5</div>
+  <h1 class="cap">Prompt Console</h1>
+  <p class="sub">The AI is the product, so the right rail is a generation console, not a properties panel: you compose a prompt against a keyframe pair, hit send, and every job lands as a card you can watch, retry, or discard — queued, running, failed and done all visible at once. The timeline shrinks to a compact strip because the interesting work happens in the console. Best if generation is expected to be slow, frequent, and worth managing.</p>
+
+  <div class="app">
+    <div class="titlebar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="doc">beach-trip <span>· 3 clips</span></div>
+      <div class="credits">
+        <span class="cpill">◈ 42 credits</span>
+        <button class="btn">Import</button>
+        <button class="btn primary">Export MP4</button>
+      </div>
+    </div>
+
+    <div class="body">
+      <div class="left">
+        <div class="stage">
+          <div class="canvas">
+            <div class="img g1"></div>
+            <div class="badge-live"><i></i> PREVIEWING KF1 → KF2</div>
+          </div>
+        </div>
+        <div class="transport">
+          <div class="tc">00:04.10</div>
+          <div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div>
+          <div class="tc" style="color:var(--ink-3)">00:21.00</div>
+        </div>
+
+        <div class="tl">
+          <div class="tlhd">
+            <div class="t">Timeline · single track</div>
+            <div class="mini"><span class="mbtn">✂ Split</span><span class="mbtn on">◆ Keyframe</span><span class="mbtn">🗑</span></div>
+          </div>
+          <div class="clips">
+            <div class="clip sel" style="left:0;width:37%">
+              <div class="fill g1"></div><div class="name">sunset.jpg</div>
+              <div class="kfr">
+                <div class="segl" style="left:16%;right:44%"></div>
+                <div class="kf" style="left:16%"></div><div class="kf on" style="left:56%"></div><div class="kf" style="left:88%"></div>
+              </div>
+            </div>
+            <div class="genc" style="left:38.5%;width:16%">46%<div class="pb"><i></i></div></div>
+            <div class="clip" style="left:56%;width:44%">
+              <div class="strip"><div class="g2"></div><div class="g5"></div><div class="g2"></div><div class="g5"></div><div class="g2"></div><div class="g5"></div></div>
+              <div class="name">surf.mp4</div>
+            </div>
+            <div class="ph"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- console -->
+      <div class="console">
+        <div class="chd">
+          <div class="icon">✦</div>
+          <div><div class="t">Higgsfield</div><div class="s">image → video · connected</div></div>
+        </div>
+
+        <div class="compose">
+          <div class="ctx"><span class="ctag">◆ KF1 → KF2</span><span class="ctag alt">3.2s</span><span class="ctag alt">16:9</span></div>
+          <textarea>slow dolly-in over the water, warm golden light, gentle waves rolling toward camera</textarea>
+          <div class="presets"><span class="preset">dolly in</span><span class="preset">orbit left</span><span class="preset">parallax</span><span class="preset">handheld</span><span class="preset">zoom out</span></div>
+          <button class="send">Generate animation</button>
+          <div class="cost"><span>≈ 45–90 s</span><span>2 credits</span></div>
+        </div>
+
+        <div class="jobs">
+          <div class="jlabel">Generations</div>
+
+          <div class="job">
+            <div class="th"><div class="g1" style="position:absolute;inset:0"></div></div>
+            <div class="meta">
+              <div class="tt">slow dolly-in over the water, warm…</div>
+              <div class="st run">◐ RENDERING · 46%</div>
+              <div class="pbar"><i style="width:46%"></i></div>
+              <div class="jact"><span class="ja">Cancel</span></div>
+            </div>
+          </div>
+
+          <div class="job">
+            <div class="th"><div class="g1" style="position:absolute;inset:0;filter:hue-rotate(30deg)"></div></div>
+            <div class="meta">
+              <div class="tt">gentle parallax, clouds drifting left</div>
+              <div class="st done">✓ READY · 3.2s · KF2 → KF3</div>
+              <div class="jact"><span class="ja pri">Place on timeline</span><span class="ja">Preview</span></div>
+            </div>
+          </div>
+
+          <div class="job">
+            <div class="th"><div class="g5" style="position:absolute;inset:0"></div></div>
+            <div class="meta">
+              <div class="tt">fast whip-pan across the market</div>
+              <div class="st err">✕ FAILED · rate limited (429)</div>
+              <div class="jact"><span class="ja pri">Retry</span><span class="ja">Dismiss</span></div>
+            </div>
+          </div>
+
+          <div class="job">
+            <div class="th"><div class="g2" style="position:absolute;inset:0"></div></div>
+            <div class="meta">
+              <div class="tt">slow push toward the horizon</div>
+              <div class="st queue">◌ QUEUED · position 2</div>
+              <div class="jact"><span class="ja">Remove</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="lg"><b>Job queue</b> — queued / running / failed / ready, all visible</div>
+    <div class="lg"><b>Non-blocking</b> — keep editing while renders run</div>
+    <div class="lg"><b>Explicit placement</b> — a ready clip is dropped in on your click</div>
+    <div class="lg"><b>Compact timeline</b> — the console gets the space</div>
+  </div>
+</div>
+</body>
+</html>

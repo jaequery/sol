@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Concept 3 — Filmstrip Focus</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  :root{
+    --bg:#070707; --panel:#0e0e0f; --line:#1e1e21; --line-2:#2a2a2e;
+    --ink:#f5f3ef; --ink-2:#a29e97; --ink-3:#6b6862;
+    --amber:#ffb020; --amber-2:#ffcd6b; --amber-dim:#2a1f08;
+    --font:"Inter","SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  }
+  body{margin:0;background:#000;color:var(--ink);font-family:var(--font);font-size:13px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1240px;margin:0 auto;padding:28px 20px 64px}
+  .cap{margin:0 0 4px;font-size:20px;font-weight:650;letter-spacing:-.02em}
+  .sub{margin:0 0 22px;color:#8b877f;font-size:13px;line-height:1.6;max-width:70ch}
+  .badge{display:inline-block;font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--amber);
+    border:1px solid #3d2c08;background:var(--amber-dim);padding:5px 8px;border-radius:5px;margin-bottom:12px}
+
+  .app{background:var(--bg);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.8);position:relative}
+  .titlebar{height:40px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid var(--line)}
+  .dots{display:flex;gap:6px}.dots i{width:11px;height:11px;border-radius:50%;display:block;background:#2a2a2e}
+  .doc{font:600 11px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3)}
+  .tb-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+  .btn{border:1px solid var(--line-2);background:transparent;color:var(--ink-2);border-radius:99px;padding:6px 14px;font-size:11.5px;font-weight:600;cursor:pointer;letter-spacing:.02em}
+  .btn.primary{background:var(--amber);border-color:var(--amber);color:#1a1200}
+
+  /* big preview */
+  .stage{position:relative;height:376px;display:grid;place-items:center;background:#000;overflow:hidden}
+  .glow{position:absolute;inset:-40% -10% auto;height:70%;background:radial-gradient(60% 100% at 50% 0%,rgba(255,176,32,.12),transparent 70%)}
+  .canvas{position:relative;width:min(640px,84%);aspect-ratio:16/9;border-radius:6px;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.9),0 0 0 1px #1c1c1f}
+  .canvas .img{position:absolute;inset:0;transform:scale(1.16) translate(-3%,1%)}
+  .vig{position:absolute;inset:0;background:radial-gradient(120% 80% at 50% 50%,transparent 45%,rgba(0,0,0,.5))}
+  .g1{background:linear-gradient(135deg,#ffbf7a,#f0688c 52%,#6d3fd0)}
+  .g2{background:linear-gradient(135deg,#83ded2,#3b86d4 60%,#1e2a70)}
+  .g5{background:linear-gradient(200deg,#101c22,#2f5f74 60%,#8fb8cf)}
+
+  .hud{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:14px;padding:12px 16px;
+    background:linear-gradient(180deg,transparent,rgba(0,0,0,.85));opacity:1}
+  .hud .tc{font:600 11px/1 var(--mono);color:var(--ink-2);letter-spacing:.06em}
+  .hud .scrub{flex:1;height:3px;background:rgba(255,255,255,.16);border-radius:3px;position:relative}
+  .hud .scrub i{position:absolute;left:0;top:0;bottom:0;width:33%;background:var(--amber);border-radius:3px}
+  .hud .scrub b{position:absolute;left:33%;top:50%;transform:translate(-50%,-50%);width:11px;height:11px;border-radius:50%;background:var(--amber);box-shadow:0 0 0 4px rgba(255,176,32,.2)}
+  .hud .pl{width:34px;height:34px;border-radius:50%;background:var(--ink);color:#000;display:grid;place-items:center;font-size:12px}
+
+  /* keyframe callout popover anchored to canvas */
+  .pop{position:absolute;right:26px;top:26px;width:268px;background:rgba(14,14,15,.94);backdrop-filter:blur(14px);
+    border:1px solid var(--line-2);border-radius:12px;padding:13px;box-shadow:0 18px 48px rgba(0,0,0,.7)}
+  .pop-hd{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .dia{width:9px;height:9px;background:var(--amber);transform:rotate(45deg);border-radius:1px}
+  .pop-hd .t{font-size:12px;font-weight:650}
+  .pop-hd .x{margin-left:auto;color:var(--ink-3);font-size:13px}
+  .kv{display:flex;justify-content:space-between;padding:5px 0;font-size:11.5px;color:var(--ink-2);border-bottom:1px solid #17171a}
+  .kv b{font:600 11px/1 var(--mono);color:var(--ink)}
+  .kv:last-of-type{border-bottom:0}
+  .pop textarea{width:100%;min-height:62px;margin-top:10px;resize:none;background:#000;border:1px solid #3d2c08;border-radius:9px;
+    color:var(--ink);padding:9px;font-family:var(--font);font-size:12px;line-height:1.5;outline:none}
+  .pop .go{width:100%;margin-top:9px;padding:9px;border-radius:9px;border:0;background:var(--amber);color:#1a1200;font-weight:700;font-size:12px;cursor:pointer}
+  .pop .hint{margin-top:7px;font-size:10.5px;color:var(--ink-3);text-align:center;line-height:1.5}
+
+  /* filmstrip timeline */
+  .strip-wrap{border-top:1px solid var(--line);background:linear-gradient(180deg,#0b0b0c,#070707)}
+  .strip-bar{height:34px;display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--line)}
+  .sbtn{font:600 10.5px/1 var(--font);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);cursor:pointer}
+  .sbtn.on{color:var(--amber)}
+  .strip-bar .r{margin-left:auto;font:600 10px/1 var(--mono);color:var(--ink-3);letter-spacing:.06em}
+
+  .strip{position:relative;height:132px;padding:16px;overflow:hidden}
+  .lane{position:relative;height:74px;display:flex;gap:3px}
+  .cell{position:relative;height:100%;border-radius:3px;overflow:hidden;flex:0 0 auto;border:1px solid rgba(255,255,255,.06)}
+  .cell .f{position:absolute;inset:0}
+  .cell.sel{box-shadow:0 0 0 2px var(--amber)}
+  .cliphead{position:absolute;left:0;top:-13px;font:600 9.5px/1 var(--mono);letter-spacing:.05em;color:var(--ink-3);text-transform:uppercase}
+  .clipgrp{position:relative;display:flex;gap:3px;margin-right:18px}
+  .clipgrp.active .cliphead{color:var(--amber)}
+
+  .kfmark{position:absolute;bottom:-15px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:3px}
+  .kfmark .d{width:11px;height:11px;background:#0e0e0f;border:2px solid var(--amber);transform:rotate(45deg);border-radius:2px}
+  .kfmark.on .d{background:var(--amber)}
+  .kfmark .n{font:600 8.5px/1 var(--mono);color:var(--ink-3)}
+  .promptbar{position:absolute;bottom:-11px;height:3px;background:var(--amber);border-radius:3px;opacity:.85}
+  .promptlabel{position:absolute;bottom:-32px;transform:translateX(-50%);white-space:nowrap;font:500 10px/1 var(--font);
+    color:var(--amber-2);background:var(--amber-dim);border:1px solid #3d2c08;padding:4px 9px;border-radius:99px}
+
+  .gen{position:relative;flex:0 0 auto;width:112px;height:74px;border-radius:3px;border:1.5px dashed #4a3812;
+    background:repeating-linear-gradient(135deg,#141008 0 8px,#1a1409 8px 16px);display:grid;place-items:center;
+    font:600 9.5px/1 var(--mono);color:var(--amber-2);letter-spacing:.06em;text-align:center;margin-right:18px}
+  .playhead{position:absolute;top:8px;bottom:8px;width:1.5px;background:#fff;left:31%;box-shadow:0 0 10px rgba(255,255,255,.7)}
+  .playhead::before{content:"";position:absolute;top:-5px;left:50%;transform:translateX(-50%) rotate(45deg);width:8px;height:8px;background:#fff;border-radius:1px}
+
+  .legend{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+  .lg{font-size:11px;color:#8b877f;border:1px solid #1e1e21;background:#0c0c0d;padding:6px 10px;border-radius:99px}
+  .lg b{color:#e6e2db;font-weight:650}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="badge">Concept 3 of 5</div>
+  <h1 class="cap">Filmstrip Focus</h1>
+  <p class="sub">Cinema-first and almost chromeless. There is no permanent inspector — the preview takes nearly the whole window and every control arrives as a popover anchored to what you clicked. The timeline is a literal filmstrip of frame thumbnails rather than coloured bars, so you scrub by looking at pictures. Keyframes hang under the strip with the prompt written on the segment itself. Best if the app should feel calm and content-first.</p>
+
+  <div class="app">
+    <div class="titlebar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="doc">beach-trip · 00:21.0</div>
+      <div class="tb-right">
+        <button class="btn">Import</button>
+        <button class="btn primary">Export MP4</button>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="glow"></div>
+      <div class="canvas">
+        <div class="img g1"></div>
+        <div class="vig"></div>
+        <div class="hud">
+          <div class="pl">▶</div>
+          <div class="tc">00:04.10</div>
+          <div class="scrub"><i></i><b></b></div>
+          <div class="tc">00:21.00</div>
+        </div>
+      </div>
+
+      <div class="pop">
+        <div class="pop-hd"><span class="dia"></span><span class="t">Segment KF1 → KF2</span><span class="x">✕</span></div>
+        <div class="kv"><span>Duration</span><b>3.20s</b></div>
+        <div class="kv"><span>Start framing</span><b>100% · 0,0</b></div>
+        <div class="kv"><span>End framing</span><b>116% · −3,+1</b></div>
+        <textarea>slow dolly-in over the water, warm golden light, gentle waves rolling toward camera</textarea>
+        <button class="go">Animate with Higgsfield</button>
+        <div class="hint">Generates a real video clip for this 3.2s segment and drops it back on the strip.</div>
+      </div>
+    </div>
+
+    <div class="strip-wrap">
+      <div class="strip-bar">
+        <span class="sbtn on">Select</span><span class="sbtn">Split</span><span class="sbtn on">◆ Keyframe</span><span class="sbtn">Delete</span>
+        <span class="r">1 TRACK · 3 CLIPS · ZOOM 100%</span>
+      </div>
+      <div class="strip">
+        <div class="lane">
+          <div class="clipgrp active">
+            <div class="cliphead">sunset.jpg · photo · 6.0s</div>
+            <div class="cell" style="width:74px"><div class="f g1"></div></div>
+            <div class="cell sel" style="width:74px"><div class="f g1" style="transform:scale(1.06)"></div></div>
+            <div class="cell" style="width:74px"><div class="f g1" style="transform:scale(1.12)"></div></div>
+            <div class="cell" style="width:74px"><div class="f g1" style="transform:scale(1.18)"></div></div>
+            <div class="promptbar" style="left:6px;width:220px"></div>
+            <div class="promptlabel" style="left:116px">“slow dolly-in over the water, warm golden light”</div>
+            <div class="kfmark" style="left:6px"><div class="d"></div><div class="n">KF1</div></div>
+            <div class="kfmark on" style="left:226px"><div class="d"></div><div class="n">KF2</div></div>
+            <div class="kfmark" style="left:302px"><div class="d"></div><div class="n">KF3</div></div>
+          </div>
+
+          <div class="gen">GENERATING<br>3.2s · 46%</div>
+
+          <div class="clipgrp">
+            <div class="cliphead">surf.mp4 · video · 9.0s</div>
+            <div class="cell" style="width:74px"><div class="f g2"></div></div>
+            <div class="cell" style="width:74px"><div class="f g5"></div></div>
+            <div class="cell" style="width:74px"><div class="f g2"></div></div>
+            <div class="cell" style="width:74px"><div class="f g5"></div></div>
+          </div>
+        </div>
+        <div class="playhead"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <div class="lg"><b>No permanent inspector</b> — popovers anchored to the selection</div>
+    <div class="lg"><b>Real filmstrip</b> — frame thumbnails, not coloured bars</div>
+    <div class="lg"><b>Prompt on the segment</b> — reads as a caption under the strip</div>
+    <div class="lg"><b>Maximum preview</b> — content dominates the window</div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,670 @@
+/**
+ * Editor state.
+ *
+ * Deliberately one flat store: the timeline is a single track, and nearly every action
+ * touches both the clip list and the selection, so splitting it up would mostly create
+ * synchronisation work. Anything that is pure arithmetic lives in `lib/timeline`.
+ */
+
+import { create } from 'zustand';
+import * as backend from '../lib/backend';
+import { probeVideoDurationMs, renderKeyframeJpeg } from '../lib/frames';
+import {
+  DEFAULT_PHOTO_DURATION_MS,
+  DEFAULT_VIDEO_DURATION_MS,
+  type Clip,
+  type Generation,
+  type MediaAsset,
+  type MediaKind,
+  type Selection,
+  type Transform2D,
+} from '../types/project';
+import {
+  addKeyframe,
+  clipAt,
+  findSegment,
+  insertClips,
+  makeId,
+  moveKeyframe,
+  photoClip,
+  removeKeyframe,
+  replaceSegment,
+  segmentsOf,
+  setPrompt,
+  totalDurationMs,
+  transformAt,
+  updateKeyframe,
+  videoClip,
+} from '../lib/timeline';
+
+export interface Toast {
+  id: string;
+  tone: 'ok' | 'error';
+  title: string;
+  detail?: string;
+  action?: { label: string; path: string };
+}
+
+export interface ImportProblem {
+  name: string;
+  reason: string;
+}
+
+export interface ExportState {
+  stage: string;
+  fraction: number;
+  status: 'running' | 'failed';
+  error?: string;
+}
+
+const PHOTO_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'avif'];
+const VIDEO_EXTS = ['mp4', 'mov', 'webm', 'm4v', 'mkv', 'avi'];
+
+export function kindOf(name: string, mime = ''): MediaKind | null {
+  if (mime.startsWith('image/')) return 'photo';
+  if (mime.startsWith('video/')) return 'video';
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  if (PHOTO_EXTS.includes(ext)) return 'photo';
+  if (VIDEO_EXTS.includes(ext)) return 'video';
+  return null;
+}
+
+export interface EditorState {
+  assets: Record<string, MediaAsset>;
+  clips: Clip[];
+  selection: Selection;
+  playheadMs: number;
+  playing: boolean;
+  pxPerSecond: number;
+
+  generations: Record<string, Generation>;
+  importing: number;
+  importProblems: ImportProblem[];
+
+  settings: backend.SettingsView | null;
+  settingsOpen: boolean;
+  connectionMessage: { ok: boolean; text: string } | null;
+
+  exportState: ExportState | null;
+  ffmpegAvailable: boolean | null;
+  toasts: Toast[];
+
+  // ---- media
+  addFiles: (files: File[], index?: number) => Promise<void>;
+  addPaths: (paths: string[], index?: number) => Promise<void>;
+  importViaDialog: () => Promise<void>;
+  dismissImportProblems: () => void;
+
+  // ---- selection & editing
+  select: (selection: Selection) => void;
+  addKeyframeAtPlayhead: () => void;
+  updateSelectedKeyframe: (patch: Partial<Transform2D>) => void;
+  moveSelectedKeyframe: (timeMs: number) => void;
+  deleteSelection: () => void;
+  setSegmentPrompt: (prompt: string) => void;
+  splitAtPlayhead: () => void;
+
+  // ---- playback
+  setPlayhead: (ms: number) => void;
+  togglePlay: () => void;
+  advance: (deltaMs: number) => void;
+
+  // ---- generation
+  startGeneration: () => Promise<void>;
+  applyGenerationUpdate: (update: backend.GenerationUpdate) => void;
+  cancelGeneration: (id: string) => Promise<void>;
+  dismissGeneration: (id: string) => void;
+
+  // ---- settings, export, chrome
+  loadSettings: () => Promise<void>;
+  openSettings: () => void;
+  closeSettings: () => void;
+  saveSettings: (input: backend.SettingsInput) => Promise<void>;
+  testConnection: () => Promise<void>;
+  runExport: () => Promise<void>;
+  setExportProgress: (stage: string, fraction: number) => void;
+  pushToast: (toast: Omit<Toast, 'id'>) => void;
+  dismissToast: (id: string) => void;
+}
+
+export const useEditor = create<EditorState>((set, get) => ({
+  assets: {},
+  clips: [],
+  selection: { kind: 'none' },
+  playheadMs: 0,
+  playing: false,
+  pxPerSecond: 46,
+
+  generations: {},
+  importing: 0,
+  importProblems: [],
+
+  settings: null,
+  settingsOpen: false,
+  connectionMessage: null,
+
+  exportState: null,
+  ffmpegAvailable: null,
+  toasts: [],
+
+  // ------------------------------------------------------------------ media
+
+  async addFiles(files, index) {
+    const accepted: { asset: MediaAsset; clip: Clip }[] = [];
+    const problems: ImportProblem[] = [];
+
+    for (const file of files) {
+      const kind = kindOf(file.name, file.type);
+      if (!kind) {
+        problems.push({
+          name: file.name,
+          reason: `unsupported format. Supported: ${[...PHOTO_EXTS, ...VIDEO_EXTS].join(', ')}`,
+        });
+        continue;
+      }
+      const asset: MediaAsset = {
+        id: makeId('asset'),
+        name: file.name,
+        kind,
+        // A browser drop has no filesystem path; export needs one, and says so.
+        path: (file as File & { path?: string }).path ?? '',
+        src: safeObjectUrl(file),
+        sizeBytes: file.size,
+      };
+      accepted.push({ asset, clip: newClip(asset) });
+    }
+
+    commitImport(set, get, accepted, problems, index);
+    await probeDurations(set, accepted);
+  },
+
+  async addPaths(paths, index) {
+    if (paths.length === 0) return;
+    set((s) => ({ importing: s.importing + paths.length }));
+    try {
+      const result = await backend.importPaths(paths);
+      const accepted = result.imported.map((item) => {
+        const asset: MediaAsset = {
+          id: makeId('asset'),
+          name: item.name,
+          kind: item.kind,
+          path: item.path,
+          src: backend.assetSrc(item.path),
+          sizeBytes: item.sizeBytes,
+        };
+        return { asset, clip: newClip(asset) };
+      });
+      commitImport(set, get, accepted, result.rejected, index);
+      await probeDurations(set, accepted);
+    } catch (error) {
+      get().pushToast({ tone: 'error', title: 'Import failed', detail: message(error) });
+    } finally {
+      set((s) => ({ importing: Math.max(0, s.importing - paths.length) }));
+    }
+  },
+
+  async importViaDialog() {
+    try {
+      await get().addPaths(await backend.pickMediaFiles());
+    } catch (error) {
+      get().pushToast({ tone: 'error', title: 'Could not open the file picker', detail: message(error) });
+    }
+  },
+
+  dismissImportProblems: () => set({ importProblems: [] }),
+
+  // ------------------------------------------------------------------ editing
+
+  select: (selection) => set({ selection }),
+
+  addKeyframeAtPlayhead() {
+    const { clips, playheadMs, selection } = get();
+    const target = selectedClipId(selection) ?? clipAt(clips, playheadMs)?.placed.clip.id;
+    if (!target) return;
+
+    const placed = clips.find((c) => c.id === target);
+    if (!placed || placed.kind !== 'photo') return;
+
+    const start = startOf(clips, target);
+    const localMs = Math.min(Math.max(playheadMs - start, 0), placed.durationMs);
+    const updated = addKeyframe(placed, localMs);
+    const added =
+      updated.keyframes.find((k) => Math.abs(k.timeMs - Math.round(localMs)) < 1) ??
+      updated.keyframes[0];
+
+    set({
+      clips: clips.map((c) => (c.id === target ? updated : c)),
+      selection: { kind: 'keyframe', clipId: target, keyframeId: added.id },
+    });
+  },
+
+  updateSelectedKeyframe(patch) {
+    const { selection, clips } = get();
+    if (selection.kind !== 'keyframe') return;
+    set({
+      clips: clips.map((c) =>
+        c.id === selection.clipId ? updateKeyframe(c, selection.keyframeId, patch) : c,
+      ),
+    });
+  },
+
+  moveSelectedKeyframe(timeMs) {
+    const { selection, clips } = get();
+    if (selection.kind !== 'keyframe') return;
+    set({
+      clips: clips.map((c) =>
+        c.id === selection.clipId ? moveKeyframe(c, selection.keyframeId, timeMs) : c,
+      ),
+    });
+  },
+
+  deleteSelection() {
+    const { selection, clips } = get();
+    if (selection.kind === 'keyframe') {
+      set({
+        clips: clips.map((c) =>
+          c.id === selection.clipId ? removeKeyframe(c, selection.keyframeId) : c,
+        ),
+        selection: { kind: 'clip', clipId: selection.clipId },
+      });
+      return;
+    }
+    if (selection.kind === 'clip') {
+      set({ clips: clips.filter((c) => c.id !== selection.clipId), selection: { kind: 'none' } });
+    }
+  },
+
+  setSegmentPrompt(prompt) {
+    const { selection, clips } = get();
+    if (selection.kind !== 'segment') return;
+    set({
+      clips: clips.map((c) =>
+        c.id === selection.clipId ? setPrompt(c, selection.fromKeyframeId, prompt) : c,
+      ),
+    });
+  },
+
+  splitAtPlayhead() {
+    const { clips, playheadMs } = get();
+    const hit = clipAt(clips, playheadMs);
+    if (!hit || hit.localMs <= 0 || hit.localMs >= hit.placed.clip.durationMs) return;
+
+    const clip = hit.placed.clip;
+    const head: Clip = {
+      ...clip,
+      id: makeId('clip'),
+      durationMs: hit.localMs,
+      keyframes: clip.keyframes.filter((k) => k.timeMs < hit.localMs),
+    };
+    const tail: Clip = {
+      ...clip,
+      id: makeId('clip'),
+      durationMs: clip.durationMs - hit.localMs,
+      trimStartMs: clip.trimStartMs + (clip.kind === 'video' ? hit.localMs : 0),
+      keyframes: clip.keyframes
+        .filter((k) => k.timeMs >= hit.localMs)
+        .map((k) => ({ ...k, timeMs: k.timeMs - hit.localMs })),
+    };
+    const index = clips.findIndex((c) => c.id === clip.id);
+    set({
+      clips: [...clips.slice(0, index), head, tail, ...clips.slice(index + 1)],
+      selection: { kind: 'clip', clipId: tail.id },
+    });
+  },
+
+  // ------------------------------------------------------------------ playback
+
+  setPlayhead(ms) {
+    const total = totalDurationMs(get().clips);
+    set({ playheadMs: Math.min(Math.max(0, Math.round(ms)), total) });
+  },
+
+  togglePlay() {
+    const { playing, playheadMs, clips } = get();
+    const total = totalDurationMs(clips);
+    if (total === 0) return;
+    // Pressing play at the very end restarts rather than doing nothing.
+    set({ playing: !playing, playheadMs: !playing && playheadMs >= total ? 0 : playheadMs });
+  },
+
+  advance(deltaMs) {
+    const { playheadMs, clips, playing } = get();
+    if (!playing) return;
+    const total = totalDurationMs(clips);
+    const next = playheadMs + deltaMs;
+    if (next >= total) {
+      set({ playheadMs: total, playing: false });
+    } else {
+      set({ playheadMs: next });
+    }
+  },
+
+  // ------------------------------------------------------------------ generation
+
+  async startGeneration() {
+    const { selection, clips, assets, pushToast } = get();
+    if (selection.kind !== 'segment') return;
+
+    const clip = clips.find((c) => c.id === selection.clipId);
+    if (!clip) return;
+    const segment = findSegment(clip, selection.fromKeyframeId, selection.toKeyframeId);
+    if (!segment) return;
+
+    const prompt = (clip.prompts[selection.fromKeyframeId] ?? '').trim();
+    if (!prompt) return;
+
+    const asset = assets[clip.assetId];
+    if (!asset) return;
+
+    const generationId = makeId('gen');
+    const generation: Generation = {
+      id: generationId,
+      clipId: clip.id,
+      fromKeyframeId: selection.fromKeyframeId,
+      toKeyframeId: selection.toKeyframeId,
+      prompt,
+      status: 'queued',
+      progress: 0,
+      elapsedSecs: 0,
+      slow: false,
+    };
+    set((s) => ({ generations: { ...s.generations, [generationId]: generation } }));
+
+    try {
+      const from = clip.keyframes.find((k) => k.id === selection.fromKeyframeId);
+      const to = clip.keyframes.find((k) => k.id === selection.toKeyframeId);
+      const startFrame = await renderKeyframeJpeg(
+        asset.src,
+        from?.transform ?? transformAt(clip, segment.startMs),
+      );
+      const endFrame = await renderKeyframeJpeg(
+        asset.src,
+        to?.transform ?? transformAt(clip, segment.endMs),
+      );
+
+      await backend.generateAnimation({
+        generationId,
+        prompt,
+        startFrame,
+        endFrame,
+        durationSeconds: segment.durationMs / 1000,
+      });
+    } catch (error) {
+      set((s) => ({
+        generations: {
+          ...s.generations,
+          [generationId]: {
+            ...generation,
+            status: 'failed',
+            error: { title: 'Could not start', message: message(error), retryable: true },
+          },
+        },
+      }));
+      pushToast({ tone: 'error', title: 'Generation could not start', detail: message(error) });
+    }
+  },
+
+  applyGenerationUpdate(update) {
+    const existing = get().generations[update.generationId];
+    if (!existing) return;
+
+    const next: Generation = {
+      ...existing,
+      status: update.status,
+      progress: update.progress,
+      jobId: update.jobId ?? existing.jobId,
+      elapsedSecs: update.elapsedSecs,
+      slow: update.slow,
+      outputPath: update.outputPath ?? existing.outputPath,
+      error: update.status === 'failed' ? update.error : undefined,
+    };
+    set((s) => ({ generations: { ...s.generations, [update.generationId]: next } }));
+
+    if (update.status !== 'succeeded' || !update.outputPath) return;
+
+    // The clip is on the timeline; put the rendered video where the segment was.
+    const asset: MediaAsset = {
+      id: makeId('asset'),
+      name: `ai-${update.generationId}.mp4`,
+      kind: 'video',
+      path: update.outputPath,
+      src: backend.assetSrc(update.outputPath),
+      sizeBytes: 0,
+    };
+
+    set((s) => {
+      const clips = replaceSegment(s.clips, next.clipId, next.fromKeyframeId, next.toKeyframeId, {
+        assetId: asset.id,
+        name: asset.name,
+        prompt: next.prompt,
+      });
+      const generated = clips.find((c) => c.assetId === asset.id);
+      return {
+        assets: { ...s.assets, [asset.id]: asset },
+        clips,
+        selection: generated ? { kind: 'clip', clipId: generated.id } : s.selection,
+      };
+    });
+    get().pushToast({ tone: 'ok', title: 'Animation ready', detail: next.prompt });
+  },
+
+  async cancelGeneration(id) {
+    await backend.cancelGeneration(id);
+    set((s) => {
+      const existing = s.generations[id];
+      if (!existing) return s;
+      return { generations: { ...s.generations, [id]: { ...existing, status: 'cancelled' } } };
+    });
+  },
+
+  dismissGeneration(id) {
+    set((s) => {
+      const generations = { ...s.generations };
+      delete generations[id];
+      return { generations };
+    });
+  },
+
+  // ------------------------------------------------------------------ settings & export
+
+  async loadSettings() {
+    try {
+      set({ settings: await backend.getSettings(), ffmpegAvailable: await backend.ffmpegAvailable() });
+    } catch {
+      set({ settings: null });
+    }
+  },
+
+  openSettings: () => set({ settingsOpen: true, connectionMessage: null }),
+  closeSettings: () => set({ settingsOpen: false, connectionMessage: null }),
+
+  async saveSettings(input) {
+    try {
+      set({ settings: await backend.saveSettings(input), settingsOpen: false, connectionMessage: null });
+    } catch (error) {
+      set({ connectionMessage: { ok: false, text: message(error) } });
+    }
+  },
+
+  async testConnection() {
+    try {
+      set({ connectionMessage: { ok: true, text: await backend.testConnection() } });
+    } catch (error) {
+      set({ connectionMessage: { ok: false, text: message(error) } });
+    }
+  },
+
+  async runExport() {
+    const { clips, assets, pushToast } = get();
+    if (clips.length === 0) return;
+
+    const offline = clips.find((c) => !assets[c.assetId]?.path);
+    if (offline) {
+      set({
+        exportState: {
+          stage: 'Export blocked',
+          fraction: 0,
+          status: 'failed',
+          error: `“${offline.name}” has no file on disk to render. Re-import it from the file picker.`,
+        },
+      });
+      return;
+    }
+
+    let outPath: string | null = null;
+    try {
+      outPath = await backend.pickExportPath('solcut-export.mp4');
+    } catch (error) {
+      pushToast({ tone: 'error', title: 'Export failed', detail: message(error) });
+      return;
+    }
+    if (!outPath) return;
+
+    set({ exportState: { stage: 'Starting…', fraction: 0, status: 'running' } });
+    try {
+      const written = await backend.exportTimeline(buildExportSpec(clips, assets), outPath);
+      set({ exportState: null });
+      pushToast({
+        tone: 'ok',
+        title: 'Export complete',
+        detail: written,
+        action: { label: 'Reveal', path: written },
+      });
+    } catch (error) {
+      set({
+        exportState: { stage: 'Export failed', fraction: 0, status: 'failed', error: message(error) },
+      });
+    }
+  },
+
+  setExportProgress(stage, fraction) {
+    set((s) => (s.exportState?.status === 'running' ? { exportState: { ...s.exportState, stage, fraction } } : s));
+  },
+
+  pushToast(toast) {
+    set((s) => ({ toasts: [...s.toasts, { ...toast, id: makeId('toast') }] }));
+  },
+
+  dismissToast(id) {
+    set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) }));
+  },
+}));
+
+// ---------------------------------------------------------------- helpers
+
+type Setter = (partial: Partial<EditorState> | ((s: EditorState) => Partial<EditorState>)) => void;
+
+function newClip(asset: MediaAsset): Clip {
+  return asset.kind === 'photo'
+    ? photoClip(asset, DEFAULT_PHOTO_DURATION_MS)
+    : videoClip(asset, DEFAULT_VIDEO_DURATION_MS);
+}
+
+/**
+ * Clips appear at their default length straight away and correct themselves once the real
+ * duration is known — an import that blocks on decoding feels broken.
+ */
+function commitImport(
+  set: Setter,
+  get: () => EditorState,
+  accepted: { asset: MediaAsset; clip: Clip }[],
+  problems: ImportProblem[],
+  index?: number,
+) {
+  if (accepted.length === 0 && problems.length === 0) return;
+
+  set((s) => {
+    const assets = { ...s.assets };
+    for (const { asset } of accepted) assets[asset.id] = asset;
+    const at = index ?? s.clips.length;
+    const clips = insertClips(
+      s.clips,
+      at,
+      accepted.map((a) => a.clip),
+    );
+    return {
+      assets,
+      clips,
+      importProblems: [...s.importProblems, ...problems],
+      selection: accepted[0] ? { kind: 'clip', clipId: accepted[0].clip.id } : s.selection,
+    };
+  });
+  void get;
+}
+
+async function probeDurations(set: Setter, accepted: { asset: MediaAsset; clip: Clip }[]) {
+  const videos = accepted.filter((a) => a.asset.kind === 'video');
+  await Promise.all(
+    videos.map(async ({ asset, clip }) => {
+      const durationMs = await probeVideoDurationMs(asset.src, DEFAULT_VIDEO_DURATION_MS);
+      set((s) => ({
+        clips: s.clips.map((c) => (c.id === clip.id ? { ...c, durationMs } : c)),
+      }));
+    }),
+  );
+}
+
+function safeObjectUrl(file: File): string {
+  try {
+    return URL.createObjectURL(file);
+  } catch {
+    return '';
+  }
+}
+
+function selectedClipId(selection: Selection): string | null {
+  return selection.kind === 'none' ? null : selection.clipId;
+}
+
+function startOf(clips: Clip[], clipId: string): number {
+  let cursor = 0;
+  for (const clip of clips) {
+    if (clip.id === clipId) return cursor;
+    cursor += clip.durationMs;
+  }
+  return 0;
+}
+
+function message(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return typeof error === 'string' ? error : JSON.stringify(error);
+}
+
+/** Shape expected by `solcut_render::ExportSpec`. */
+export function buildExportSpec(clips: Clip[], assets: Record<string, MediaAsset>) {
+  return {
+    width: 1920,
+    height: 1080,
+    fps: 30,
+    clips: clips.map((clip) => {
+      const asset = assets[clip.assetId];
+      const common = { name: clip.name, durationMs: clip.durationMs };
+      if (clip.kind === 'photo') {
+        return {
+          ...common,
+          kind: 'photo',
+          path: asset?.path ?? '',
+          keyframes: (clip.keyframes.length > 0
+            ? clip.keyframes
+            : [{ timeMs: 0, transform: transformAt(clip, 0) }]
+          ).map((k) => ({
+            timeMs: k.timeMs,
+            scale: k.transform.scale,
+            x: k.transform.x,
+            y: k.transform.y,
+            rotationDeg: k.transform.rotation,
+            opacity: k.transform.opacity,
+          })),
+        };
+      }
+      return { ...common, kind: 'video', path: asset?.path ?? '', trimStartMs: clip.trimStartMs };
+    }),
+  };
+}
+
+/** Segments of the currently selected clip, for the timeline and inspector. */
+export function selectedSegments(state: EditorState) {
+  const id = selectedClipId(state.selection);
+  const clip = id ? state.clips.find((c) => c.id === id) : undefined;
+  return clip ? segmentsOf(clip) : [];
+}
