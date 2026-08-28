@@ -1,10 +1,12 @@
 /**
  * Pure timeline arithmetic — no React, no Tauri.
  *
- * The whole editor is one track of clips laid end to end, so a clip's position is implied
- * by its index rather than stored. Everything here is a pure function of the clip list,
- * which keeps the interesting behaviour (interpolation, splitting a photo around a
- * generated segment) testable without rendering anything.
+ * The editor is one visual track, but a clip's place on it is a time it carries (`startMs`)
+ * rather than a position implied by its index: a clip can be dropped anywhere, leaving a
+ * gap on either side. What one track still forbids is two clips at the same instant, since
+ * there is nothing to composite them with — so an edit that would overlap slides the clip
+ * it lands on out of the way instead. Everything here is a pure function of the clip list,
+ * which keeps the interesting behaviour testable without rendering anything.
  */
 
 import {
@@ -36,20 +38,39 @@ export function resetIds(): void {
   idCounter = 0;
 }
 
+/** The clips in the order they play, each with the span it occupies. */
 export function layout(clips: Clip[]): PlacedClip[] {
-  let cursor = 0;
+  return sortClips(clips).map((clip) => ({
+    clip,
+    startMs: clip.startMs,
+    endMs: clip.startMs + clip.durationMs,
+  }));
+}
+
+/** Clips in time order. The store keeps its list sorted; this is the guarantee. */
+export function sortClips(clips: Clip[]): Clip[] {
+  return [...clips].sort((a, b) => a.startMs - b.startMs);
+}
+
+/** Where the visual track ends — the end of its last clip, gaps included. */
+export function trackEndMs(clips: Clip[]): number {
+  return clips.reduce((end, clip) => Math.max(end, clip.startMs + clip.durationMs), 0);
+}
+
+/** Lay clips end to end from `startMs` — how a batch of freshly imported media arrives. */
+export function packClips(clips: Clip[], startMs = 0): Clip[] {
+  let cursor = Math.max(0, Math.round(startMs));
   return clips.map((clip) => {
-    const startMs = cursor;
+    const placed = { ...clip, startMs: cursor };
     cursor += clip.durationMs;
-    return { clip, startMs, endMs: cursor };
+    return placed;
   });
 }
 
-export function totalDurationMs(clips: Clip[]): number {
-  return clips.reduce((sum, clip) => sum + clip.durationMs, 0);
-}
-
-/** The clip under the playhead, with the time relative to that clip's own start. */
+/**
+ * The clip under the playhead, with the time relative to that clip's own start. `null` in
+ * a gap — and before the first clip — which the preview and the export both read as black.
+ */
 export function clipAt(clips: Clip[], timeMs: number): { placed: PlacedClip; localMs: number } | null {
   const placed = layout(clips);
   for (const item of placed) {
@@ -66,7 +87,7 @@ export function clipAt(clips: Clip[], timeMs: number): { placed: PlacedClip; loc
 }
 
 export function startOfClip(clips: Clip[], clipId: string): number {
-  return layout(clips).find((p) => p.clip.id === clipId)?.startMs ?? 0;
+  return clips.find((c) => c.id === clipId)?.startMs ?? 0;
 }
 
 export function sortKeyframes(keyframes: Keyframe[]): Keyframe[] {
@@ -211,12 +232,17 @@ export function setPrompt(clip: Clip, fromKeyframeId: string, prompt: string): C
   return { ...clip, prompts: { ...clip.prompts, [fromKeyframeId]: prompt } };
 }
 
-export function photoClip(asset: { id: string; name: string }, durationMs = DEFAULT_PHOTO_DURATION_MS): Clip {
+export function photoClip(
+  asset: { id: string; name: string },
+  durationMs = DEFAULT_PHOTO_DURATION_MS,
+  startMs = 0,
+): Clip {
   return {
     id: makeId('clip'),
     assetId: asset.id,
     kind: 'photo',
     name: asset.name,
+    startMs: Math.max(0, Math.round(startMs)),
     durationMs,
     trimStartMs: 0,
     keyframes: [],
@@ -224,12 +250,17 @@ export function photoClip(asset: { id: string; name: string }, durationMs = DEFA
   };
 }
 
-export function videoClip(asset: { id: string; name: string }, durationMs: number): Clip {
+export function videoClip(
+  asset: { id: string; name: string },
+  durationMs: number,
+  startMs = 0,
+): Clip {
   return {
     id: makeId('clip'),
     assetId: asset.id,
     kind: 'video',
     name: asset.name,
+    startMs: Math.max(0, Math.round(startMs)),
     durationMs: Math.max(MIN_CLIP_DURATION_MS, Math.round(durationMs)),
     trimStartMs: 0,
     keyframes: [],
@@ -237,12 +268,24 @@ export function videoClip(asset: { id: string; name: string }, durationMs: numbe
   };
 }
 
+/**
+ * Drop `incoming` in at the boundary `index` names, laid end to end from there. Whatever
+ * already sat at or after that boundary ripples right to make room — an import is an
+ * insertion into the film, not something that lands on top of what is already there.
+ */
 export function insertClips(clips: Clip[], index: number, incoming: Clip[]): Clip[] {
-  const at = clamp(index, 0, clips.length);
-  return [...clips.slice(0, at), ...incoming, ...clips.slice(at)];
+  if (incoming.length === 0) return clips;
+  const ordered = sortClips(clips);
+  const at = startOfIndex(ordered, index);
+  const placed = packClips(incoming, at);
+  const room = trackEndMs(placed) - at;
+  return sortClips([
+    ...ordered.map((c) => (c.startMs >= at ? { ...c, startMs: c.startMs + room } : c)),
+    ...placed,
+  ]);
 }
 
-/** The boundary nearest `timeMs`, as an index into `clips`. */
+/** The boundary nearest `timeMs`, as an index into the clips in time order. */
 export function insertIndexAtTime(clips: Clip[], timeMs: number): number {
   const placed = layout(clips);
   for (let i = 0; i < placed.length; i += 1) {
@@ -254,64 +297,113 @@ export function insertIndexAtTime(clips: Clip[], timeMs: number): number {
 
 /** Where a drop at `xRatio` (0..1 across the track) should land. */
 export function insertIndexAt(clips: Clip[], xRatio: number): number {
-  const total = totalDurationMs(clips);
+  const total = trackEndMs(clips);
   if (total === 0) return 0;
   return insertIndexAtTime(clips, clamp(xRatio, 0, 1) * total);
 }
 
 /** Where the clip at `index` starts — the boundary an insertion marker is drawn on. */
 export function startOfIndex(clips: Clip[], index: number): number {
+  const ordered = sortClips(clips);
+  const at = clamp(Math.round(index), 0, ordered.length);
+  return at < ordered.length ? ordered[at].startMs : trackEndMs(ordered);
+}
+
+/**
+ * Drop a clip at `startMs` — anywhere on the track, gaps included. The clip lands exactly
+ * where it was let go; the only thing it cannot do is share an instant with another clip,
+ * so whatever it comes down on top of slides right just far enough to clear it.
+ */
+export function placeClip(clips: Clip[], clipId: string, startMs: number): Clip[] {
+  const clip = clips.find((c) => c.id === clipId);
+  if (!clip) return clips;
+  const at = Math.max(0, Math.round(startMs));
+  if (at === clip.startMs) return clips;
+  return settleAround({ ...clip, startMs: at }, clips);
+}
+
+/**
+ * Put `actor` on the track and make room for it: clips wholly before it keep their places
+ * — and their gaps — while everything from its start onwards is walked right only as far
+ * as it must be to stop overlapping. Sliding never closes a gap, so the rest of the
+ * timeline reads exactly as the user left it.
+ */
+function settleAround(actor: Clip, clips: Clip[]): Clip[] {
+  const others = sortClips(clips.filter((c) => c.id !== actor.id));
+  const settled: Clip[] = [];
+  let frontier = actor.startMs + actor.durationMs;
+
+  for (const clip of others) {
+    if (clip.startMs + clip.durationMs <= actor.startMs) {
+      settled.push(clip);
+      continue;
+    }
+    const startMs = Math.max(clip.startMs, frontier);
+    frontier = startMs + clip.durationMs;
+    settled.push(startMs === clip.startMs ? clip : { ...clip, startMs });
+  }
+  return sortClips([...settled, actor]);
+}
+
+/** Where the clip in front of `clipId` ends — the wall its head cannot be pulled past. */
+export function endOfPrevious(clips: Clip[], clipId: string): number {
+  const clip = clips.find((c) => c.id === clipId);
+  if (!clip) return 0;
   return clips
-    .slice(0, clamp(index, 0, clips.length))
-    .reduce((sum, c) => sum + c.durationMs, 0);
+    .filter((c) => c.id !== clipId && c.startMs + c.durationMs <= clip.startMs)
+    .reduce((end, c) => Math.max(end, c.startMs + c.durationMs), 0);
 }
 
 /**
- * Where a clip dragged to `timeMs` wants to land, counted among the clips it leaves
- * behind — the same index `moveClip` takes.
+ * Drag one edge of a clip on the track. The head is bounded by the clip in front of it —
+ * it stops rather than shoving anything — while a tail that grows into the clip behind it
+ * pushes that one along, which is how a clip has always been stretched.
  */
-export function dropIndexFor(clips: Clip[], clipId: string, timeMs: number): number {
-  return insertIndexAtTime(
-    clips.filter((c) => c.id !== clipId),
-    timeMs,
+export function resizeClipInList(
+  clips: Clip[],
+  clipId: string,
+  edge: ClipEdge,
+  deltaMs: number,
+  sourceDurationMs?: number,
+): Clip[] {
+  const clip = clips.find((c) => c.id === clipId);
+  if (!clip) return clips;
+  const resized = resizeClip(
+    clip,
+    edge,
+    deltaMs,
+    sourceDurationMs,
+    edge === 'start' ? endOfPrevious(clips, clipId) : 0,
   );
-}
-
-/**
- * Reposition a clip in the order. `toIndex` counts positions among the *other* clips, so
- * "put it back where it was" is a no-op rather than an off-by-one.
- */
-export function moveClip(clips: Clip[], clipId: string, toIndex: number): Clip[] {
-  const from = clips.findIndex((c) => c.id === clipId);
-  if (from === -1) return clips;
-  const rest = [...clips.slice(0, from), ...clips.slice(from + 1)];
-  const at = clamp(Math.round(toIndex), 0, rest.length);
-  if (at === from) return clips;
-  return [...rest.slice(0, at), clips[from], ...rest.slice(at)];
+  return resized === clip ? clips : settleAround(resized, clips);
 }
 
 /**
  * Move one edge of a clip by `deltaMs` — positive is always "to the right", whichever edge
  * it is.
  *
- * The track is gapless, so the head edge is a trim rather than a move: pulling it right
- * shortens the clip from the front and everything after slides left with it. On a video
- * that walks `trimStartMs` by the same amount, so the frames still on screen stay on the
- * frames they were on and only the in-point moves.
+ * The head edge moves the clip's place on the timeline as well as its length, so the tail
+ * stays put on the frame it was on: pulling it right trims the front away, pulling it left
+ * reveals more of the source in front. On a video that walks `trimStartMs` by the same
+ * amount, so the frames still on screen stay on the frames they were on.
  *
  * `sourceDurationMs` is the real length of the file behind the clip. Leave it `undefined`
  * when it has not been probed yet: the clip can then only shrink, because nothing proves
- * there are more frames to show.
+ * there are more frames to show. `minStartMs` is the earliest the head may go — the end of
+ * the clip in front of it on the track, or 0:00 when it is the first.
  */
 export function resizeClip(
   clip: Clip,
   edge: ClipEdge,
   deltaMs: number,
   sourceDurationMs?: number,
+  minStartMs = 0,
 ): Clip {
   const delta = Math.round(deltaMs);
   if (!Number.isFinite(delta) || delta === 0) return clip;
-  return edge === 'end' ? resizeEnd(clip, delta, sourceDurationMs) : resizeStart(clip, delta);
+  return edge === 'end'
+    ? resizeEnd(clip, delta, sourceDurationMs)
+    : resizeStart(clip, delta, minStartMs);
 }
 
 function resizeEnd(clip: Clip, delta: number, sourceDurationMs?: number): Clip {
@@ -326,18 +418,20 @@ function resizeEnd(clip: Clip, delta: number, sourceDurationMs?: number): Clip {
 
 // No `sourceDurationMs` here: a head trim moves the in-point and the length by the same
 // amount, so the out-point never moves and whatever bound it was already inside, it stays in.
-function resizeStart(clip: Clip, delta: number): Clip {
-  // How far left the head can go: back to the start of the source, or — for a photo, which
-  // has no source to run out of — as far as the overall cap allows.
+function resizeStart(clip: Clip, delta: number, minStartMs: number): Clip {
+  // How far left the head can go: back to the start of the source — or, for a photo, as far
+  // as the overall cap allows — and never past the clip in front of it on the track.
   const headroom =
     clip.kind === 'video' ? clip.trimStartMs : MAX_PHOTO_DURATION_MS - clip.durationMs;
-  const shift = clamp(delta, -headroom, clip.durationMs - MIN_CLIP_DURATION_MS);
+  const room = Math.min(headroom, Math.max(0, clip.startMs - minStartMs));
+  const shift = clamp(delta, -room, clip.durationMs - MIN_CLIP_DURATION_MS);
   if (shift === 0) return clip;
 
   // `trimStartMs + durationMs` is unchanged, so the out-point cannot escape the source.
   return withKeyframesInside(
     {
       ...clip,
+      startMs: clip.startMs + shift,
       durationMs: clip.durationMs - shift,
       trimStartMs: clip.kind === 'video' ? clip.trimStartMs + shift : clip.trimStartMs,
     },
@@ -374,6 +468,60 @@ function withKeyframesInside(clip: Clip, shiftMs: number): Clip {
   const keyframes = sortKeyframes([...byTime.values()]);
   const kept = new Set(keyframes.map((k) => k.id));
   return { ...clip, keyframes, prompts: pickPrompts(clip, (k) => kept.has(k.id)) };
+}
+
+// ---------------------------------------------------------------- snapping
+
+/**
+ * The times a dragged clip's edges like to line up with: 0:00, the playhead, and every
+ * edge already on the timeline — the visual track's clips and the sounds on their lanes.
+ * The clip being dragged is left out, or it would snap to where it started.
+ */
+export function snapTargets(
+  clips: Clip[],
+  tracks: AudioTrack[],
+  excludeId: string,
+  playheadMs: number,
+): number[] {
+  const targets = [0, Math.max(0, Math.round(playheadMs))];
+  for (const clip of clips) {
+    if (clip.id === excludeId) continue;
+    targets.push(clip.startMs, clip.startMs + clip.durationMs);
+  }
+  for (const track of tracks) {
+    if (track.id === excludeId) continue;
+    targets.push(track.startMs, track.startMs + track.durationMs);
+  }
+  return targets;
+}
+
+/**
+ * The snapping aid: pull `startMs` onto a nearby target if either edge of the dragged
+ * block is within `toleranceMs` of one, otherwise leave the drag exactly where it is.
+ * Placement is free — this only nudges the last few pixels, and only when it is switched on.
+ */
+export function snapStartMs(
+  startMs: number,
+  durationMs: number,
+  targets: number[],
+  toleranceMs: number,
+): number {
+  if (!(toleranceMs > 0)) return startMs;
+
+  let best = startMs;
+  let bestDistance = toleranceMs;
+  for (const target of targets) {
+    // Either edge may be the one that lines up: the head on the target, or the tail on it.
+    for (const candidate of [target, target - durationMs]) {
+      if (candidate < 0) continue;
+      const distance = Math.abs(candidate - startMs);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = candidate;
+      }
+    }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------- audio tracks
@@ -452,7 +600,7 @@ export function audioEndMs(tracks: AudioTrack[]): number {
  * Playback and the ruler both use this, so a music bed past the last clip is still heard.
  */
 export function timelineEndMs(clips: Clip[], tracks: AudioTrack[]): number {
-  return Math.max(totalDurationMs(clips), audioEndMs(tracks));
+  return Math.max(trackEndMs(clips), audioEndMs(tracks));
 }
 
 /**
@@ -460,7 +608,8 @@ export function timelineEndMs(clips: Clip[], tracks: AudioTrack[]): number {
  *
  * The photo is split into what came before the segment, the generated video, and what came
  * after — so a segment covering the whole photo replaces it outright, and a segment in the
- * middle leaves the untouched parts alone with their own keyframes.
+ * middle leaves the untouched parts alone with their own keyframes. The three parts fill
+ * exactly the span the photo held, so nothing else on the track moves.
  */
 export function replaceSegment(
   clips: Clip[],
@@ -482,6 +631,7 @@ export function replaceSegment(
     replacement.push({
       ...clip,
       id: makeId('clip'),
+      startMs: clip.startMs,
       durationMs: segment.startMs,
       keyframes: sortKeyframes(clip.keyframes.filter((k) => k.timeMs < segment.startMs)),
       prompts: pickPrompts(clip, (k) => k.timeMs < segment.startMs),
@@ -493,6 +643,7 @@ export function replaceSegment(
     assetId: generated.assetId,
     kind: 'video',
     name: generated.name,
+    startMs: clip.startMs + segment.startMs,
     durationMs: segment.durationMs,
     trimStartMs: 0,
     keyframes: [],
@@ -504,6 +655,7 @@ export function replaceSegment(
     replacement.push({
       ...clip,
       id: makeId('clip'),
+      startMs: clip.startMs + segment.endMs,
       durationMs: clip.durationMs - segment.endMs,
       keyframes: sortKeyframes(
         clip.keyframes
@@ -527,31 +679,30 @@ function pickPrompts(clip: Clip, keep: (k: Keyframe) => boolean): Record<string,
 
 // ---------------------------------------------------------------- cuts & transitions
 
-/** A photo→photo boundary on the track — the place a generated transition can fill. */
+/** A photo→photo cut: two photos whose edges touch — the place a transition can fill. */
 export interface Cut {
   /** The photo on the left; the transition lands right after it. */
   afterClipId: string;
   /** The photo on the right. */
   beforeClipId: string;
-  /** Where the boundary sits on the timeline. */
+  /** Where the shared edge sits on the timeline. */
   timeMs: number;
-  /** The insertion index a transition clip would take (the right photo's index). */
-  index: number;
 }
 
 /**
- * Every boundary between two adjacent photos. Only photos: a generated transition needs a
- * still on each side, so cuts touching video (including a landed transition, which breaks
- * its own pair into photo|video and video|photo) simply are not offered.
+ * Every cut between two photos: consecutive in time order AND touching — a gap is black
+ * film the user placed on purpose, not a cut. Only photos: a generated transition needs a
+ * still on each side, so boundaries touching video (including a landed transition, which
+ * breaks its own pair into photo|video and video|photo) simply are not offered.
  */
 export function photoCuts(clips: Clip[]): Cut[] {
   const placed = layout(clips);
   const cuts: Cut[] = [];
   for (let i = 0; i < placed.length - 1; i += 1) {
-    const a = placed[i].clip;
-    const b = placed[i + 1].clip;
-    if (a.kind === 'photo' && b.kind === 'photo') {
-      cuts.push({ afterClipId: a.id, beforeClipId: b.id, timeMs: placed[i].endMs, index: i + 1 });
+    const a = placed[i];
+    const b = placed[i + 1];
+    if (a.clip.kind === 'photo' && b.clip.kind === 'photo' && a.endMs === b.startMs) {
+      cuts.push({ afterClipId: a.clip.id, beforeClipId: b.clip.id, timeMs: a.endMs });
     }
   }
   return cuts;
@@ -567,12 +718,13 @@ export interface GeneratedTransition {
   to: TransitionSource;
 }
 
-function transitionClip(id: string, generated: GeneratedTransition): Clip {
+function transitionClip(id: string, startMs: number, generated: GeneratedTransition): Clip {
   return {
     id,
     assetId: generated.assetId,
     kind: 'video',
     name: generated.name,
+    startMs,
     durationMs: Math.max(MIN_CLIP_DURATION_MS, Math.round(generated.durationMs)),
     trimStartMs: 0,
     keyframes: [],
@@ -583,9 +735,11 @@ function transitionClip(id: string, generated: GeneratedTransition): Clip {
 }
 
 /**
- * Put a finished transition into its cut. The pair must still sit adjacent and in order —
- * the timeline may have been edited while Higgsfield rendered — otherwise this is an
- * identity no-op and the caller explains rather than inserting the clip somewhere wrong.
+ * Put a finished transition into its cut. The pair must still form a cut — the timeline
+ * may have been edited while Higgsfield rendered — otherwise this is an identity no-op and
+ * the caller explains rather than inserting the clip somewhere wrong. Everything from the
+ * boundary onwards ripples right to make room, exactly as an import does, so gaps further
+ * along keep their shape.
  */
 export function insertTransitionClip(
   clips: Clip[],
@@ -593,24 +747,58 @@ export function insertTransitionClip(
   beforeClipId: string,
   generated: GeneratedTransition,
 ): Clip[] {
-  const at = clips.findIndex((c) => c.id === afterClipId);
-  if (at === -1 || clips[at + 1]?.id !== beforeClipId) return clips;
-  return [...clips.slice(0, at + 1), transitionClip(makeId('clip'), generated), ...clips.slice(at + 1)];
+  const cut = photoCuts(clips).find(
+    (c) => c.afterClipId === afterClipId && c.beforeClipId === beforeClipId,
+  );
+  if (!cut) return clips;
+  const clip = transitionClip(makeId('clip'), cut.timeMs, generated);
+  return sortClips([
+    ...clips.map((c) => (c.startMs >= cut.timeMs ? { ...c, startMs: c.startMs + clip.durationMs } : c)),
+    clip,
+  ]);
 }
 
 /**
- * A regeneration swaps the finished render over the existing transition clip, in place and
- * keeping its id so the selection stays on it. Identity no-op when the clip is gone or is
- * not a transition.
+ * A regeneration swaps the finished render over the existing transition clip, keeping its
+ * id (so the selection stays on it) and its start; a change of length ripples everything
+ * after its old end by the difference, so what follows keeps its spacing. Identity no-op
+ * when the clip is gone or is not a transition.
  */
 export function replaceTransitionClip(
   clips: Clip[],
   transitionClipId: string,
   generated: GeneratedTransition,
 ): Clip[] {
-  const at = clips.findIndex((c) => c.id === transitionClipId);
-  if (at === -1 || !clips[at].transition) return clips;
-  return [...clips.slice(0, at), transitionClip(transitionClipId, generated), ...clips.slice(at + 1)];
+  const old = clips.find((c) => c.id === transitionClipId);
+  if (!old?.transition) return clips;
+  const next = transitionClip(old.id, old.startMs, generated);
+  const delta = next.durationMs - old.durationMs;
+  const oldEnd = old.startMs + old.durationMs;
+  return sortClips(
+    clips.map((c) => {
+      if (c.id === old.id) return next;
+      return delta !== 0 && c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
+    }),
+  );
+}
+
+/**
+ * Correct a transition's provisional length once the real file has been probed, rippling
+ * everything after its old end by the difference so the reel stays exactly as arranged.
+ */
+export function setTransitionDuration(clips: Clip[], clipId: string, durationMs: number): Clip[] {
+  const clip = clips.find((c) => c.id === clipId);
+  if (!clip?.transition) return clips;
+  const next = Math.max(MIN_CLIP_DURATION_MS, Math.round(durationMs));
+  const delta = next - clip.durationMs;
+  if (delta === 0) return clips;
+  const oldEnd = clip.startMs + clip.durationMs;
+  return sortClips(
+    clips.map((c) => {
+      if (c.id === clipId) return { ...c, durationMs: next };
+      return c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
+    }),
+  );
 }
 
 export type TransitionStaleness = 'fresh' | 'stale' | 'orphaned';
@@ -635,12 +823,13 @@ function framingDrifted(a: Transform2D, b: Transform2D): boolean {
  * so there is nothing to regenerate between. Never acts — the user decides what to spend.
  */
 export function transitionStaleness(clips: Clip[], transitionClipId: string): TransitionStaleness {
-  const at = clips.findIndex((c) => c.id === transitionClipId);
-  const clip = at === -1 ? undefined : clips[at];
+  const placed = layout(clips);
+  const at = placed.findIndex((p) => p.clip.id === transitionClipId);
+  const clip = at === -1 ? undefined : placed[at].clip;
   if (!clip?.transition) return 'orphaned';
 
-  const left = clips[at - 1];
-  const right = clips[at + 1];
+  const left = placed[at - 1]?.clip;
+  const right = placed[at + 1]?.clip;
   if (!left || !right || left.kind !== 'photo' || right.kind !== 'photo') return 'orphaned';
 
   const { from, to } = clip.transition;

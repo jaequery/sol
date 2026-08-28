@@ -1,6 +1,7 @@
 /**
- * The editor's data model. One visual track, clips laid end to end in order, plus any
- * number of audio tracks — each its own lane below, holding one freely-positioned clip.
+ * The editor's data model. One visual track whose clips are placed by time — free to sit
+ * anywhere, with gaps between them, but never overlapping, because one track means no
+ * compositing. Plus any number of audio tracks, each its own lane below holding one sound.
  */
 
 export type MediaKind = 'photo' | 'video' | 'audio';
@@ -27,9 +28,9 @@ export interface MediaAsset {
 }
 
 /**
- * One audio lane: a single sound placed somewhere on the timeline. Unlike the visual
- * track, whose clips are gapless and positioned by index, an audio track starts wherever
- * the user puts it — music rarely wants to begin exactly where a clip boundary falls.
+ * One audio lane: a single sound placed somewhere on the timeline. It starts wherever the
+ * user puts it, exactly like a clip on the visual track — music rarely wants to begin
+ * where a clip boundary happens to fall.
  */
 export interface AudioTrack {
   id: string;
@@ -119,6 +120,11 @@ export interface Clip {
   assetId: string;
   kind: ClipKind;
   name: string;
+  /**
+   * Where on the timeline the clip starts. Clips may leave gaps between them — a gap is
+   * black in the preview and in the export — but two of them never overlap.
+   */
+  startMs: number;
   durationMs: number;
   /** Videos only: where playback starts inside the source. */
   trimStartMs: number;

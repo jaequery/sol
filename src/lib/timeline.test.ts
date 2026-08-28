@@ -5,19 +5,20 @@ import {
   audioTrack,
   clipAt,
   cssTransform,
-  dropIndexFor,
+  endOfPrevious,
   findSegment,
   formatDuration,
   formatTimecode,
   insertClips,
   insertIndexAt,
   insertIndexAtTime,
-  insertTransitionClip,
   layout,
   moveAudio,
-  moveClip,
   moveKeyframe,
+  packClips,
   photoClip,
+  placeClip,
+  insertTransitionClip,
   photoCuts,
   removeKeyframe,
   replaceSegment,
@@ -25,11 +26,15 @@ import {
   resetIds,
   resizeAudio,
   resizeClip,
+  resizeClipInList,
   segmentsOf,
   setPrompt,
+  snapStartMs,
+  snapTargets,
   startOfIndex,
+  setTransitionDuration,
   timelineEndMs,
-  totalDurationMs,
+  trackEndMs,
   transformAt,
   transitionStaleness,
   truncateName,
@@ -47,25 +52,46 @@ import {
 
 beforeEach(resetIds);
 
-function photo(durationMs = 6000): Clip {
-  return photoClip({ id: 'asset_photo', name: 'sunset.jpg' }, durationMs);
+function photo(durationMs = 6000, startMs = 0): Clip {
+  return photoClip({ id: 'asset_photo', name: 'sunset.jpg' }, durationMs, startMs);
+}
+
+function video(name: string, durationMs: number, startMs = 0): Clip {
+  return videoClip({ id: `asset_${name}`, name }, durationMs, startMs);
 }
 
 describe('layout', () => {
-  it('lays clips end to end on a single track', () => {
-    const clips = [photo(6000), videoClip({ id: 'a', name: 'surf.mp4' }, 9000)];
+  it('lays a fresh import end to end', () => {
+    const clips = packClips([photo(6000), video('surf.mp4', 9000)]);
     expect(layout(clips).map((p) => [p.startMs, p.endMs])).toEqual([
       [0, 6000],
       [6000, 15000],
     ]);
-    expect(totalDurationMs(clips)).toBe(15000);
+    expect(trackEndMs(clips)).toBe(15000);
+  });
+
+  it('places each clip at the time it carries, gaps and all, in time order', () => {
+    const clips = [video('surf.mp4', 9000, 8000), photo(6000, 1000)];
+    expect(layout(clips).map((p) => [p.clip.name, p.startMs, p.endMs])).toEqual([
+      ['sunset.jpg', 1000, 7000],
+      ['surf.mp4', 8000, 17000],
+    ]);
+    expect(trackEndMs(clips)).toBe(17000);
   });
 
   it('finds the clip under the playhead and the time within it', () => {
-    const clips = [photo(6000), videoClip({ id: 'a', name: 'surf.mp4' }, 9000)];
+    const clips = packClips([photo(6000), video('surf.mp4', 9000)]);
     expect(clipAt(clips, 0)?.placed.clip.name).toBe('sunset.jpg');
     expect(clipAt(clips, 7000)?.placed.clip.name).toBe('surf.mp4');
     expect(clipAt(clips, 7000)?.localMs).toBe(1000);
+  });
+
+  it('reads a gap as nothing at all — which the preview and the export draw black', () => {
+    const clips = [photo(2000, 1000), video('surf.mp4', 2000, 6000)];
+    expect(clipAt(clips, 500)).toBeNull();
+    expect(clipAt(clips, 4000)).toBeNull();
+    expect(clipAt(clips, 1500)?.placed.clip.name).toBe('sunset.jpg');
+    expect(clipAt(clips, 6500)?.placed.clip.name).toBe('surf.mp4');
   });
 
   it('holds on the last frame at the very end instead of going blank', () => {
@@ -181,15 +207,28 @@ describe('transformAt', () => {
 });
 
 describe('insertion', () => {
-  it('inserts dropped clips at an index', () => {
-    const a = photo(1000);
-    const b = photo(2000);
-    const c = photo(3000);
-    expect(insertClips([a, c], 1, [b]).map((x) => x.durationMs)).toEqual([1000, 2000, 3000]);
+  it('inserts dropped clips at a boundary and ripples what was there along', () => {
+    const [a, c] = packClips([photo(1000), photo(3000)]);
+    const inserted = insertClips([a, c], 1, [photo(2000)]);
+    expect(inserted.map((x) => [x.durationMs, x.startMs])).toEqual([
+      [1000, 0],
+      [2000, 1000],
+      [3000, 3000],
+    ]);
+  });
+
+  it('lands at the end of the track, past any gap, when there is no boundary after it', () => {
+    const clips = [photo(1000, 4000)];
+    expect(insertClips(clips, 1, [photo(2000)]).map((x) => x.startMs)).toEqual([4000, 5000]);
+  });
+
+  it('leaves the clips in front of the insertion — and their gaps — where they are', () => {
+    const clips = [photo(1000, 0), photo(1000, 5000)];
+    expect(insertClips(clips, 1, [photo(2000)]).map((x) => x.startMs)).toEqual([0, 5000, 7000]);
   });
 
   it('picks the insertion point from where the drop landed', () => {
-    const clips = [photo(6000), videoClip({ id: 'v', name: 'v.mp4' }, 6000)];
+    const clips = packClips([photo(6000), video('v.mp4', 6000)]);
     expect(insertIndexAt(clips, 0)).toBe(0);
     expect(insertIndexAt(clips, 0.1)).toBe(0);
     expect(insertIndexAt(clips, 0.4)).toBe(1);
@@ -219,7 +258,7 @@ describe('replaceSegment', () => {
       ['video', 3200],
       ['photo', 1800],
     ]);
-    expect(totalDurationMs(result)).toBe(totalDurationMs([clip]));
+    expect(trackEndMs(result)).toBe(trackEndMs([clip]));
   });
 
   it('marks the generated clip as AI and remembers its prompt and source', () => {
@@ -299,48 +338,72 @@ describe('formatting', () => {
   });
 });
 
-describe('reordering a clip', () => {
-  const three = () => [
-    photoClip({ id: 'a', name: 'a.jpg' }, 1000),
-    photoClip({ id: 'b', name: 'b.jpg' }, 2000),
-    photoClip({ id: 'c', name: 'c.jpg' }, 3000),
-  ];
+describe('placing a clip', () => {
+  const three = () =>
+    packClips([
+      photoClip({ id: 'a', name: 'a.jpg' }, 1000),
+      photoClip({ id: 'b', name: 'b.jpg' }, 2000),
+      photoClip({ id: 'c', name: 'c.jpg' }, 3000),
+    ]);
 
-  it('drops on the boundary nearest where the clip was let go', () => {
+  it('drops the clip exactly where it was let go, leaving a gap behind it', () => {
     const clips = three();
-    const c = clips[2].id;
-    // Ignoring the dragged clip, the rest is a(0–1000) then b(1000–3000).
-    expect(dropIndexFor(clips, c, 0)).toBe(0);
-    expect(dropIndexFor(clips, c, 900)).toBe(1);
-    expect(dropIndexFor(clips, c, 2900)).toBe(2);
+    const moved = placeClip(clips, clips[2].id, 20_000);
+    expect(moved.map((x) => [x.name, x.startMs])).toEqual([
+      ['a.jpg', 0],
+      ['b.jpg', 1000],
+      ['c.jpg', 20_000],
+    ]);
+    // Nothing else moved: the hole the clip left is a hole.
+    expect(trackEndMs(moved)).toBe(23_000);
   });
 
-  it('moves the clip to that index and leaves the others in order', () => {
+  it('never starts before the timeline does', () => {
     const clips = three();
-    const moved = moveClip(clips, clips[2].id, 0);
-    expect(moved.map((x) => x.name)).toEqual(['c.jpg', 'a.jpg', 'b.jpg']);
-    // Only the order changed; the track is the same length.
-    expect(totalDurationMs(moved)).toBe(totalDurationMs(clips));
+    expect(placeClip(clips, clips[2].id, -9000)[0]).toMatchObject({ name: 'c.jpg', startMs: 0 });
+  });
+
+  it('keeps a clip dropped near another exactly where it landed, not against its edge', () => {
+    const clips = three();
+    // 400 ms clear of the end of the track — close, but placement is free, so it stays there.
+    const moved = placeClip(clips, clips[0].id, 6400);
+    expect(moved.map((x) => [x.name, x.startMs])).toEqual([
+      ['b.jpg', 1000],
+      ['c.jpg', 3000],
+      ['a.jpg', 6400],
+    ]);
+  });
+
+  it('pushes the clip it lands on out of the way, since one track cannot stack two', () => {
+    const clips = three();
+    // c (3s) dropped over the top of a and b, which slide right just far enough to clear it.
+    const moved = placeClip(clips, clips[2].id, 0);
+    expect(moved.map((x) => [x.name, x.startMs])).toEqual([
+      ['c.jpg', 0],
+      ['a.jpg', 3000],
+      ['b.jpg', 4000],
+    ]);
+  });
+
+  it('slides only what it has to, and never closes a gap it did not make', () => {
+    const clips = [
+      photoClip({ id: 'a', name: 'a.jpg' }, 1000, 0),
+      photoClip({ id: 'b', name: 'b.jpg' }, 1000, 5000),
+      photoClip({ id: 'c', name: 'c.jpg' }, 1000, 20_000),
+    ];
+    const moved = placeClip(clips, clips[0].id, 5500);
+    expect(moved.map((x) => [x.name, x.startMs])).toEqual([
+      ['a.jpg', 5500],
+      ['b.jpg', 6500],
+      // Far enough away that the push never reached it.
+      ['c.jpg', 20_000],
+    ]);
   });
 
   it('is a no-op when the clip is put back where it came from', () => {
     const clips = three();
-    expect(moveClip(clips, clips[1].id, 1)).toBe(clips);
-    expect(moveClip(clips, 'not-a-clip', 0)).toBe(clips);
-  });
-
-  it('clamps a drag past either end onto the end', () => {
-    const clips = three();
-    expect(moveClip(clips, clips[0].id, 99).map((x) => x.name)).toEqual([
-      'b.jpg',
-      'c.jpg',
-      'a.jpg',
-    ]);
-    expect(moveClip(clips, clips[2].id, -5).map((x) => x.name)).toEqual([
-      'c.jpg',
-      'a.jpg',
-      'b.jpg',
-    ]);
+    expect(placeClip(clips, clips[1].id, 1000)).toBe(clips);
+    expect(placeClip(clips, 'not-a-clip', 0)).toBe(clips);
   });
 
   it('agrees with the file-drop index, which is the same maths over a ratio', () => {
@@ -351,6 +414,42 @@ describe('reordering a clip', () => {
   });
 });
 
+describe('snapping', () => {
+  const clips = packClips([photo(6000), video('surf.mp4', 4000)]);
+  const song = audioTrack({ id: 'asset_song', name: 'theme.mp3' }, 12_000, 3000);
+
+  it('offers every edge on the timeline, 0:00 and the playhead — but not the dragged clip', () => {
+    const targets = snapTargets(clips, [song], clips[0].id, 2500);
+    expect(targets).toContain(0);
+    expect(targets).toContain(2500);
+    expect(targets).toEqual(expect.arrayContaining([6000, 10_000, 12_000, 15_000]));
+    // The clip being dragged is not a target, or it would snap back to where it started.
+    expect(targets.filter((t) => t === 0)).toHaveLength(1);
+  });
+
+  it('pulls either edge of the dragged clip onto a nearby target', () => {
+    const targets = snapTargets(clips, [], clips[1].id, 0);
+    // Head 40 ms past the photo's end: near enough, so it lands flush against it.
+    expect(snapStartMs(6040, 4000, targets, 100)).toBe(6000);
+    // Tail 30 ms short of it: the *end* is what lines up, so the start comes back by 4000.
+    expect(snapStartMs(1970, 4000, targets, 100)).toBe(2000);
+  });
+
+  it('leaves a drop that is not near anything exactly where it is', () => {
+    const targets = snapTargets(clips, [], clips[1].id, 0);
+    expect(snapStartMs(9000, 4000, targets, 100)).toBe(9000);
+    // And with the aid switched off, nothing is ever near anything.
+    expect(snapStartMs(6040, 4000, targets, 0)).toBe(6040);
+  });
+
+  it('never snaps a clip to before the timeline starts', () => {
+    expect(snapStartMs(20, 4000, [0], 100)).toBe(0);
+    // Lining this clip's *tail* up with 900 would put its head at -100, so it is not offered
+    // and the drop stays where it is.
+    expect(snapStartMs(50, 1000, [900], 200)).toBe(50);
+  });
+});
+
 describe('resizing a clip', () => {
   it('changes a photo\u2019s duration from the tail', () => {
     const clip = resizeClip(photo(6000), 'end', 2500);
@@ -358,10 +457,10 @@ describe('resizing a clip', () => {
     expect(resizeClip(clip, 'end', -3000).durationMs).toBe(5500);
   });
 
-  it('trims a photo from the head, which shortens it without moving the tail', () => {
+  it('trims a photo from the head, which shortens it and leaves its tail where it was', () => {
     const before = photo(6000);
     const after = resizeClip(before, 'start', 1500);
-    expect(after.durationMs).toBe(4500);
+    expect([after.startMs, after.durationMs]).toEqual([1500, 4500]);
     // Photos have no in-point to move.
     expect(after.trimStartMs).toBe(0);
   });
@@ -381,18 +480,30 @@ describe('resizing a clip', () => {
   });
 
   it('slides a photo\u2019s keyframes with the content when the head moves', () => {
-    let clip = photo(6000);
+    // Sitting at 4 s, so there is room in front of it to pull the head back into.
+    let clip = photo(6000, 4000);
     clip = addKeyframe(clip, 1000);
     clip = addKeyframe(clip, 5000);
 
     const trimmed = resizeClip(clip, 'start', 2000);
-    expect(trimmed.durationMs).toBe(4000);
+    expect([trimmed.startMs, trimmed.durationMs]).toEqual([6000, 4000]);
     // 1000 fell off the front and pinned to 0; 5000 travelled to 3000.
     expect(trimmed.keyframes.map((k) => k.timeMs)).toEqual([0, 3000]);
 
     const grown = resizeClip(clip, 'start', -1000);
-    expect(grown.durationMs).toBe(7000);
+    expect([grown.startMs, grown.durationMs]).toEqual([3000, 7000]);
     expect(grown.keyframes.map((k) => k.timeMs)).toEqual([2000, 6000]);
+  });
+
+  it('cannot pull a head back past 0:00, or past the clip in front of it', () => {
+    // Against the start of the timeline there is nothing in front to reveal.
+    const first = photo(6000);
+    expect(resizeClip(first, 'start', -2000)).toBe(first);
+
+    // And with a clip ending at 3000 in front of it, the head stops there.
+    const clip = photo(6000, 4000);
+    const stopped = resizeClip(clip, 'start', -5000, undefined, 3000);
+    expect([stopped.startMs, stopped.durationMs]).toEqual([3000, 7000]);
   });
 
   it('collapses keyframes that come to rest on the same instant, keeping the last', () => {
@@ -443,7 +554,9 @@ describe('resizing a clip', () => {
     expect(resizeClip(clip, 'end', MAX_PHOTO_DURATION_MS * 2).durationMs).toBe(
       MAX_PHOTO_DURATION_MS,
     );
-    expect(resizeClip(clip, 'start', -MAX_PHOTO_DURATION_MS * 2).durationMs).toBe(
+    // Pulled back from an hour in, the cap is still what stops it.
+    const late = photo(6000, 60 * 60 * 1000);
+    expect(resizeClip(late, 'start', -MAX_PHOTO_DURATION_MS * 2).durationMs).toBe(
       MAX_PHOTO_DURATION_MS,
     );
   });
@@ -456,38 +569,89 @@ describe('resizing a clip', () => {
   });
 });
 
+describe('resizing a clip on the track', () => {
+  const two = () => packClips([photo(6000), video('surf.mp4', 4000)]);
+
+  it('pushes the clip behind it along when a tail grows into it', () => {
+    const clips = two();
+    const grown = resizeClipInList(clips, clips[0].id, 'end', 2000);
+    expect(grown.map((c) => [c.name, c.startMs, c.durationMs])).toEqual([
+      ['sunset.jpg', 0, 8000],
+      ['surf.mp4', 8000, 4000],
+    ]);
+  });
+
+  it('leaves a gap rather than dragging anything back when a tail shrinks', () => {
+    const clips = two();
+    const shrunk = resizeClipInList(clips, clips[0].id, 'end', -2000);
+    expect(shrunk.map((c) => [c.name, c.startMs, c.durationMs])).toEqual([
+      ['sunset.jpg', 0, 4000],
+      ['surf.mp4', 6000, 4000],
+    ]);
+  });
+
+  it('stops a head at the clip in front of it instead of shoving it', () => {
+    const clips = two();
+    const trimmed = resizeClipInList(clips, clips[1].id, 'start', -3000, 9000);
+    expect(trimmed.map((c) => [c.name, c.startMs, c.durationMs])).toEqual([
+      ['sunset.jpg', 0, 6000],
+      ['surf.mp4', 6000, 4000],
+    ]);
+  });
+
+  it('knows where the clip in front of each one ends', () => {
+    const clips = [photo(1000, 0), photo(1000, 5000), photo(1000, 9000)];
+    expect(endOfPrevious(clips, clips[0].id)).toBe(0);
+    expect(endOfPrevious(clips, clips[1].id)).toBe(1000);
+    expect(endOfPrevious(clips, clips[2].id)).toBe(6000);
+    expect(endOfPrevious(clips, 'not-a-clip')).toBe(0);
+  });
+
+  it('is the same list back when nothing could move', () => {
+    const clips = two();
+    expect(resizeClipInList(clips, 'not-a-clip', 'end', 1000)).toBe(clips);
+    expect(resizeClipInList(clips, clips[0].id, 'end', 0)).toBe(clips);
+  });
+});
+
 describe('cuts & transitions', () => {
+  /** Two photos whose edges touch: a(0–2000) then b(2000–5000). */
   function pair(): [Clip, Clip] {
     return [
-      photoClip({ id: 'asset_a', name: 'a.jpg' }, 2000),
-      photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000),
+      photoClip({ id: 'asset_a', name: 'a.jpg' }, 2000, 0),
+      photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000, 2000),
     ];
   }
 
   /** What a finished render between `a` and `b` looks like when it lands. */
-  function generatedBetween(a: Clip, b: Clip, assetId = 'asset_tr'): GeneratedTransition {
+  function generatedBetween(a: Clip, b: Clip, assetId = 'asset_tr', durationMs = 5000): GeneratedTransition {
     return {
       assetId,
       name: 'ai-tr.mp4',
       prompt: 'smooth cinematic motion',
-      durationMs: 5000,
+      durationMs,
       from: { clipId: a.id, assetId: a.assetId, transform: transformAt(a, a.durationMs) },
       to: { clipId: b.id, assetId: b.assetId, transform: transformAt(b, 0) },
     };
   }
 
   describe('photoCuts', () => {
-    it('offers one cut per adjacent photo pair, and none touching video', () => {
+    it('offers one cut per touching photo pair, and none touching video', () => {
       const [a, b] = pair();
-      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 4000);
-      const c = photoClip({ id: 'asset_c', name: 'c.jpg' }, 1000);
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 4000, 5000);
+      const c = photoClip({ id: 'asset_c', name: 'c.jpg' }, 1000, 9000);
 
       expect(photoCuts([a, b, v, c])).toEqual([
-        { afterClipId: a.id, beforeClipId: b.id, timeMs: 2000, index: 1 },
+        { afterClipId: a.id, beforeClipId: b.id, timeMs: 2000 },
       ]);
       expect(photoCuts([a])).toEqual([]);
       expect(photoCuts([])).toEqual([]);
-      expect(photoCuts([a, v, b])).toEqual([]);
+    });
+
+    it('a gap between two photos is black film the user chose, not a cut', () => {
+      const a = photoClip({ id: 'asset_a', name: 'a.jpg' }, 2000, 0);
+      const b = photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000, 2500);
+      expect(photoCuts([a, b])).toEqual([]);
     });
 
     it('a landed transition breaks its own pair, so its chip disappears structurally', () => {
@@ -499,17 +663,24 @@ describe('cuts & transitions', () => {
 
     it('two halves of one split photo still make a cut — same image on both sides', () => {
       const [a] = pair();
-      const half = { ...a, id: 'clip_half2' };
+      const half = { ...a, id: 'clip_half2', startMs: a.durationMs };
       expect(photoCuts([a, half])).toHaveLength(1);
     });
   });
 
   describe('insertTransitionClip', () => {
-    it('inserts a fully-marked video clip between the pair', () => {
+    it('inserts a fully-marked video clip at the cut, rippling what follows right', () => {
       const [a, b] = pair();
-      const result = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
+      // A later photo with a deliberate 1s gap after b — the gap must survive the ripple.
+      const d = photoClip({ id: 'asset_d', name: 'd.jpg' }, 1000, 6000);
+      const result = insertTransitionClip([a, b, d], a.id, b.id, generatedBetween(a, b));
 
-      expect(result.map((c) => c.kind)).toEqual(['photo', 'video', 'photo']);
+      expect(result.map((c) => [c.kind, c.startMs])).toEqual([
+        ['photo', 0],
+        ['video', 2000],
+        ['photo', 7000],
+        ['photo', 11_000],
+      ]);
       const t = result[1];
       expect(t.assetId).toBe('asset_tr');
       expect(t.durationMs).toBe(5000);
@@ -520,17 +691,17 @@ describe('cuts & transitions', () => {
         from: { clipId: a.id, assetId: 'asset_a' },
         to: { clipId: b.id, assetId: 'asset_b' },
       });
-      expect(totalDurationMs(result)).toBe(10_000);
     });
 
-    it('is an identity no-op when the pair is gone, separated, or reversed', () => {
+    it('is an identity no-op when the pair no longer forms a cut', () => {
       const [a, b] = pair();
-      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 4000);
+      const apart = { ...b, startMs: 2500 };
       const generated = generatedBetween(a, b);
 
-      expect(insertTransitionClip([a, v, b], a.id, b.id, generated)).toEqual([a, v, b]);
-      expect(insertTransitionClip([b, a], a.id, b.id, generated)).toEqual([b, a]);
+      expect(insertTransitionClip([a, apart], a.id, b.id, generated)).toEqual([a, apart]);
       expect(insertTransitionClip([b], a.id, b.id, generated)).toEqual([b]);
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 3000, 2000);
+      expect(insertTransitionClip([a, v], a.id, v.id, generated)).toEqual([a, v]);
     });
 
     it('never inserts a clip too short to grab', () => {
@@ -544,7 +715,7 @@ describe('cuts & transitions', () => {
   });
 
   describe('replaceTransitionClip', () => {
-    it('swaps a regenerated render over the old one, in place and keeping its id', () => {
+    it('swaps a regenerated render over the old one, keeping its id and start', () => {
       const [a, b] = pair();
       const clips = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
       const old = clips[1];
@@ -552,7 +723,17 @@ describe('cuts & transitions', () => {
       const result = replaceTransitionClip(clips, old.id, generatedBetween(a, b, 'asset_tr2'));
       expect(result.map((c) => c.id)).toEqual(clips.map((c) => c.id));
       expect(result[1].assetId).toBe('asset_tr2');
+      expect(result[1].startMs).toBe(old.startMs);
       expect(result[1].transition).toBeTruthy();
+    });
+
+    it('ripples what follows by the length difference, keeping its spacing', () => {
+      const [a, b] = pair();
+      const clips = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
+      const old = clips[1];
+
+      const shorter = replaceTransitionClip(clips, old.id, generatedBetween(a, b, 'asset_tr2', 3000));
+      expect(shorter.map((c) => c.startMs)).toEqual([0, 2000, 5000]);
     });
 
     it('is an identity no-op for an unknown clip or one that is not a transition', () => {
@@ -563,11 +744,25 @@ describe('cuts & transitions', () => {
     });
   });
 
+  describe('setTransitionDuration', () => {
+    it('corrects the provisional length and ripples what follows along', () => {
+      const [a, b] = pair();
+      const clips = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
+      const t = clips[1];
+
+      const corrected = setTransitionDuration(clips, t.id, 3400);
+      expect(corrected[1].durationMs).toBe(3400);
+      expect(corrected.map((c) => c.startMs)).toEqual([0, 2000, 5400]);
+      expect(setTransitionDuration(clips, t.id, 5000)).toBe(clips);
+      expect(setTransitionDuration(clips, a.id, 3400)).toBe(clips);
+    });
+  });
+
   describe('transitionStaleness', () => {
     function landed(): { clips: Clip[]; a: Clip; b: Clip; t: Clip } {
       const [a, b] = pair();
       const clips = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
-      return { clips, a, b, t: clips[1] };
+      return { clips, a, b: clips[2], t: clips[1] };
     }
 
     it('is fresh while the pair and their framings match what was rendered', () => {
@@ -577,7 +772,7 @@ describe('cuts & transitions', () => {
 
     it('goes stale when a neighbour is a different clip or a different asset', () => {
       const { clips, b, t } = landed();
-      const other = photoClip({ id: 'asset_c', name: 'c.jpg' }, 1000);
+      const other = photoClip({ id: 'asset_c', name: 'c.jpg' }, 1000, 0);
       expect(transitionStaleness([other, t, b], t.id)).toBe('stale');
 
       const swappedAsset = { ...clips[0], assetId: 'asset_other' };
@@ -597,7 +792,7 @@ describe('cuts & transitions', () => {
 
     it('is orphaned when a neighbour is missing or not a photo', () => {
       const { a, b, t } = landed();
-      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 4000);
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 1500, 0);
       expect(transitionStaleness([t, b], t.id)).toBe('orphaned');
       expect(transitionStaleness([a, t], t.id)).toBe('orphaned');
       expect(transitionStaleness([v, t, b], t.id)).toBe('orphaned');

@@ -127,6 +127,7 @@ async fn exports_a_keyframed_photo_and_a_video_into_one_mp4() {
         clips: vec![
             ExportClip {
                 name: "photo.jpg".into(),
+                start_ms: 0,
                 duration_ms: 2000,
                 source: Source::Photo {
                     path: photo,
@@ -154,6 +155,7 @@ async fn exports_a_keyframed_photo_and_a_video_into_one_mp4() {
             },
             ExportClip {
                 name: "clip.mp4".into(),
+                start_ms: 2000,
                 duration_ms: 2000,
                 source: Source::Video {
                     path: video,
@@ -243,6 +245,7 @@ async fn exports_a_photo_with_no_keyframes_at_all() {
         fps: 24,
         clips: vec![ExportClip {
             name: "photo.jpg".into(),
+            start_ms: 0,
             duration_ms: 1000,
             source: Source::Photo {
                 path: photo,
@@ -299,6 +302,7 @@ async fn mixes_an_audio_lane_into_the_export_without_stretching_the_film() {
         fps: 24,
         clips: vec![ExportClip {
             name: "photo.jpg".into(),
+            start_ms: 0,
             duration_ms: 2000,
             source: Source::Photo {
                 path: photo,
@@ -348,6 +352,7 @@ async fn a_missing_source_file_is_named_in_the_error() {
     let spec = ExportSpec {
         clips: vec![ExportClip {
             name: "gone.jpg".into(),
+            start_ms: 0,
             duration_ms: 1000,
             source: Source::Photo {
                 path: dir.join("nope.jpg"),
@@ -367,5 +372,66 @@ async fn a_missing_source_file_is_named_in_the_error() {
         !dir.join("out.mp4").exists(),
         "nothing half-written is left behind"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_gap_between_two_clips_becomes_black_film_of_its_own() {
+    if !ffmpeg_present() {
+        eprintln!("skipping: ffmpeg is not installed");
+        return;
+    }
+
+    let dir = workdir("gap");
+    let photo = make_photo(&dir);
+    let out = dir.join("gapped.mp4");
+
+    // 1s photo, a 1s hole, then the same photo again: a 3s film, not a 2s one.
+    let spec = ExportSpec {
+        width: 480,
+        height: 270,
+        fps: 24,
+        clips: vec![
+            ExportClip {
+                name: "first.jpg".into(),
+                start_ms: 0,
+                duration_ms: 1000,
+                source: Source::Photo {
+                    path: photo.clone(),
+                    keyframes: vec![],
+                },
+            },
+            ExportClip {
+                name: "second.jpg".into(),
+                start_ms: 2000,
+                duration_ms: 1000,
+                source: Source::Photo {
+                    path: photo,
+                    keyframes: vec![],
+                },
+            },
+        ],
+        audio: vec![],
+    };
+
+    let mut stages = Vec::new();
+    Renderer::default()
+        .export(&spec, &dir.join("work"), &out, |p| {
+            stages.push(p.stage.clone())
+        })
+        .await
+        .expect("a timeline with a hole in it exports");
+
+    let duration: f32 = probe_format(&out, "format=duration").parse().unwrap_or(0.0);
+    assert!(
+        (duration - 3.0).abs() < 0.35,
+        "the gap is rendered, not skipped: got {duration}s"
+    );
+    assert!(
+        stages.iter().any(|s| s.contains("gap")),
+        "and it reports itself while rendering: {stages:?}"
+    );
+    assert_eq!(probe(&out, "stream=codec_name"), "h264");
+
     let _ = std::fs::remove_dir_all(&dir);
 }

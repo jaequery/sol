@@ -12,6 +12,7 @@ import {
   findSegment,
   formatDuration,
   formatTimecode,
+  photoCuts,
   segmentsOf,
   sortKeyframes,
   transitionStaleness,
@@ -31,15 +32,15 @@ export function Inspector() {
   const track =
     selection.kind === 'audio' ? audioTracks.find((t) => t.id === selection.trackId) : undefined;
 
-  // A selected cut is only real while its pair still stands adjacent — photo then photo.
+  // A selected cut is only real while its pair still forms one — two photos, edges touching.
   let cutPair: { a: Clip; b: Clip } | undefined;
   if (selection.kind === 'cut') {
-    const at = clips.findIndex((c) => c.id === selection.afterClipId);
-    const a = at === -1 ? undefined : clips[at];
-    const b = clips[at + 1];
-    if (a && b?.id === selection.beforeClipId && a.kind === 'photo' && b.kind === 'photo') {
-      cutPair = { a, b };
-    }
+    const stands = photoCuts(clips).some(
+      (c) => c.afterClipId === selection.afterClipId && c.beforeClipId === selection.beforeClipId,
+    );
+    const a = clips.find((c) => c.id === selection.afterClipId);
+    const b = clips.find((c) => c.id === selection.beforeClipId);
+    if (stands && a && b) cutPair = { a, b };
   }
 
   return (
@@ -125,6 +126,10 @@ function InspectorBody({ clip }: { clip: Clip }) {
           <span aria-hidden="true">{clip.kind === 'photo' ? '▣' : '▶'}</span> {clip.name}
         </div>
         <div className="card__body">
+          <div className="kv">
+            <span>Starts at</span>
+            <b>{formatTimecode(clip.startMs)}</b>
+          </div>
           <div className="kv">
             <span>Duration</span>
             <b>{formatDuration(clip.durationMs)}</b>

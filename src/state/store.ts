@@ -36,17 +36,19 @@ import {
   insertTransitionClip,
   makeId,
   moveAudio,
-  moveClip as moveClipInList,
   moveKeyframe,
   photoClip,
   photoCuts,
+  placeClip,
   removeKeyframe,
   replaceSegment,
   replaceTransitionClip,
   resizeAudio,
-  resizeClip as resizeClipEdge,
+  resizeClipInList,
   segmentsOf,
   setPrompt,
+  setTransitionDuration,
+  sortClips,
   timelineEndMs,
   transformAt,
   updateKeyframe,
@@ -98,6 +100,8 @@ export interface EditorState {
   playheadMs: number;
   playing: boolean;
   pxPerSecond: number;
+  /** The snapping aid on the track: drags still land anywhere, they just like edges. */
+  snapping: boolean;
 
   generations: Record<string, Generation>;
   /** Prompts typed for cuts that have not generated yet, keyed `${afterClipId}:${beforeClipId}`. */
@@ -139,8 +143,9 @@ export interface EditorState {
   deleteSelection: () => void;
   setSegmentPrompt: (prompt: string) => void;
   splitAtPlayhead: () => void;
-  moveClip: (clipId: string, toIndex: number) => void;
+  moveClipTo: (clipId: string, startMs: number) => void;
   resizeClip: (clipId: string, edge: ClipEdge, deltaMs: number) => void;
+  toggleSnapping: () => void;
 
   // ---- playback
   setPlayhead: (ms: number) => void;
@@ -180,6 +185,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   playheadMs: 0,
   playing: false,
   pxPerSecond: 46,
+  snapping: true,
 
   generations: {},
   cutPrompts: {},
@@ -465,7 +471,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   splitAtPlayhead() {
-    const { clips, playheadMs, generations, cutPrompts } = get();
+    const { clips, playheadMs } = get();
     const hit = clipAt(clips, playheadMs);
     if (!hit || hit.localMs <= 0 || hit.localMs >= hit.placed.clip.durationMs) return;
 
@@ -483,6 +489,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       ...clip,
       id: makeId('clip'),
       transition: undefined,
+      // The two halves fill exactly the span the clip held, so nothing else moves.
+      startMs: clip.startMs + hit.localMs,
       durationMs: clip.durationMs - hit.localMs,
       trimStartMs: clip.trimStartMs + (clip.kind === 'video' ? hit.localMs : 0),
       keyframes: clip.keyframes
@@ -491,6 +499,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     };
     const index = clips.findIndex((c) => c.id === clip.id);
     const nextClips = [...clips.slice(0, index), head, tail, ...clips.slice(index + 1)];
+    const { generations, cutPrompts } = get();
     set({
       clips: nextClips,
       selection: { kind: 'clip', clipId: tail.id },
@@ -498,10 +507,10 @@ export const useEditor = create<EditorState>((set, get) => ({
     });
   },
 
-  /** Drag along the track: `toIndex` counts positions among the clips it leaves behind. */
-  moveClip(clipId, toIndex) {
+  /** Drag along the track: `startMs` is where the clip should begin, gaps and all. */
+  moveClipTo(clipId, startMs) {
     const { clips, generations, cutPrompts } = get();
-    const next = moveClipInList(clips, clipId, toIndex);
+    const next = placeClip(clips, clipId, startMs);
     if (next === clips) return;
     set({
       clips: next,
@@ -516,16 +525,19 @@ export const useEditor = create<EditorState>((set, get) => ({
     const clip = clips.find((c) => c.id === clipId);
     if (!clip) return;
 
-    const resized = resizeClipEdge(clip, edge, deltaMs, assets[clip.assetId]?.durationMs);
-    if (resized === clip) return;
+    const next = resizeClipInList(clips, clipId, edge, deltaMs, assets[clip.assetId]?.durationMs);
+    if (next === clips) return;
 
-    const next = clips.map((c) => (c.id === clipId ? resized : c));
+    const { generations, cutPrompts } = get();
     set({
       clips: next,
       // The track just got shorter under the playhead, or it did not — either way it stays on it.
       playheadMs: Math.min(playheadMs, timelineEndMs(next, audioTracks)),
+      ...prunedAfterEdit(next, generations, cutPrompts),
     });
   },
+
+  toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
 
   // ------------------------------------------------------------------ playback
 
@@ -582,9 +594,9 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!s.settings?.configured) return null;
     if (!cutEligible(s, afterClipId, beforeClipId)) return null;
 
-    const at = s.clips.findIndex((c) => c.id === afterClipId);
-    const clipA = s.clips[at];
-    const clipB = s.clips[at + 1];
+    const clipA = s.clips.find((c) => c.id === afterClipId);
+    const clipB = s.clips.find((c) => c.id === beforeClipId);
+    if (!clipA || !clipB) return null;
     const prompt =
       (s.cutPrompts[cutKey(afterClipId, beforeClipId)] ?? '').trim() || DEFAULT_TRANSITION_PROMPT;
     const from: TransitionSource = {
@@ -614,12 +626,13 @@ export const useEditor = create<EditorState>((set, get) => ({
   regenerateTransition(clipId) {
     const s = get();
     if (!s.settings?.configured) return;
-    const at = s.clips.findIndex((c) => c.id === clipId);
-    const clip = at === -1 ? undefined : s.clips[at];
+    const placedClips = sortClips(s.clips);
+    const at = placedClips.findIndex((c) => c.id === clipId);
+    const clip = at === -1 ? undefined : placedClips[at];
     if (!clip?.transition) return;
 
-    const left = s.clips[at - 1];
-    const right = s.clips[at + 1];
+    const left = placedClips[at - 1];
+    const right = placedClips[at + 1];
     if (!left || !right || left.kind !== 'photo' || right.kind !== 'photo') return;
     const assetA = s.assets[left.assetId];
     const assetB = s.assets[right.assetId];
@@ -949,8 +962,8 @@ function liveGeneration(g: Generation): boolean {
 }
 
 /**
- * Whether this cut could start a generation right now: the pair still adjacent and in
- * order, both photos, both sources on hand, and no job already running for it. Settings
+ * Whether this cut could start a generation right now: the pair still forms a photo→photo
+ * cut (touching edges), both sources on hand, and no job already running for it. Settings
  * are checked separately — an unconfigured app changes what the UI says, not what a cut is.
  */
 export function cutEligible(
@@ -958,11 +971,13 @@ export function cutEligible(
   afterClipId: string,
   beforeClipId: string,
 ): boolean {
-  const at = s.clips.findIndex((c) => c.id === afterClipId);
-  const a = at === -1 ? undefined : s.clips[at];
-  const b = s.clips[at + 1];
-  if (!a || b?.id !== beforeClipId) return false;
-  if (a.kind !== 'photo' || b.kind !== 'photo') return false;
+  const cut = photoCuts(s.clips).find(
+    (c) => c.afterClipId === afterClipId && c.beforeClipId === beforeClipId,
+  );
+  if (!cut) return false;
+  const a = s.clips.find((c) => c.id === afterClipId);
+  const b = s.clips.find((c) => c.id === beforeClipId);
+  if (!a || !b) return false;
   const assetA = s.assets[a.assetId];
   const assetB = s.assets[b.assetId];
   if (!assetA || !assetB || assetA.missing || assetB.missing) return false;
@@ -982,9 +997,10 @@ export function animatableCuts(s: Pick<EditorState, 'clips' | 'assets' | 'genera
 }
 
 /**
- * After any edit that removes clips or changes their order: prompts for cuts whose clips
- * are gone go, and so do FAILED cut generations whose pair broke — those have no chip and
- * no card left to dismiss them from, so keeping them would leak invisible state.
+ * After any edit that removes clips or moves their edges apart: prompts for cuts whose
+ * clips are gone go, and so do FAILED cut generations whose pair no longer forms a cut —
+ * those have no chip and no card left to dismiss them from, so keeping them would leak
+ * invisible state.
  */
 function prunedAfterEdit(
   clips: Clip[],
@@ -992,8 +1008,7 @@ function prunedAfterEdit(
   cutPrompts: Record<string, string>,
 ): Pick<EditorState, 'generations' | 'cutPrompts'> {
   const ids = new Set(clips.map((c) => c.id));
-  const adjacent = new Set<string>();
-  for (let i = 0; i < clips.length - 1; i += 1) adjacent.add(cutKey(clips[i].id, clips[i + 1].id));
+  const cuts = new Set(photoCuts(clips).map((c) => cutKey(c.afterClipId, c.beforeClipId)));
 
   return {
     cutPrompts: Object.fromEntries(
@@ -1006,7 +1021,7 @@ function prunedAfterEdit(
       Object.entries(generations).filter(([, g]) => {
         if (g.status !== 'failed' || g.target.kind !== 'cut') return true;
         if (g.target.replacesClipId !== undefined) return ids.has(g.target.replacesClipId);
-        return adjacent.has(cutKey(g.target.afterClipId, g.target.beforeClipId));
+        return cuts.has(cutKey(g.target.afterClipId, g.target.beforeClipId));
       }),
     ),
   };
@@ -1199,19 +1214,21 @@ function landCutResult(
   get().pushToast({ tone: 'ok', title: 'Transition ready', detail: generation.prompt });
 
   // The model chose the real length; correct the provisional 5 s once the file's metadata
-  // loads. A trim the user landed first wins, exactly as with imports.
+  // loads, rippling what follows along with it. A trim the user landed first wins, exactly
+  // as with imports.
   const clipId: string = landedClipId;
   void probeVideoDurationMs(asset.src, DEFAULT_TRANSITION_DURATION_MS).then((durationMs) => {
-    set((s) => ({
-      assets: s.assets[asset.id]
-        ? { ...s.assets, [asset.id]: { ...s.assets[asset.id], durationMs } }
-        : s.assets,
-      clips: s.clips.map((c) =>
-        c.id === clipId && c.durationMs === DEFAULT_TRANSITION_DURATION_MS && c.trimStartMs === 0
-          ? { ...c, durationMs }
-          : c,
-      ),
-    }));
+    set((s) => {
+      const clip = s.clips.find((c) => c.id === clipId);
+      const untouched =
+        clip && clip.durationMs === DEFAULT_TRANSITION_DURATION_MS && clip.trimStartMs === 0;
+      return {
+        assets: s.assets[asset.id]
+          ? { ...s.assets, [asset.id]: { ...s.assets[asset.id], durationMs } }
+          : s.assets,
+        clips: untouched ? setTransitionDuration(s.clips, clipId, durationMs) : s.clips,
+      };
+    });
   });
 }
 
@@ -1232,12 +1249,7 @@ function maybeAdvanceAnimateQueue(set: Setter, get: () => EditorState, generatio
 }
 
 function startOf(clips: Clip[], clipId: string): number {
-  let cursor = 0;
-  for (const clip of clips) {
-    if (clip.id === clipId) return cursor;
-    cursor += clip.durationMs;
-  }
-  return 0;
+  return clips.find((c) => c.id === clipId)?.startMs ?? 0;
 }
 
 function message(error: unknown): string {
@@ -1265,9 +1277,9 @@ export function buildExportSpec(
         durationMs: t.durationMs,
         volume: t.volume,
       })),
-    clips: clips.map((clip) => {
+    clips: sortClips(clips).map((clip) => {
       const asset = assets[clip.assetId];
-      const common = { name: clip.name, durationMs: clip.durationMs };
+      const common = { name: clip.name, startMs: clip.startMs, durationMs: clip.durationMs };
       if (clip.kind === 'photo') {
         return {
           ...common,
