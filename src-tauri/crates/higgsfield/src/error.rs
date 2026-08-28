@@ -9,6 +9,12 @@ pub enum HiggsfieldError {
     #[error("no API key id and secret configured")]
     NotConfigured,
 
+    /// The credential is present but cannot form an `Authorization` header at all — a
+    /// line break survived a paste, say. Distinct from [`Self::Unauthorized`], which is
+    /// the API turning a well-formed header down.
+    #[error("the API credential is unusable: {0}")]
+    BadCredential(String),
+
     #[error("authentication rejected (HTTP {status}): {detail}")]
     Unauthorized { status: u16, detail: String },
 
@@ -40,7 +46,7 @@ impl HiggsfieldError {
     pub fn title(&self) -> &'static str {
         match self {
             Self::NotConfigured => "Not connected",
-            Self::Unauthorized { .. } => "Authentication failed",
+            Self::BadCredential(_) | Self::Unauthorized { .. } => "Authentication failed",
             Self::InsufficientCredits { .. } => "Out of credits",
             Self::RateLimited { .. } => "Rate limited",
             Self::Http { .. } => "Higgsfield rejected the request",

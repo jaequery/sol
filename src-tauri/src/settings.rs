@@ -2,7 +2,9 @@
 //!
 //! A Higgsfield credential is a key *id* plus a *secret* and both are needed to form the
 //! `Authorization: Key {id}:{secret}` header, so the dialog asks for both and the
-//! connection only counts as configured once it has them.
+//! connection only counts as configured once it has them — either typed into their own
+//! boxes or pasted whole as the `key_id:key_secret` string Higgsfield's own SDKs take,
+//! which [`Config::normalized`] splits back apart before anything is stored or masked.
 
 use serde::{Deserialize, Serialize};
 use solcut_higgsfield::Config;
@@ -48,6 +50,11 @@ pub struct SettingsInput {
 }
 
 impl SettingsInput {
+    /// Overlay what the dialog sent onto what is stored, then normalise.
+    ///
+    /// Normalising here is what lets a credential pasted whole — the single
+    /// `key_id:key_secret` string Higgsfield's own SDKs take — be stored, masked and sent
+    /// as its two halves rather than as a key id with a colon in it.
     pub fn apply_to(&self, mut config: Config) -> Config {
         if let Some(v) = non_blank(&self.api_key_id) {
             config.api_key_id = v;
@@ -61,7 +68,7 @@ impl SettingsInput {
         if let Some(v) = non_blank(&self.endpoint) {
             config.endpoint = v;
         }
-        config
+        config.normalized()
     }
 }
 
@@ -94,8 +101,9 @@ pub fn mask(key: &str) -> String {
 pub fn load(dir: &Path) -> Config {
     std::fs::read_to_string(dir.join(FILE))
         .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .and_then(|raw| serde_json::from_str::<Config>(&raw).ok())
         .unwrap_or_default()
+        .normalized()
 }
 
 pub fn save(dir: &Path, config: &Config) -> Result<(), String> {
@@ -171,6 +179,48 @@ mod tests {
         assert_eq!(updated.api_key_id, "hf_live_abcdef7fa2");
         assert_eq!(updated.api_key_secret, "shh");
         assert_eq!(updated.endpoint, "/veo3.1/first-last-frame-to-video");
+    }
+
+    #[test]
+    fn a_credential_pasted_whole_is_stored_and_masked_as_its_two_halves() {
+        // What Higgsfield's own SDKs take in `HF_KEY` / `HF_CREDENTIALS`, dropped into the
+        // one box the user was looking at.
+        let saved = SettingsInput {
+            api_key_id: Some("hf_live_abcdef7fa2:sup3r-s3cret".into()),
+            ..Default::default()
+        }
+        .apply_to(Config::default());
+
+        assert_eq!(saved.api_key_id, "hf_live_abcdef7fa2");
+        assert_eq!(saved.api_key_secret, "sup3r-s3cret");
+        assert!(saved.is_configured(), "one paste is a whole credential");
+
+        let view = SettingsView::from(&saved);
+        assert!(view.has_secret);
+        assert!(
+            view.api_key_id_hint.ends_with("7fa2"),
+            "the hint describes the key id, not the tail of the secret: {}",
+            view.api_key_id_hint
+        );
+        assert!(!view.api_key_id_hint.contains("s3cret"));
+    }
+
+    #[test]
+    fn a_pasted_credential_survives_a_round_trip_through_disk() {
+        let dir = std::env::temp_dir().join(format!("solcut-pasted-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let saved = SettingsInput {
+            api_key_id: Some(" hf_live_abcdef7fa2:sup3r-s3cret ".into()),
+            ..Default::default()
+        }
+        .apply_to(load(&dir));
+        save(&dir, &saved).expect("save");
+
+        let loaded = load(&dir);
+        assert_eq!(loaded.api_key_id, "hf_live_abcdef7fa2");
+        assert_eq!(loaded.api_key_secret, "sup3r-s3cret");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

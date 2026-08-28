@@ -125,9 +125,15 @@ export async function saveSettings(input: SettingsInput): Promise<SettingsView> 
   return invoke<SettingsView>('save_settings', { input });
 }
 
-export async function testConnection(): Promise<string> {
+/**
+ * Prove a credential before committing to it.
+ *
+ * The dialog's own fields are sent, so the key being typed is the key that gets
+ * authenticated; blank fields fall back to whatever the backend has stored.
+ */
+export async function testConnection(input: SettingsInput): Promise<string> {
   requireDesktop();
-  return invoke<string>('test_connection');
+  return invoke<string>('test_connection', { input });
 }
 
 export async function importPaths(paths: string[]): Promise<ImportResult> {

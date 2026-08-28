@@ -145,9 +145,19 @@ fn save_settings(input: SettingsInput, state: State<'_, AppState>) -> Result<Set
     Ok(SettingsView::from(&config))
 }
 
+/// Prove the credential the Settings dialog is *showing*, not just the one on disk.
+///
+/// The point of the button is to check a key before committing to it, so it has to
+/// authenticate with what has been typed — probing the stored credential instead reported
+/// an authentication failure to anyone holding a good key they had not saved yet. Blank
+/// fields fall back to what is stored, exactly as `save_settings` does, so testing after
+/// changing only the endpoint still works without retyping the credential.
 #[tauri::command]
-async fn test_connection(state: State<'_, AppState>) -> Result<String, String> {
-    let config = state.config();
+async fn test_connection(
+    input: Option<SettingsInput>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let config = input.unwrap_or_default().apply_to(state.config());
     let started = Instant::now();
     let client = Client::new(config).map_err(|e| e.to_string())?;
     client
@@ -155,7 +165,7 @@ async fn test_connection(state: State<'_, AppState>) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())?;
     Ok(format!(
-        "Reached the API in {} ms.",
+        "Authenticated with Higgsfield in {} ms.",
         started.elapsed().as_millis()
     ))
 }

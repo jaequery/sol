@@ -19,16 +19,20 @@ import type { GenerateInput, GenerationUpdate } from './lib/backend';
 const generateAnimation = vi.fn(async (_input: GenerateInput) => {});
 let emitGenerationUpdate: (u: GenerationUpdate) => void = () => {};
 
+/** What the backend reports it has stored. Reset per test; a few of them change it. */
+const STORED_SETTINGS = {
+  configured: true,
+  apiKeyIdHint: '••••7fa2',
+  hasSecret: true,
+  baseUrl: 'https://api.higgsfield.ai',
+  endpoint: '/higgsfield-ai/dop/standard',
+};
+let storedSettings = { ...STORED_SETTINGS };
+
 vi.mock('./lib/backend', () => ({
   isDesktop: () => true,
   assetSrc: (p: string) => `asset://${p}`,
-  getSettings: async () => ({
-    configured: true,
-    apiKeyIdHint: '••••7fa2',
-    hasSecret: true,
-    baseUrl: 'https://api.higgsfield.ai',
-    endpoint: '/higgsfield-ai/dop/standard',
-  }),
+  getSettings: async () => storedSettings,
   DEFAULT_BASE_URL: 'https://api.higgsfield.ai',
   DEFAULT_ENDPOINT: '/higgsfield-ai/dop/standard',
   KNOWN_ENDPOINTS: ['/higgsfield-ai/dop/standard'],
@@ -74,7 +78,10 @@ async function dropOnTimeline(files: File[]) {
 
 beforeEach(() => {
   generateAnimation.mockClear();
+  storedSettings = { ...STORED_SETTINGS };
   useEditor.setState({
+    settings: null,
+    connectionMessage: null,
     assets: {},
     clips: [],
     selection: { kind: 'none' },
@@ -316,6 +323,72 @@ describe('acceptance', () => {
     await user.click(screen.getByRole('button', { name: 'Add keyframe at playhead' }));
 
     expect(screen.getByText('Add a second keyframe to define a segment.')).toBeInTheDocument();
+  });
+});
+
+describe('the Higgsfield connection', () => {
+  it('Test connection authenticates with the credential typed into the dialog', async () => {
+    const user = userEvent.setup();
+    const testConnection = vi.mocked(backend.testConnection);
+    testConnection.mockClear();
+    testConnection.mockResolvedValue('Authenticated with Higgsfield in 91 ms.');
+
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: /Higgsfield/ }));
+
+    await user.type(screen.getByLabelText('API key ID'), 'hf-key-id');
+    await user.type(screen.getByLabelText('API key secret'), 'hf-key-secret');
+    await user.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    // The whole point of the button: it proves the key in the boxes, not the one on disk.
+    await waitFor(() => expect(testConnection).toHaveBeenCalledTimes(1));
+    expect(testConnection).toHaveBeenCalledWith({
+      apiKeyId: 'hf-key-id',
+      apiKeySecret: 'hf-key-secret',
+      baseUrl: 'https://api.higgsfield.ai',
+      endpoint: '/higgsfield-ai/dop/standard',
+    });
+    expect(await screen.findByText('Connection OK')).toBeInTheDocument();
+  });
+
+  it('a rejected credential is reported as a failure, not as a connection', async () => {
+    const user = userEvent.setup();
+    const testConnection = vi.mocked(backend.testConnection);
+    testConnection.mockClear();
+    testConnection.mockRejectedValue('authentication rejected (HTTP 401): Invalid credentials');
+
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: /Higgsfield/ }));
+    await user.type(screen.getByLabelText('API key ID'), 'wrong');
+    await user.type(screen.getByLabelText('API key secret'), 'wrong');
+    await user.click(screen.getByRole('button', { name: 'Test connection' }));
+
+    expect(await screen.findByText('Could not connect')).toBeInTheDocument();
+    expect(screen.getByText(/Invalid credentials/)).toBeInTheDocument();
+  });
+
+  it('reopening the dialog shows the endpoint that is stored, not the default', async () => {
+    const user = userEvent.setup();
+    const saveSettings = vi.mocked(backend.saveSettings);
+    saveSettings.mockClear();
+
+    // What the backend reports after the user pointed at another documented model.
+    storedSettings = { ...STORED_SETTINGS, endpoint: '/veo3.1/first-last-frame-to-video' };
+
+    render(<App />);
+    await waitFor(() =>
+      expect(useEditor.getState().settings?.endpoint).toBe('/veo3.1/first-last-frame-to-video'),
+    );
+    await user.click(screen.getByRole('button', { name: /Higgsfield/ }));
+
+    // Seeded once at mount, the field would still read the default — and saving would
+    // silently write that default back over the stored endpoint.
+    expect(screen.getByLabelText('Model endpoint')).toHaveValue('/veo3.1/first-last-frame-to-video');
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ endpoint: '/veo3.1/first-last-frame-to-video' }),
+    );
   });
 });
 
