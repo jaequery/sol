@@ -84,6 +84,7 @@ cargo fmt --all --check
 src/                     React + TypeScript editor
   types/project.ts       the data model
   lib/timeline.ts        pure timeline maths — layout, interpolation, segment replacement
+  lib/film.ts            pure film orchestration — three photos, two AI transitions
   lib/frames.ts          rendering a keyframe to a still for the API
   lib/backend.ts         the only place that talks to Tauri
   state/store.ts         zustand store

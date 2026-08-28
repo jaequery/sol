@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor } from '../state/store';
-import type { Clip, ClipEdge, Generation, MediaAsset, Selection } from '../types/project';
+import type { Clip, ClipEdge, MediaAsset, SegmentGeneration, Selection } from '../types/project';
 import {
   dropIndexFor,
   formatDuration,
@@ -104,8 +104,12 @@ export function Timeline() {
   const selectedClip = clips.find((c) => c.id === selectedClipId);
   const canKeyframe = selectedClip?.kind === 'photo';
 
+  // Film legs animate between two photos rather than inside one clip, so there is no
+  // segment on the track for them to hatch over — the film's own progress speaks for them.
   const activeGenerations = Object.values(generations).filter(
-    (g) => g.status === 'queued' || g.status === 'running' || g.status === 'failed',
+    (g): g is SegmentGeneration =>
+      g.kind === 'segment' &&
+      (g.status === 'queued' || g.status === 'running' || g.status === 'failed'),
   );
 
   function ratioFromEvent(clientX: number): number {
@@ -568,7 +572,7 @@ function GenerationOverlay({
   clips,
   toPx,
 }: {
-  generation: Generation;
+  generation: SegmentGeneration;
   clips: Clip[];
   toPx: (ms: number) => number;
 }) {

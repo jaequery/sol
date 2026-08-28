@@ -47,11 +47,9 @@ export interface GenerationError {
   retryable: boolean;
 }
 
-export interface Generation {
+/** What every generation carries, whatever it was asked to animate between. */
+interface GenerationBase {
   id: string;
-  clipId: string;
-  fromKeyframeId: string;
-  toKeyframeId: string;
   prompt: string;
   status: GenerationStatus;
   /** 0..1 */
@@ -62,6 +60,34 @@ export interface Generation {
   outputPath?: string;
   error?: GenerationError;
 }
+
+/**
+ * Motion between two keyframes of one photo. The result replaces that segment on the
+ * timeline the moment it lands.
+ */
+export interface SegmentGeneration extends GenerationBase {
+  kind: 'segment';
+  clipId: string;
+  fromKeyframeId: string;
+  toKeyframeId: string;
+}
+
+/**
+ * A transition between two *different* photos — one leg of a film.
+ *
+ * Its result is parked in film state rather than dropped on the timeline: a film goes onto
+ * the track in one piece, once every leg has succeeded, so a half-finished film never
+ * half-edits the project.
+ */
+export interface FilmGeneration extends GenerationBase {
+  kind: 'film';
+  startAssetId: string;
+  endAssetId: string;
+  /** 0 for photo 1 → 2, 1 for photo 2 → 3. Results are keyed by this, never by arrival. */
+  filmSegmentIndex: number;
+}
+
+export type Generation = SegmentGeneration | FilmGeneration;
 
 export interface Clip {
   id: string;

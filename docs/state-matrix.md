@@ -76,3 +76,22 @@ are the ways a user edits those two numbers by hand rather than by re-importing 
 | 36 | **Resizing** | Drag either edge handle | The clip's new length is previewed live and every clip after it slides along, so the track reads the way it will once released. A photo's keyframes travel with the head and are pinned inside the new range; a video's `trimStartMs` walks with its head | Release |
 | 37 | **Resize refused at a limit** | Dragging past a bound | The edge simply stops: a video cannot pass the first or last frame of its source (nor grow at all before its length is probed), a clip cannot go under 100 ms, and a photo cannot pass 10 minutes | Drag the other way |
 | 38 | **Trimming without a mouse** | Handle focused, ← / → | The same edit at 100 ms a press, or 1 s with Shift | Tab away |
+
+## 7. Film — three photos, two transitions
+
+Three photos *are* the keyframes: the film is nothing but the AI transitions between them
+(photo 1 → 2, photo 2 → 3), concatenated. A leg is an ordinary generation and is counted by
+the title bar's "n rendering" chip like any other — what is different is where its result
+goes. A film's clips are held back until every leg has landed, so a failed leg never leaves
+half a film on the track. The wizard chrome that drives these states is SOL-OS2YUM; the
+states themselves are what `lib/film.ts` and the store already define.
+
+| # | State | Trigger | What is shown | Way out |
+|---|---|---|---|---|
+| 39 | **Film idle** | Three photos chosen | Each leg carries a prefilled, editable prompt; nothing has been sent | Start, or edit a prompt |
+| 40 | **Film refused — no credential** | Start with no key ID *and* secret stored | An error toast pointing at settings. No film is created and nothing is sent — there is no local renderer to fall back to | Save both halves of the key |
+| 41 | **Film running** | Both legs queued | Each leg shows its own status and progress; the film shows a combined bar and its own count | Cancel, or wait |
+| 42 | **Leg landed, film unfinished** | One leg succeeded | The finished MP4 is **parked in film state, not placed on the timeline**; the film still reads "1 of 2 succeeded" | Wait for the other leg |
+| 43 | **Film partial — a leg failed** | A leg returns an error | The failed leg carries the API's own message (rows 18–20) and a retry that re-runs **only** that leg; the leg that landed keeps its file | Retry the leg, or dismiss |
+| 44 | **Film cancelled** | Cancel a running film | Legs in flight go `cancelled` — polling stops, the request already with the API is not recalled, exactly as a single cancel does. A leg that already rendered keeps its file | Retry a leg, or dismiss |
+| 45 | **Film succeeded** | Every leg in | The film goes onto the track **in one piece and in segment order** — whichever leg came back first — each clip badged AI and immediately playable | Play, or export |
