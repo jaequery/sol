@@ -8,10 +8,13 @@
 
 import { create } from 'zustand';
 import * as backend from '../lib/backend';
-import { probeVideoDurationMs, renderKeyframeJpeg } from '../lib/frames';
+import { probeAudioDurationMs, probeVideoDurationMs, renderKeyframeJpeg } from '../lib/frames';
 import {
+  AUDIO_EXTS,
+  DEFAULT_AUDIO_DURATION_MS,
   DEFAULT_PHOTO_DURATION_MS,
   DEFAULT_VIDEO_DURATION_MS,
+  type AudioTrack,
   type Clip,
   type ClipEdge,
   type Generation,
@@ -22,19 +25,22 @@ import {
 } from '../types/project';
 import {
   addKeyframe,
+  audioTrack,
   clipAt,
   findSegment,
   insertClips,
   makeId,
+  moveAudio,
   moveClip as moveClipInList,
   moveKeyframe,
   photoClip,
   removeKeyframe,
   replaceSegment,
+  resizeAudio,
   resizeClip as resizeClipEdge,
   segmentsOf,
   setPrompt,
-  totalDurationMs,
+  timelineEndMs,
   transformAt,
   updateKeyframe,
   videoClip,
@@ -64,9 +70,12 @@ const PHOTO_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'avif'];
 const VIDEO_EXTS = ['mp4', 'mov', 'webm', 'm4v', 'mkv', 'avi'];
 
 export function kindOf(name: string, mime = ''): MediaKind | null {
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  // The extension wins for audio: browsers report `.ogg` as `video/ogg` often enough that
+  // trusting the MIME type first would put sounds on the visual track.
+  if (AUDIO_EXTS.includes(ext) || mime.startsWith('audio/')) return 'audio';
   if (mime.startsWith('image/')) return 'photo';
   if (mime.startsWith('video/')) return 'video';
-  const ext = name.split('.').pop()?.toLowerCase() ?? '';
   if (PHOTO_EXTS.includes(ext)) return 'photo';
   if (VIDEO_EXTS.includes(ext)) return 'video';
   return null;
@@ -75,6 +84,7 @@ export function kindOf(name: string, mime = ''): MediaKind | null {
 export interface EditorState {
   assets: Record<string, MediaAsset>;
   clips: Clip[];
+  audioTracks: AudioTrack[];
   selection: Selection;
   playheadMs: number;
   playing: boolean;
@@ -93,11 +103,18 @@ export interface EditorState {
   toasts: Toast[];
 
   // ---- media
-  addFiles: (files: File[], index?: number) => Promise<void>;
-  addPaths: (paths: string[], index?: number) => Promise<void>;
+  addFiles: (files: File[], index?: number, audioStartMs?: number) => Promise<void>;
+  addPaths: (paths: string[], index?: number, audioStartMs?: number) => Promise<void>;
   importViaDialog: () => Promise<void>;
+  addAudioViaDialog: () => Promise<void>;
   removeAsset: (assetId: string) => void;
   dismissImportProblems: () => void;
+
+  // ---- audio tracks
+  moveAudioTrack: (trackId: string, startMs: number) => void;
+  resizeAudioTrack: (trackId: string, edge: ClipEdge, deltaMs: number) => void;
+  setAudioVolume: (trackId: string, volume: number) => void;
+  toggleAudioMute: (trackId: string) => void;
 
   // ---- selection & editing
   select: (selection: Selection) => void;
@@ -136,6 +153,7 @@ export interface EditorState {
 export const useEditor = create<EditorState>((set, get) => ({
   assets: {},
   clips: [],
+  audioTracks: [],
   selection: { kind: 'none' },
   playheadMs: 0,
   playing: false,
@@ -155,8 +173,8 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   // ------------------------------------------------------------------ media
 
-  async addFiles(files, index) {
-    const accepted: { asset: MediaAsset; clip: Clip }[] = [];
+  async addFiles(files, index, audioStartMs) {
+    const accepted: Imported[] = [];
     const problems: ImportProblem[] = [];
 
     for (const file of files) {
@@ -164,7 +182,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       if (!kind) {
         problems.push({
           name: file.name,
-          reason: `unsupported format. Supported: ${[...PHOTO_EXTS, ...VIDEO_EXTS].join(', ')}`,
+          reason: `unsupported format. Supported: ${[...PHOTO_EXTS, ...VIDEO_EXTS, ...AUDIO_EXTS].join(', ')}`,
         });
         continue;
       }
@@ -177,14 +195,14 @@ export const useEditor = create<EditorState>((set, get) => ({
         src: safeObjectUrl(file),
         sizeBytes: file.size,
       };
-      accepted.push({ asset, clip: newClip(asset) });
+      accepted.push(placed(asset, audioStartMs ?? get().playheadMs));
     }
 
-    commitImport(set, get, accepted, problems, index);
+    commitImport(set, accepted, problems, index);
     await probeDurations(set, accepted);
   },
 
-  async addPaths(paths, index) {
+  async addPaths(paths, index, audioStartMs) {
     if (paths.length === 0) return;
     set((s) => ({ importing: s.importing + paths.length }));
     try {
@@ -198,9 +216,9 @@ export const useEditor = create<EditorState>((set, get) => ({
           src: backend.assetSrc(item.path),
           sizeBytes: item.sizeBytes,
         };
-        return { asset, clip: newClip(asset) };
+        return placed(asset, audioStartMs ?? get().playheadMs);
       });
-      commitImport(set, get, accepted, result.rejected, index);
+      commitImport(set, accepted, result.rejected, index);
       await probeDurations(set, accepted);
     } catch (error) {
       get().pushToast({ tone: 'error', title: 'Import failed', detail: message(error) });
@@ -217,29 +235,44 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
   },
 
+  /** The timeline's "add audio" action: a picker narrowed to sound files, dropped at the playhead. */
+  async addAudioViaDialog() {
+    try {
+      await get().addPaths(await backend.pickAudioFiles());
+    } catch (error) {
+      get().pushToast({ tone: 'error', title: 'Could not open the file picker', detail: message(error) });
+    }
+  },
+
   /**
    * Take an imported asset back out of the bin. Its clips go with it — a clip whose media
    * is gone would only render as "media offline" and block export.
    */
   removeAsset(assetId) {
-    const { assets, clips, selection, generations, playheadMs, playing } = get();
+    const { assets, clips, audioTracks, selection, generations, playheadMs, playing } = get();
     const asset = assets[assetId];
     if (!asset) return;
 
     const doomed = new Set(clips.filter((c) => c.assetId === assetId).map((c) => c.id));
+    const doomedAudio = new Set(audioTracks.filter((t) => t.assetId === assetId).map((t) => t.id));
     const nextAssets = { ...assets };
     delete nextAssets[assetId];
     const nextClips = clips.filter((c) => !doomed.has(c.id));
-    const total = totalDurationMs(nextClips);
+    const nextAudio = audioTracks.filter((t) => !doomedAudio.has(t.id));
+    const total = timelineEndMs(nextClips, nextAudio);
 
+    const selectionDoomed =
+      selection.kind === 'audio'
+        ? doomedAudio.has(selection.trackId)
+        : selection.kind !== 'none' && doomed.has(selection.clipId);
     set({
       assets: nextAssets,
       clips: nextClips,
+      audioTracks: nextAudio,
       generations: Object.fromEntries(
         Object.entries(generations).filter(([, g]) => !doomed.has(g.clipId)),
       ),
-      selection:
-        selection.kind !== 'none' && doomed.has(selection.clipId) ? { kind: 'none' } : selection,
+      selection: selectionDoomed ? { kind: 'none' } : selection,
       playheadMs: Math.min(playheadMs, total),
       playing: total === 0 ? false : playing,
     });
@@ -256,6 +289,48 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   dismissImportProblems: () => set({ importProblems: [] }),
+
+  // ------------------------------------------------------------------ audio tracks
+
+  /** Drag a sound along its lane: `startMs` is where it should begin. */
+  moveAudioTrack(trackId, startMs) {
+    const { audioTracks } = get();
+    const track = audioTracks.find((t) => t.id === trackId);
+    if (!track) return;
+    const moved = moveAudio(track, startMs);
+    if (moved === track) return;
+    set({
+      audioTracks: audioTracks.map((t) => (t.id === trackId ? moved : t)),
+      selection: { kind: 'audio', trackId },
+    });
+  },
+
+  /** Drag an edge of a sound: `deltaMs` is how far it moved to the right. */
+  resizeAudioTrack(trackId, edge, deltaMs) {
+    const { audioTracks, assets, clips, playheadMs } = get();
+    const track = audioTracks.find((t) => t.id === trackId);
+    if (!track) return;
+    const resized = resizeAudio(track, edge, deltaMs, assets[track.assetId]?.durationMs);
+    if (resized === track) return;
+    const next = audioTracks.map((t) => (t.id === trackId ? resized : t));
+    set({
+      audioTracks: next,
+      playheadMs: Math.min(playheadMs, timelineEndMs(clips, next)),
+    });
+  },
+
+  setAudioVolume(trackId, volume) {
+    const clamped = Math.min(1, Math.max(0, volume));
+    set((s) => ({
+      audioTracks: s.audioTracks.map((t) => (t.id === trackId ? { ...t, volume: clamped } : t)),
+    }));
+  },
+
+  toggleAudioMute(trackId) {
+    set((s) => ({
+      audioTracks: s.audioTracks.map((t) => (t.id === trackId ? { ...t, muted: !t.muted } : t)),
+    }));
+  },
 
   // ------------------------------------------------------------------ editing
 
@@ -303,7 +378,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   deleteSelection() {
-    const { selection, clips } = get();
+    const { selection, clips, audioTracks } = get();
     if (selection.kind === 'keyframe') {
       set({
         clips: clips.map((c) =>
@@ -315,6 +390,13 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
     if (selection.kind === 'clip') {
       set({ clips: clips.filter((c) => c.id !== selection.clipId), selection: { kind: 'none' } });
+      return;
+    }
+    if (selection.kind === 'audio') {
+      set({
+        audioTracks: audioTracks.filter((t) => t.id !== selection.trackId),
+        selection: { kind: 'none' },
+      });
     }
   },
 
@@ -366,7 +448,7 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   /** Drag an edge: `deltaMs` is how far it moved to the right, whichever edge it is. */
   resizeClip(clipId, edge, deltaMs) {
-    const { clips, assets, playheadMs } = get();
+    const { clips, audioTracks, assets, playheadMs } = get();
     const clip = clips.find((c) => c.id === clipId);
     if (!clip) return;
 
@@ -377,29 +459,29 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({
       clips: next,
       // The track just got shorter under the playhead, or it did not — either way it stays on it.
-      playheadMs: Math.min(playheadMs, totalDurationMs(next)),
+      playheadMs: Math.min(playheadMs, timelineEndMs(next, audioTracks)),
     });
   },
 
   // ------------------------------------------------------------------ playback
 
   setPlayhead(ms) {
-    const total = totalDurationMs(get().clips);
+    const total = timelineEndMs(get().clips, get().audioTracks);
     set({ playheadMs: Math.min(Math.max(0, Math.round(ms)), total) });
   },
 
   togglePlay() {
-    const { playing, playheadMs, clips } = get();
-    const total = totalDurationMs(clips);
+    const { playing, playheadMs, clips, audioTracks } = get();
+    const total = timelineEndMs(clips, audioTracks);
     if (total === 0) return;
     // Pressing play at the very end restarts rather than doing nothing.
     set({ playing: !playing, playheadMs: !playing && playheadMs >= total ? 0 : playheadMs });
   },
 
   advance(deltaMs) {
-    const { playheadMs, clips, playing } = get();
+    const { playheadMs, clips, audioTracks, playing } = get();
     if (!playing) return;
-    const total = totalDurationMs(clips);
+    const total = timelineEndMs(clips, audioTracks);
     const next = playheadMs + deltaMs;
     if (next >= total) {
       set({ playheadMs: total, playing: false });
@@ -563,10 +645,12 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   async runExport() {
-    const { clips, assets, pushToast } = get();
+    const { clips, audioTracks, assets, pushToast } = get();
     if (clips.length === 0) return;
 
-    const offline = clips.find((c) => !assets[c.assetId]?.path);
+    const offline =
+      clips.find((c) => !assets[c.assetId]?.path) ??
+      audioTracks.find((t) => !t.muted && !assets[t.assetId]?.path);
     if (offline) {
       set({
         exportState: {
@@ -590,7 +674,7 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     set({ exportState: { stage: 'Starting…', fraction: 0, status: 'running' } });
     try {
-      const written = await backend.exportTimeline(buildExportSpec(clips, assets), outPath);
+      const written = await backend.exportTimeline(buildExportSpec(clips, assets, audioTracks), outPath);
       set({ exportState: null });
       pushToast({
         tone: 'ok',
@@ -622,23 +706,27 @@ export const useEditor = create<EditorState>((set, get) => ({
 
 type Setter = (partial: Partial<EditorState> | ((s: EditorState) => Partial<EditorState>)) => void;
 
-function newClip(asset: MediaAsset): Clip {
-  return asset.kind === 'photo'
-    ? photoClip(asset, DEFAULT_PHOTO_DURATION_MS)
-    : videoClip(asset, DEFAULT_VIDEO_DURATION_MS);
+/** One accepted import: a clip bound for the visual track, or a sound bound for a lane. */
+type Imported = { asset: MediaAsset; clip?: Clip; track?: AudioTrack };
+
+function placed(asset: MediaAsset, audioStartMs: number): Imported {
+  if (asset.kind === 'audio') {
+    return { asset, track: audioTrack(asset, audioStartMs, DEFAULT_AUDIO_DURATION_MS) };
+  }
+  return {
+    asset,
+    clip:
+      asset.kind === 'photo'
+        ? photoClip(asset, DEFAULT_PHOTO_DURATION_MS)
+        : videoClip(asset, DEFAULT_VIDEO_DURATION_MS),
+  };
 }
 
 /**
  * Clips appear at their default length straight away and correct themselves once the real
  * duration is known — an import that blocks on decoding feels broken.
  */
-function commitImport(
-  set: Setter,
-  get: () => EditorState,
-  accepted: { asset: MediaAsset; clip: Clip }[],
-  problems: ImportProblem[],
-  index?: number,
-) {
+function commitImport(set: Setter, accepted: Imported[], problems: ImportProblem[], index?: number) {
   if (accepted.length === 0 && problems.length === 0) return;
 
   set((s) => {
@@ -648,23 +736,32 @@ function commitImport(
     const clips = insertClips(
       s.clips,
       at,
-      accepted.map((a) => a.clip),
+      accepted.flatMap((a) => (a.clip ? [a.clip] : [])),
     );
+    const audioTracks = [...s.audioTracks, ...accepted.flatMap((a) => (a.track ? [a.track] : []))];
+    const first = accepted[0];
     return {
       assets,
       clips,
+      audioTracks,
       importProblems: [...s.importProblems, ...problems],
-      selection: accepted[0] ? { kind: 'clip', clipId: accepted[0].clip.id } : s.selection,
+      selection: first?.clip
+        ? { kind: 'clip', clipId: first.clip.id }
+        : first?.track
+          ? { kind: 'audio', trackId: first.track.id }
+          : s.selection,
     };
   });
-  void get;
 }
 
-async function probeDurations(set: Setter, accepted: { asset: MediaAsset; clip: Clip }[]) {
-  const videos = accepted.filter((a) => a.asset.kind === 'video');
+async function probeDurations(set: Setter, accepted: Imported[]) {
   await Promise.all(
-    videos.map(async ({ asset, clip }) => {
-      const durationMs = await probeVideoDurationMs(asset.src, DEFAULT_VIDEO_DURATION_MS);
+    accepted.map(async ({ asset, clip, track }) => {
+      if (asset.kind === 'photo') return;
+      const durationMs =
+        asset.kind === 'video'
+          ? await probeVideoDurationMs(asset.src, DEFAULT_VIDEO_DURATION_MS)
+          : await probeAudioDurationMs(asset.src, DEFAULT_AUDIO_DURATION_MS);
       set((s) => ({
         // The asset keeps the source length for good: it is what bounds a later trim.
         assets: s.assets[asset.id]
@@ -672,9 +769,14 @@ async function probeDurations(set: Setter, accepted: { asset: MediaAsset; clip: 
           : s.assets,
         clips: s.clips.map((c) =>
           // A trim that landed while the probe was in flight is the user's, not ours.
-          c.id === clip.id && c.durationMs === DEFAULT_VIDEO_DURATION_MS && c.trimStartMs === 0
+          c.id === clip?.id && c.durationMs === DEFAULT_VIDEO_DURATION_MS && c.trimStartMs === 0
             ? { ...c, durationMs }
             : c,
+        ),
+        audioTracks: s.audioTracks.map((t) =>
+          t.id === track?.id && t.durationMs === DEFAULT_AUDIO_DURATION_MS && t.trimStartMs === 0
+            ? { ...t, durationMs }
+            : t,
         ),
       }));
     }),
@@ -690,7 +792,7 @@ function safeObjectUrl(file: File): string {
 }
 
 function selectedClipId(selection: Selection): string | null {
-  return selection.kind === 'none' ? null : selection.clipId;
+  return selection.kind === 'none' || selection.kind === 'audio' ? null : selection.clipId;
 }
 
 function startOf(clips: Clip[], clipId: string): number {
@@ -708,11 +810,25 @@ function message(error: unknown): string {
 }
 
 /** Shape expected by `solcut_render::ExportSpec`. */
-export function buildExportSpec(clips: Clip[], assets: Record<string, MediaAsset>) {
+export function buildExportSpec(
+  clips: Clip[],
+  assets: Record<string, MediaAsset>,
+  audioTracks: AudioTrack[] = [],
+) {
   return {
     width: 1920,
     height: 1080,
     fps: 30,
+    // Muted lanes stay out of the spec entirely — the exporter never needs to know.
+    audio: audioTracks
+      .filter((t) => !t.muted)
+      .map((t) => ({
+        path: assets[t.assetId]?.path ?? '',
+        startMs: t.startMs,
+        trimStartMs: t.trimStartMs,
+        durationMs: t.durationMs,
+        volume: t.volume,
+      })),
     clips: clips.map((clip) => {
       const asset = assets[clip.assetId];
       const common = { name: clip.name, durationMs: clip.durationMs };

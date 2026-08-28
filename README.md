@@ -13,12 +13,18 @@ timeline in place of the still.
   compositing — that is the whole point of the design. Drag a clip along the track to
   reorder it, or either of its edges to change how long it runs — a video's edges trim its
   in- and out-points and cannot leave the source file.
+- **Audio tracks.** Sound files (mp3, wav, ogg, flac, aac, m4a) get their own lanes below
+  the track — as many as you like, via **♪ Add audio** or a drop. Each lane holds one
+  sound: drag it along the lane to place it, drag its edges to trim it, set its volume or
+  mute it in the inspector. Audible lanes are mixed under the film on export; a sound that
+  outlasts the last clip is cut at the film's end, never padded.
 - **2D keyframes on photos.** Scale, position, rotation and opacity, interpolated between
   keyframes and previewed live as you scrub.
 - **Prompt-driven AI segments.** Select the gap between two keyframes, describe the motion,
   and the two keyframe framings are rendered to stills and sent to Higgsfield as the first
   and last frame of the generation. The finished MP4 replaces that segment.
-- **MP4 export** of the whole timeline via ffmpeg, keyframe motion included.
+- **MP4 export** of the whole timeline via ffmpeg, keyframe motion and audio lanes
+  included.
 
 ## Running it
 
@@ -127,7 +133,12 @@ building) is then testable on any machine, including CI without a GTK toolchain.
   and the exporter agree on this.
 - **A video can only be trimmed once its length is known.** The length is read from the
   file's metadata a moment after import; until it arrives the clip can be shortened but not
-  lengthened, because nothing yet proves there are more frames to show.
+  lengthened, because nothing yet proves there are more frames to show. An audio track
+  follows the same rule.
+- **One sound per audio lane.** A lane is a single placed sound, not a sequence — add the
+  same file again for a second cue. Previewing a lane uses the webview's audio decoder;
+  the export decodes with ffmpeg either way, so a format the preview cannot play can still
+  be mixed into the MP4.
 - **A photo is held for at most 10 minutes**, and no clip goes under 100 ms.
 - **Export needs ffmpeg on `PATH`.** It is checked before anything is written, and refused
   with instructions rather than half-rendered.

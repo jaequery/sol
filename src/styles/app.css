@@ -248,6 +248,17 @@ input {
   border-color: var(--err);
   color: #2a1220;
 }
+.bin__audio {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 22px;
+  color: #7fd7ab;
+  background:
+    repeating-linear-gradient(90deg, rgba(94, 202, 154, 0.12) 0 3px, transparent 3px 7px),
+    rgba(46, 92, 71, 0.35);
+}
 .bin__skeleton {
   aspect-ratio: 16 / 10;
   border-radius: var(--r);
@@ -1051,6 +1062,100 @@ input {
   border-left: 6px solid transparent;
   border-right: 6px solid transparent;
   border-top: 8px solid var(--playhead);
+}
+.playhead--lanes {
+  top: 0;
+  bottom: 0;
+}
+.playhead--lanes::before {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ audio lanes */
+
+.audio-lanes {
+  position: relative;
+  padding: 0 var(--sp-3) 8px;
+  border-top: 1px solid var(--line-soft);
+}
+.audio-lane {
+  position: relative;
+  height: 30px;
+  margin-top: 6px;
+}
+.audio-clip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(94, 202, 154, 0.35);
+  background: rgba(46, 92, 71, 0.45);
+  overflow: hidden;
+  user-select: none;
+  touch-action: none;
+}
+.audio-clip__body {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  background: none;
+  border: 0;
+  color: #bfe8d4;
+  font: 600 var(--fs-xs) / 1 var(--font);
+  text-align: left;
+}
+.audio-clip__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audio-clip__dur {
+  margin-left: auto;
+  /* Leave room for the mute button sitting on the same edge. */
+  padding-right: 20px;
+  font: 600 9px/1 var(--mono);
+  color: rgba(191, 232, 212, 0.85);
+}
+.audio-clip__mute {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.35);
+  font-size: 10px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  z-index: 2;
+}
+.audio-clip--selected {
+  border-color: var(--accent-2);
+  box-shadow: 0 0 0 1px var(--accent-2), 0 6px 22px rgba(124, 92, 255, 0.35);
+}
+.audio-clip--muted {
+  opacity: 0.5;
+}
+.audio-clip--muted .audio-clip__body {
+  text-decoration: line-through;
+}
+.audio-clip--moving {
+  z-index: 5;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+}
+.audio-clip--offline {
+  border-color: rgba(255, 107, 107, 0.5);
+  background: rgba(92, 46, 46, 0.45);
+}
+.audio-clip--offline .audio-clip__body {
+  color: #ffb4b4;
 }
 
 .dropzone {

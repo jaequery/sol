@@ -2,7 +2,7 @@
 //! that mixes them, and probe the resulting MP4. Skipped (not failed) where ffmpeg is
 //! absent, so the suite still runs on a bare machine.
 
-use solcut_render::{ExportClip, ExportSpec, Keyframe, Renderer, Source};
+use solcut_render::{AudioTrack, ExportClip, ExportSpec, Keyframe, Renderer, Source};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -161,6 +161,7 @@ async fn exports_a_keyframed_photo_and_a_video_into_one_mp4() {
                 },
             },
         ],
+        audio: vec![],
     };
 
     let mut stages = Vec::new();
@@ -248,6 +249,7 @@ async fn exports_a_photo_with_no_keyframes_at_all() {
                 keyframes: vec![],
             },
         }],
+        audio: vec![],
     };
 
     Renderer::default()
@@ -256,6 +258,82 @@ async fn exports_a_photo_with_no_keyframes_at_all() {
         .expect("a still photo still exports");
 
     assert_eq!(probe(&out, "stream=width,height"), "480\n270");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn make_audio(dir: &Path) -> PathBuf {
+    let out = dir.join("theme.wav");
+    let status = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=880:duration=3",
+        ])
+        .arg(&out)
+        .status()
+        .expect("make audio");
+    assert!(status.success());
+    out
+}
+
+#[tokio::test]
+async fn mixes_an_audio_lane_into_the_export_without_stretching_the_film() {
+    if !ffmpeg_present() {
+        eprintln!("skipping: ffmpeg is not installed");
+        return;
+    }
+
+    let dir = workdir("audio");
+    let photo = make_photo(&dir);
+    let audio = make_audio(&dir);
+    let out = dir.join("scored.mp4");
+
+    let spec = ExportSpec {
+        width: 480,
+        height: 270,
+        fps: 24,
+        clips: vec![ExportClip {
+            name: "photo.jpg".into(),
+            duration_ms: 2000,
+            source: Source::Photo {
+                path: photo,
+                keyframes: vec![],
+            },
+        }],
+        // Starts halfway in, trimmed a little, and would outlast the 2s film if not cut.
+        audio: vec![AudioTrack {
+            path: audio,
+            start_ms: 1000,
+            trim_start_ms: 250,
+            duration_ms: 2500,
+            volume: 0.8,
+        }],
+    };
+
+    let mut stages = Vec::new();
+    Renderer::default()
+        .export(&spec, &dir.join("work"), &out, |p| {
+            stages.push(p.stage.clone())
+        })
+        .await
+        .expect("the scored export succeeds");
+
+    assert_eq!(probe(&out, "stream=codec_name"), "h264");
+    let duration: f32 = probe_format(&out, "format=duration").parse().unwrap_or(0.0);
+    assert!(
+        (duration - 2.0).abs() < 0.35,
+        "the music is cut at the film's end, got {duration}s"
+    );
+    assert!(
+        stages.iter().any(|s| s.contains("Mixing audio")),
+        "the mix pass reports itself: {stages:?}"
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

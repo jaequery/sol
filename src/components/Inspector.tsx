@@ -1,5 +1,12 @@
 import { useEditor } from '../state/store';
-import { MAX_SCALE, MIN_SCALE, type Clip, type Generation, type Transform2D } from '../types/project';
+import {
+  MAX_SCALE,
+  MIN_SCALE,
+  type AudioTrack,
+  type Clip,
+  type Generation,
+  type Transform2D,
+} from '../types/project';
 import { findSegment, formatDuration, formatTimecode, segmentsOf, sortKeyframes } from '../lib/timeline';
 
 const PROMPT_SUGGESTIONS = ['dolly in', 'slow parallax', 'orbit left', 'handheld drift', 'zoom out'];
@@ -7,13 +14,21 @@ const PROMPT_SUGGESTIONS = ['dolly in', 'slow parallax', 'orbit left', 'handheld
 export function Inspector() {
   const selection = useEditor((s) => s.selection);
   const clips = useEditor((s) => s.clips);
-  const clip = selection.kind === 'none' ? undefined : clips.find((c) => c.id === selection.clipId);
+  const audioTracks = useEditor((s) => s.audioTracks);
+  const clip =
+    selection.kind === 'none' || selection.kind === 'audio'
+      ? undefined
+      : clips.find((c) => c.id === selection.clipId);
+  const track =
+    selection.kind === 'audio' ? audioTracks.find((t) => t.id === selection.trackId) : undefined;
 
   return (
     <div className="col">
       <div className="panel-head">Inspector</div>
       <div className="inspector">
-        {!clip ? (
+        {track ? (
+          <AudioCard track={track} />
+        ) : !clip ? (
           <div className="empty-note">
             <div className="icon" aria-hidden="true">
               ◇
@@ -24,6 +39,50 @@ export function Inspector() {
         ) : (
           <InspectorBody clip={clip} />
         )}
+      </div>
+    </div>
+  );
+}
+
+/** A selected audio track: where it sits, how loud it is, and a mute switch. */
+function AudioCard({ track }: { track: AudioTrack }) {
+  const setAudioVolume = useEditor((s) => s.setAudioVolume);
+  const toggleAudioMute = useEditor((s) => s.toggleAudioMute);
+
+  return (
+    <div className="card">
+      <div className="card__head">
+        <span aria-hidden="true">♪</span> {track.name}
+      </div>
+      <div className="card__body">
+        <div className="kv">
+          <span>Starts at</span>
+          <b>{formatTimecode(track.startMs)}</b>
+        </div>
+        <div className="kv">
+          <span>Duration</span>
+          <b>{formatDuration(track.durationMs)}</b>
+        </div>
+        <div className="kv">
+          <span>Type</span>
+          <b>audio</b>
+        </div>
+        <Slider
+          label="Volume"
+          min={0}
+          max={1}
+          step={0.01}
+          value={track.volume}
+          format={(v) => `${Math.round(v * 100)}%`}
+          onChange={(volume) => setAudioVolume(track.id, volume)}
+        />
+        <button type="button" className="block-btn" onClick={() => toggleAudioMute(track.id)}>
+          {track.muted ? '🔊 Unmute track' : '🔇 Mute track'}
+        </button>
+        <p className="hint">
+          Drag the sound along its lane to move it, or its edges to trim it. Muted tracks are
+          left out of the export.
+        </p>
       </div>
     </div>
   );

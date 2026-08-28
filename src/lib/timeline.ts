@@ -14,6 +14,7 @@ import {
   MAX_SCALE,
   MIN_CLIP_DURATION_MS,
   MIN_SCALE,
+  type AudioTrack,
   type Clip,
   type ClipEdge,
   type Keyframe,
@@ -372,6 +373,85 @@ function withKeyframesInside(clip: Clip, shiftMs: number): Clip {
   const keyframes = sortKeyframes([...byTime.values()]);
   const kept = new Set(keyframes.map((k) => k.id));
   return { ...clip, keyframes, prompts: pickPrompts(clip, (k) => kept.has(k.id)) };
+}
+
+// ---------------------------------------------------------------- audio tracks
+
+export function audioTrack(asset: { id: string; name: string }, startMs: number, durationMs: number): AudioTrack {
+  return {
+    id: makeId('audio'),
+    assetId: asset.id,
+    name: asset.name,
+    startMs: Math.max(0, Math.round(startMs)),
+    durationMs: Math.max(MIN_CLIP_DURATION_MS, Math.round(durationMs)),
+    trimStartMs: 0,
+    volume: 1,
+    muted: false,
+  };
+}
+
+/** Slide the sound along the timeline. It can start anywhere except before zero. */
+export function moveAudio(track: AudioTrack, startMs: number): AudioTrack {
+  const at = Math.max(0, Math.round(startMs));
+  return at === track.startMs ? track : { ...track, startMs: at };
+}
+
+/**
+ * Trim an audio track's edge by `deltaMs` — positive is "to the right", like `resizeClip`.
+ *
+ * Audio behaves like video: the head edge walks `trimStartMs` so the sound already playing
+ * stays on the samples it was on, and the tail cannot pass the end of the source. Unlike a
+ * clip on the gapless track, the head here also moves `startMs`, because trimming the
+ * front of a free-floating sound must not slide its remainder earlier. Until the source
+ * length is probed the track can only shrink, exactly as an unprobed video can.
+ */
+export function resizeAudio(
+  track: AudioTrack,
+  edge: ClipEdge,
+  deltaMs: number,
+  sourceDurationMs?: number,
+): AudioTrack {
+  const delta = Math.round(deltaMs);
+  if (!Number.isFinite(delta) || delta === 0) return track;
+
+  if (edge === 'end') {
+    const available =
+      sourceDurationMs === undefined ? track.durationMs : sourceDurationMs - track.trimStartMs;
+    const durationMs = clamp(
+      track.durationMs + delta,
+      MIN_CLIP_DURATION_MS,
+      Math.max(available, MIN_CLIP_DURATION_MS),
+    );
+    return durationMs === track.durationMs ? track : { ...track, durationMs };
+  }
+
+  // Head: leftwards is bounded by the source's start and the timeline's start, whichever
+  // is nearer; rightwards by the resize floor.
+  const shift = clamp(
+    delta,
+    -Math.min(track.trimStartMs, track.startMs),
+    track.durationMs - MIN_CLIP_DURATION_MS,
+  );
+  if (shift === 0) return track;
+  return {
+    ...track,
+    startMs: track.startMs + shift,
+    trimStartMs: track.trimStartMs + shift,
+    durationMs: track.durationMs - shift,
+  };
+}
+
+/** Where the last sound ends. Zero when there are none. */
+export function audioEndMs(tracks: AudioTrack[]): number {
+  return tracks.reduce((end, t) => Math.max(end, t.startMs + t.durationMs), 0);
+}
+
+/**
+ * How long the whole timeline runs: the visual track, or an audio tail that outlasts it.
+ * Playback and the ruler both use this, so a music bed past the last clip is still heard.
+ */
+export function timelineEndMs(clips: Clip[], tracks: AudioTrack[]): number {
+  return Math.max(totalDurationMs(clips), audioEndMs(tracks));
 }
 
 /**

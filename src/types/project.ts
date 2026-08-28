@@ -1,6 +1,12 @@
-/** The editor's data model. One track, clips laid end to end in order. */
+/**
+ * The editor's data model. One visual track, clips laid end to end in order, plus any
+ * number of audio tracks — each its own lane below, holding one freely-positioned clip.
+ */
 
-export type MediaKind = 'photo' | 'video';
+export type MediaKind = 'photo' | 'video' | 'audio';
+
+/** What can sit on the visual track. Audio lives on its own lanes, never here. */
+export type ClipKind = 'photo' | 'video';
 
 export interface MediaAsset {
   id: string;
@@ -18,6 +24,25 @@ export interface MediaAsset {
   durationMs?: number;
   /** Set when the source file has gone missing since it was imported. */
   missing?: boolean;
+}
+
+/**
+ * One audio lane: a single sound placed somewhere on the timeline. Unlike the visual
+ * track, whose clips are gapless and positioned by index, an audio track starts wherever
+ * the user puts it — music rarely wants to begin exactly where a clip boundary falls.
+ */
+export interface AudioTrack {
+  id: string;
+  assetId: string;
+  name: string;
+  /** Where on the timeline the sound starts playing. */
+  startMs: number;
+  durationMs: number;
+  /** Where playback starts inside the source file — walks with a head trim, like video. */
+  trimStartMs: number;
+  /** 0..1 */
+  volume: number;
+  muted: boolean;
 }
 
 /**
@@ -66,7 +91,7 @@ export interface Generation {
 export interface Clip {
   id: string;
   assetId: string;
-  kind: MediaKind;
+  kind: ClipKind;
   name: string;
   durationMs: number;
   /** Videos only: where playback starts inside the source. */
@@ -104,7 +129,8 @@ export type Selection =
   | { kind: 'none' }
   | { kind: 'clip'; clipId: string }
   | { kind: 'keyframe'; clipId: string; keyframeId: string }
-  | { kind: 'segment'; clipId: string; fromKeyframeId: string; toKeyframeId: string };
+  | { kind: 'segment'; clipId: string; fromKeyframeId: string; toKeyframeId: string }
+  | { kind: 'audio'; trackId: string };
 
 export const IDENTITY_TRANSFORM: Transform2D = {
   scale: 1,
@@ -120,6 +146,13 @@ export const MAX_SCALE = 4;
 
 export const DEFAULT_PHOTO_DURATION_MS = 5000;
 export const DEFAULT_VIDEO_DURATION_MS = 5000;
+export const DEFAULT_AUDIO_DURATION_MS = 5000;
+
+/**
+ * Matches `AUDIO_EXTS` in `src-tauri/src/media.rs`. Shared here (not in the store) so the
+ * file picker and the classifier read one list without importing each other.
+ */
+export const AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'];
 
 /** A resize floor. Below this there is nothing left to grab, and barely a frame to show. */
 export const MIN_CLIP_DURATION_MS = 100;

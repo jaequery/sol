@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor } from '../state/store';
-import type { Clip, ClipEdge, Generation, MediaAsset, Selection } from '../types/project';
+import type { AudioTrack, Clip, ClipEdge, Generation, MediaAsset, Selection } from '../types/project';
 import {
   dropIndexFor,
   formatDuration,
   formatTimecode,
   insertIndexAt,
   layout,
+  moveAudio,
+  resizeAudio,
   resizeClip,
   segmentsOf,
   sortKeyframes,
   startOfIndex,
-  totalDurationMs,
+  timelineEndMs,
   truncateName,
 } from '../lib/timeline';
 
@@ -42,9 +44,25 @@ type ClipDrag = {
   moved: boolean;
 };
 
+/**
+ * The same for a sound on its lane. A separate state machine because the semantics differ:
+ * moving audio changes where it starts, not its place in an order.
+ */
+type AudioDrag = {
+  kind: 'move' | 'resize';
+  trackId: string;
+  edge: ClipEdge;
+  /** The track's `startMs` when the pointer went down — the base the drag adds to. */
+  origStartMs: number;
+  startX: number;
+  dx: number;
+  moved: boolean;
+};
+
 /** The single track: clips, their keyframes, the segments between them, and the playhead. */
 export function Timeline() {
   const clips = useEditor((s) => s.clips);
+  const audioTracks = useEditor((s) => s.audioTracks);
   const assets = useEditor((s) => s.assets);
   const selection = useEditor((s) => s.selection);
   const generations = useEditor((s) => s.generations);
@@ -54,11 +72,15 @@ export function Timeline() {
   const setPlayhead = useEditor((s) => s.setPlayhead);
   const addFiles = useEditor((s) => s.addFiles);
   const addPaths = useEditor((s) => s.addPaths);
+  const addAudioViaDialog = useEditor((s) => s.addAudioViaDialog);
   const addKeyframeAtPlayhead = useEditor((s) => s.addKeyframeAtPlayhead);
   const splitAtPlayhead = useEditor((s) => s.splitAtPlayhead);
   const deleteSelection = useEditor((s) => s.deleteSelection);
   const moveClip = useEditor((s) => s.moveClip);
   const resize = useEditor((s) => s.resizeClip);
+  const moveAudioTrack = useEditor((s) => s.moveAudioTrack);
+  const resizeAudioTrack = useEditor((s) => s.resizeAudioTrack);
+  const toggleAudioMute = useEditor((s) => s.toggleAudioMute);
 
   const trackRef = useRef<HTMLDivElement>(null);
   const clipsRef = useRef<HTMLDivElement>(null);
@@ -67,6 +89,8 @@ export function Timeline() {
   const [drag, setDrag] = useState<ClipDrag | null>(null);
   // The window listeners below read the drag they were installed for, not a stale closure.
   const dragRef = useRef<ClipDrag | null>(null);
+  const [audioDrag, setAudioDrag] = useState<AudioDrag | null>(null);
+  const audioDragRef = useRef<AudioDrag | null>(null);
   // A drag ends in a click on the clip underneath. That click is not a selection.
   const swallowClick = useRef(false);
 
@@ -76,6 +100,11 @@ export function Timeline() {
   const setDragState = useCallback((next: ClipDrag | null) => {
     dragRef.current = next;
     setDrag(next);
+  }, []);
+
+  const setAudioDragState = useCallback((next: AudioDrag | null) => {
+    audioDragRef.current = next;
+    setAudioDrag(next);
   }, []);
 
   // What the track looks like mid-drag: a resize is previewed on the real clip list, so the
@@ -89,8 +118,19 @@ export function Timeline() {
     );
   }, [clips, drag, msPerPx, assets]);
 
+  // The same for a sound mid-drag: both moving and trimming preview on the real lane.
+  const previewAudio = useMemo(() => {
+    if (!audioDrag || !audioDrag.moved) return audioTracks;
+    return audioTracks.map((t) => {
+      if (t.id !== audioDrag.trackId) return t;
+      return audioDrag.kind === 'move'
+        ? moveAudio(t, audioDrag.origStartMs + audioDrag.dx * msPerPx)
+        : resizeAudio(t, audioDrag.edge, audioDrag.dx * msPerPx, assets[t.assetId]?.durationMs);
+    });
+  }, [audioTracks, audioDrag, msPerPx, assets]);
+
   const placed = useMemo(() => layout(previewClips), [previewClips]);
-  const total = totalDurationMs(previewClips);
+  const total = timelineEndMs(previewClips, previewAudio);
   const width = Math.max(toPx(total), 320);
 
   // A reorder keeps the order on screen and shows where the clip would land instead.
@@ -100,7 +140,8 @@ export function Timeline() {
     return startOfIndex(rest, dropIndexFor(clips, drag.clipId, drag.startTimeMs + drag.dx * msPerPx));
   }, [clips, drag, msPerPx]);
 
-  const selectedClipId = selection.kind === 'none' ? null : selection.clipId;
+  const selectedClipId =
+    selection.kind === 'none' || selection.kind === 'audio' ? null : selection.clipId;
   const selectedClip = clips.find((c) => c.id === selectedClipId);
   const canKeyframe = selectedClip?.kind === 'photo';
 
@@ -177,6 +218,69 @@ export function Timeline() {
     };
   }, [dragging, clips, msPerPx, moveClip, resize, setDragState]);
 
+  function beginAudioDrag(
+    e: React.PointerEvent,
+    kind: AudioDrag['kind'],
+    track: AudioTrack,
+    edge: ClipEdge,
+  ) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    swallowClick.current = false;
+    setAudioDragState({
+      kind,
+      trackId: track.id,
+      edge,
+      origStartMs: track.startMs,
+      startX: e.clientX,
+      dx: 0,
+      moved: false,
+    });
+  }
+
+  const audioDragging = audioDrag !== null;
+  useEffect(() => {
+    if (!audioDragging) return;
+
+    const onMove = (e: PointerEvent) => {
+      const current = audioDragRef.current;
+      if (!current) return;
+      const dx = e.clientX - current.startX;
+      setAudioDragState({
+        ...current,
+        dx,
+        moved: current.moved || Math.abs(dx) >= DRAG_THRESHOLD_PX,
+      });
+    };
+
+    const commit = (e: PointerEvent) => {
+      const current = audioDragRef.current;
+      setAudioDragState(null);
+      if (!current) return;
+
+      const dx = e.clientX - current.startX;
+      if (!current.moved && Math.abs(dx) < DRAG_THRESHOLD_PX) return;
+      swallowClick.current = true;
+
+      if (current.kind === 'resize') {
+        resizeAudioTrack(current.trackId, current.edge, dx * msPerPx);
+      } else {
+        moveAudioTrack(current.trackId, current.origStartMs + dx * msPerPx);
+      }
+    };
+
+    const cancel = () => setAudioDragState(null);
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', commit);
+    window.addEventListener('pointercancel', cancel);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', commit);
+      window.removeEventListener('pointercancel', cancel);
+    };
+  }, [audioDragging, msPerPx, moveAudioTrack, resizeAudioTrack, setAudioDragState]);
+
   function onSelectClip(clipId: string) {
     if (swallowClick.current) {
       swallowClick.current = false;
@@ -206,6 +310,10 @@ export function Timeline() {
   async function onDrop(e: React.DragEvent) {
     e.preventDefault();
     const ratio = ratioFromEvent(e.clientX);
+    const dropTimeMs = Math.max(
+      0,
+      clipsRef.current ? timeFromClientX(e.clientX) : ratio * total,
+    );
     setFileDrag(null);
 
     const files = Array.from(e.dataTransfer?.files ?? []);
@@ -217,10 +325,11 @@ export function Timeline() {
       .map((f) => (f as File & { path?: string }).path)
       .filter((p): p is string => Boolean(p));
 
+    // Audio in the drop starts where it was dropped; the rest lands at `index` as ever.
     if (paths.length === files.length && paths.length > 0) {
-      await addPaths(paths, index);
+      await addPaths(paths, index, dropTimeMs);
     } else {
-      await addFiles(files, index);
+      await addFiles(files, index, dropTimeMs);
     }
   }
 
@@ -253,6 +362,15 @@ export function Timeline() {
           title={canKeyframe ? undefined : 'Select a photo clip first'}
         >
           ◆ Add keyframe
+        </button>
+        <button
+          type="button"
+          className="tool tool--wide"
+          aria-label="Add audio track"
+          title="Add a sound file on its own track, starting at the playhead"
+          onClick={() => void addAudioViaDialog()}
+        >
+          ♪ Add audio
         </button>
         <button
           type="button"
@@ -302,8 +420,8 @@ export function Timeline() {
                   </div>
                 ) : (
                   <div>
-                    <b>Drop photos and videos here</b>
-                    One timeline — they land side by side in drop order
+                    <b>Drop photos, videos and audio here</b>
+                    One timeline — visuals land side by side, sounds get their own lanes
                   </div>
                 )}
               </div>
@@ -350,7 +468,139 @@ export function Timeline() {
               />
             )}
           </div>
+
+          {previewAudio.length > 0 && (
+            <div className="audio-lanes" data-testid="audio-lanes">
+              {previewAudio.map((track) => (
+                <AudioLane
+                  key={track.id}
+                  track={track}
+                  asset={assets[track.assetId]}
+                  toPx={toPx}
+                  selection={selection}
+                  drag={audioDrag?.trackId === track.id ? audioDrag : null}
+                  onSelect={(trackId) => {
+                    if (swallowClick.current) {
+                      swallowClick.current = false;
+                      return;
+                    }
+                    select({ kind: 'audio', trackId });
+                  }}
+                  onDragStart={beginAudioDrag}
+                  onMoveKey={(e, t) => {
+                    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                    e.preventDefault();
+                    const step = e.shiftKey ? COARSE_NUDGE_MS : NUDGE_MS;
+                    moveAudioTrack(t.id, t.startMs + (e.key === 'ArrowLeft' ? -step : step));
+                  }}
+                  onResizeKey={(e, trackId, edge) => {
+                    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const step = e.shiftKey ? COARSE_NUDGE_MS : NUDGE_MS;
+                    resizeAudioTrack(trackId, edge, e.key === 'ArrowLeft' ? -step : step);
+                  }}
+                  onToggleMute={toggleAudioMute}
+                />
+              ))}
+              <div className="playhead playhead--lanes" style={{ left: toPx(playheadMs) }} />
+            </div>
+          )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** One audio lane: a single sound, dragged to reposition and trimmed at its edges. */
+function AudioLane({
+  track,
+  asset,
+  toPx,
+  selection,
+  drag,
+  onSelect,
+  onDragStart,
+  onMoveKey,
+  onResizeKey,
+  onToggleMute,
+}: {
+  track: AudioTrack;
+  asset?: MediaAsset;
+  toPx: (ms: number) => number;
+  selection: Selection;
+  /** The drag that has hold of *this* track, if any. */
+  drag: AudioDrag | null;
+  onSelect: (trackId: string) => void;
+  onDragStart: (e: React.PointerEvent, kind: AudioDrag['kind'], track: AudioTrack, edge: ClipEdge) => void;
+  onMoveKey: (e: React.KeyboardEvent, track: AudioTrack) => void;
+  onResizeKey: (e: React.KeyboardEvent, trackId: string, edge: ClipEdge) => void;
+  onToggleMute: (trackId: string) => void;
+}) {
+  const width = Math.max(toPx(track.durationMs), MIN_CLIP_PX);
+  const selected = selection.kind === 'audio' && selection.trackId === track.id;
+  const offline = !asset;
+  const moving = drag !== null && drag.kind === 'move' && drag.moved;
+  const roomy = width > 70;
+
+  const classes = [
+    'audio-clip',
+    selected && 'audio-clip--selected',
+    track.muted && 'audio-clip--muted',
+    offline && 'audio-clip--offline',
+    moving && 'audio-clip--moving',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  return (
+    <div className="audio-lane">
+      <div className={classes} style={{ left: toPx(track.startMs), width }}>
+        <button
+          type="button"
+          aria-label={`${track.name} audio track`}
+          onPointerDown={(e) => onDragStart(e, 'move', track, 'start')}
+          onClick={() => onSelect(track.id)}
+          onKeyDown={(e) => onMoveKey(e, track)}
+          className="audio-clip__body"
+          style={{ cursor: moving ? 'grabbing' : 'grab' }}
+        >
+          <span aria-hidden="true">{track.muted ? '♪̸' : '♪'}</span>
+          {offline ? (
+            <span className="audio-clip__name">⚠ MEDIA OFFLINE</span>
+          ) : (
+            <span className="audio-clip__name">{truncateName(track.name, 24)}</span>
+          )}
+          {roomy && <span className="audio-clip__dur">{formatDuration(track.durationMs)}</span>}
+        </button>
+
+        <button
+          type="button"
+          className="audio-clip__mute"
+          aria-label={`${track.muted ? 'Unmute' : 'Mute'} ${track.name}`}
+          title={track.muted ? 'Unmute this track' : 'Mute this track'}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleMute(track.id);
+          }}
+        >
+          {track.muted ? '🔇' : '🔊'}
+        </button>
+
+        {width >= MIN_HANDLE_CLIP_PX &&
+          (['start', 'end'] as const).map((edge) => (
+            <button
+              key={edge}
+              type="button"
+              className={`clip__handle clip__handle--${edge}`}
+              aria-label={`Resize the ${edge} of ${track.name} audio`}
+              title="Drag to trim · arrow keys nudge"
+              onPointerDown={(e) => onDragStart(e, 'resize', track, edge)}
+              onKeyDown={(e) => onResizeKey(e, track.id, edge)}
+              onClick={(e) => e.stopPropagation()}
+            />
+          ))}
       </div>
     </div>
   );
@@ -411,7 +661,8 @@ function TimelineClip({
   onResizeKey: (e: React.KeyboardEvent, clipId: string, edge: ClipEdge) => void;
 }) {
   const width = Math.max(toPx(clip.durationMs), MIN_CLIP_PX);
-  const selected = selection.kind !== 'none' && selection.clipId === clip.id;
+  const selected =
+    selection.kind !== 'none' && selection.kind !== 'audio' && selection.clipId === clip.id;
   const offline = !asset;
   const keyframes = sortKeyframes(clip.keyframes);
   const segments = segmentsOf(clip);

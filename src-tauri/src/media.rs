@@ -5,12 +5,15 @@ use std::path::{Path, PathBuf};
 
 const PHOTO_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gif", "avif"];
 const VIDEO_EXTS: &[&str] = &["mp4", "mov", "webm", "m4v", "mkv", "avi"];
+/// Kept in step with `AUDIO_EXTS` in `src/types/project.ts`.
+const AUDIO_EXTS: &[&str] = &["mp3", "wav", "ogg", "flac", "aac", "m4a"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MediaKind {
     Photo,
     Video,
+    Audio,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,6 +48,8 @@ pub fn classify(path: &Path) -> Option<MediaKind> {
         Some(MediaKind::Photo)
     } else if VIDEO_EXTS.contains(&ext.as_str()) {
         Some(MediaKind::Video)
+    } else if AUDIO_EXTS.contains(&ext.as_str()) {
+        Some(MediaKind::Audio)
     } else {
         None
     }
@@ -61,6 +66,7 @@ pub fn supported_extensions() -> Vec<&'static str> {
     PHOTO_EXTS
         .iter()
         .chain(VIDEO_EXTS.iter())
+        .chain(AUDIO_EXTS.iter())
         .copied()
         .collect()
 }
@@ -115,13 +121,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classifies_photos_and_videos_case_insensitively() {
+    fn classifies_photos_videos_and_audio_case_insensitively() {
         assert_eq!(classify(Path::new("/a/b.JPG")), Some(MediaKind::Photo));
         assert_eq!(classify(Path::new("/a/b.webp")), Some(MediaKind::Photo));
         assert_eq!(classify(Path::new("/a/b.MP4")), Some(MediaKind::Video));
         assert_eq!(classify(Path::new("/a/b.mov")), Some(MediaKind::Video));
+        assert_eq!(classify(Path::new("/a/b.MP3")), Some(MediaKind::Audio));
+        assert_eq!(classify(Path::new("/a/b.wav")), Some(MediaKind::Audio));
+        assert_eq!(classify(Path::new("/a/b.flac")), Some(MediaKind::Audio));
         assert_eq!(classify(Path::new("/a/b.tiff")), None);
         assert_eq!(classify(Path::new("/a/noext")), None);
+    }
+
+    #[test]
+    fn the_picker_filter_offers_audio_too() {
+        let exts = supported_extensions();
+        for ext in ["mp3", "wav", "ogg", "flac", "aac", "m4a"] {
+            assert!(exts.contains(&ext), "{ext} missing from {exts:?}");
+        }
     }
 
     #[test]
