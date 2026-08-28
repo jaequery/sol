@@ -11,6 +11,11 @@ export interface MediaAsset {
   /** Something an `<img>`/`<video>` can load: an `asset:` URL or an object URL. */
   src: string;
   sizeBytes: number;
+  /**
+   * Videos only: the source's real length, once it has been probed. It is the wall a clip
+   * on this asset cannot be trimmed past; while it is unknown, that clip can only shrink.
+   */
+  durationMs?: number;
   /** Set when the source file has gone missing since it was imported. */
   missing?: boolean;
 }
@@ -42,11 +47,9 @@ export interface GenerationError {
   retryable: boolean;
 }
 
-export interface Generation {
+/** What every generation carries, whatever it was asked to animate between. */
+interface GenerationBase {
   id: string;
-  clipId: string;
-  fromKeyframeId: string;
-  toKeyframeId: string;
   prompt: string;
   status: GenerationStatus;
   /** 0..1 */
@@ -57,6 +60,34 @@ export interface Generation {
   outputPath?: string;
   error?: GenerationError;
 }
+
+/**
+ * Motion between two keyframes of one photo. The result replaces that segment on the
+ * timeline the moment it lands.
+ */
+export interface SegmentGeneration extends GenerationBase {
+  kind: 'segment';
+  clipId: string;
+  fromKeyframeId: string;
+  toKeyframeId: string;
+}
+
+/**
+ * A transition between two *different* photos — one leg of a film.
+ *
+ * Its result is parked in film state rather than dropped on the timeline: a film goes onto
+ * the track in one piece, once every leg has succeeded, so a half-finished film never
+ * half-edits the project.
+ */
+export interface FilmGeneration extends GenerationBase {
+  kind: 'film';
+  startAssetId: string;
+  endAssetId: string;
+  /** 0 for photo 1 → 2, 1 for photo 2 → 3. Results are keyed by this, never by arrival. */
+  filmSegmentIndex: number;
+}
+
+export type Generation = SegmentGeneration | FilmGeneration;
 
 export interface Clip {
   id: string;
@@ -76,6 +107,9 @@ export interface Clip {
     sourceAssetId: string;
   };
 }
+
+/** Which end of a clip a resize drag has hold of. */
+export type ClipEdge = 'start' | 'end';
 
 /** A gap between two consecutive keyframes — the thing a prompt is attached to. */
 export interface Segment {
@@ -112,3 +146,11 @@ export const MAX_SCALE = 4;
 
 export const DEFAULT_PHOTO_DURATION_MS = 5000;
 export const DEFAULT_VIDEO_DURATION_MS = 5000;
+
+/** A resize floor. Below this there is nothing left to grab, and barely a frame to show. */
+export const MIN_CLIP_DURATION_MS = 100;
+/**
+ * A photo has no source length to run out of, so its only ceiling is a sane one — long
+ * enough for any real hold, short enough that a runaway drag cannot make the track useless.
+ */
+export const MAX_PHOTO_DURATION_MS = 10 * 60 * 1000;

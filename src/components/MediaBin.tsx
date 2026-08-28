@@ -4,10 +4,12 @@ import { truncateName } from '../lib/timeline';
 /** The imported media, its loading skeletons, and anything that failed to import. */
 export function MediaBin() {
   const assets = useEditor((s) => s.assets);
+  const clips = useEditor((s) => s.clips);
   const importing = useEditor((s) => s.importing);
   const problems = useEditor((s) => s.importProblems);
   const dismiss = useEditor((s) => s.dismissImportProblems);
   const importViaDialog = useEditor((s) => s.importViaDialog);
+  const removeAsset = useEditor((s) => s.removeAsset);
 
   const list = Object.values(assets);
   const empty = list.length === 0 && importing === 0;
@@ -16,6 +18,15 @@ export function MediaBin() {
     <div className="col">
       <div className="panel-head">
         Media <span className="right">{list.length || ''}</span>
+        {/* Importing is not a first-run-only affordance: it stays here however full the bin is. */}
+        <button
+          type="button"
+          className="panel-head__action"
+          aria-label="Import media"
+          onClick={() => void importViaDialog()}
+        >
+          + Import
+        </button>
       </div>
       <div className="bin">
         {problems.length > 0 && (
@@ -49,19 +60,35 @@ export function MediaBin() {
           </div>
         )}
 
-        {list.map((asset) => (
-          <div key={asset.id} className="bin__tile" title={asset.name}>
-            {asset.kind === 'photo' ? (
-              <img src={asset.src} alt="" draggable={false} />
-            ) : (
-              <video src={asset.src} muted preload="metadata" />
-            )}
-            <span className="kind" aria-hidden="true">
-              {asset.kind === 'photo' ? '▣' : '▶'}
-            </span>
-            <span className="label">{truncateName(asset.name, 22)}</span>
-          </div>
-        ))}
+        {list.map((asset) => {
+          const onTimeline = clips.filter((c) => c.assetId === asset.id).length;
+          return (
+            <div key={asset.id} className="bin__tile" title={asset.name}>
+              {asset.kind === 'photo' ? (
+                <img src={asset.src} alt="" draggable={false} />
+              ) : (
+                <video src={asset.src} muted preload="metadata" />
+              )}
+              <span className="kind" aria-hidden="true">
+                {asset.kind === 'photo' ? '▣' : '▶'}
+              </span>
+              <button
+                type="button"
+                className="bin__remove"
+                aria-label={`Remove ${asset.name}`}
+                title={
+                  onTimeline > 0
+                    ? `Remove ${asset.name} and its ${onTimeline} ${onTimeline === 1 ? 'clip' : 'clips'} on the timeline`
+                    : `Remove ${asset.name}`
+                }
+                onClick={() => removeAsset(asset.id)}
+              >
+                ✕
+              </button>
+              <span className="label">{truncateName(asset.name, 22)}</span>
+            </div>
+          );
+        })}
 
         {Array.from({ length: importing }, (_, i) => (
           <div key={`skeleton-${i}`} className="bin__skeleton" aria-label="Importing" />

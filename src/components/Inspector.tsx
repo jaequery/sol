@@ -259,6 +259,7 @@ function AiCard({ clip }: { clip: Clip }) {
   const prompt = clip.prompts[active.fromKeyframeId] ?? '';
   const generation = Object.values(generations).find(
     (g) =>
+      g.kind === 'segment' &&
       g.clipId === clip.id &&
       g.fromKeyframeId === active.fromKeyframeId &&
       g.status !== 'cancelled',

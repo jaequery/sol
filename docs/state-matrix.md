@@ -14,6 +14,8 @@ hi-fi walkthrough artifact.
 | 4 | **Imported (success)** | Probe succeeded | Clips appear on the single timeline in drop order; first new clip is selected | — |
 | 5 | **Unsupported / unreadable file** | Probe failed or MIME not in the allowlist | Inline error row in the bin naming the file and the reason; other files in the same drop still import | Dismiss, or re-import |
 | 6 | **Media offline** | Source file moved/deleted after import | Clip renders hatched with a "media offline" badge; preview shows the reason; export is blocked with a pointer to the clip | Relink, or remove clip |
+| 6a | **Bin has media** | One or more imports succeeded | The bin head keeps a **+ Import** button whatever the bin holds, so a second import never depends on the empty state's CTA | Click + Import |
+| 6b | **Media removed** | ✕ on a bin tile | The tile goes, and so do that asset's clips on the timeline — a clip with no media could only ever render as "media offline". Any in-flight generation on those clips is cancelled, the selection falls back to nothing, and the playhead clamps to the shorter timeline. Emptying the bin returns it to state 1 | Re-import |
 
 ## 2. Selection / keyframes
 
@@ -30,8 +32,8 @@ hi-fi walkthrough artifact.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 13 | **No API key** | Generate clicked with no key stored | Inline callout in the AI card: "Connect Higgsfield to generate" + Open settings; nothing is sent | Save a key |
-| 14 | **Settings dialog** | Open settings | Key/secret fields (masked), base URL, model; Test connection reports pass/fail inline | Save / cancel |
+| 13 | **No credential** | Generate clicked with no key ID *and* secret stored | Inline callout in the AI card: "Connect Higgsfield to generate" + Open settings; nothing is sent | Save both halves of the key |
+| 14 | **Settings dialog** | Open settings | Key ID/secret fields (masked), base URL, model endpoint; Test connection reports pass/fail inline | Save / cancel |
 | 15 | **Queued** | Job accepted by the API | Segment on the timeline becomes a hatched placeholder reading "Queued"; inspector shows the job id | Cancel |
 | 16 | **Running (partial/slow)** | Poll returns progress | Placeholder shows a live percentage and a progress bar; **the rest of the app stays fully usable** — you can select other clips, add keyframes, start a second generation | Cancel, or wait |
 | 17 | **Slow (> 90 s)** | Still running past the soft threshold | The placeholder adds "Taking longer than usual — you can keep editing"; no spinner-lock, no modal | Cancel, or wait |
@@ -56,7 +58,40 @@ hi-fi walkthrough artifact.
 |---|---|---|---|---|
 | 27 | **Long timeline** | More clips than fit | Timeline scrolls horizontally; the ruler and playhead stay in sync; zoom control rescales | Zoom out |
 | 28 | **Long file name** | Name wider than the clip | Name truncates with an ellipsis in the middle and keeps the extension; full name in the tooltip and the bin | — |
-| 29 | **Very short clip** | Clip narrower than its label | Label and duration are dropped in favour of the thumbnail; the clip stays grabbable at a 12 px minimum | Zoom in |
+| 29 | **Very short clip** | Clip narrower than its label | Label and duration are dropped in favour of the thumbnail; the clip stays grabbable at a 12 px minimum, and under 32 px the two resize handles step aside so there is still something to grab for a reorder | Zoom in |
 | 30 | **Dense keyframes** | Many keyframes in a small span | Diamonds keep a minimum spacing and collapse into a "+n" cluster chip that expands on zoom | Zoom in |
 | 31 | **Long prompt** | Prompt longer than the textarea | Textarea scrolls at a fixed height (never pushes the Generate button off-panel); the timeline segment chip truncates to one line | — |
 | 32 | **Many generations** | Several jobs at once | Each placeholder shows its own progress; the title bar shows an aggregate "n rendering" chip | — |
+
+## 6. Direct manipulation on the track
+
+Position is still implied by a clip's index and length by `durationMs`/`trimStartMs` — these states
+are the ways a user edits those two numbers by hand rather than by re-importing or splitting.
+
+| # | State | Trigger | What is shown | Way out |
+|---|---|---|---|---|
+| 33 | **Idle clip** | Pointer over a clip | The body takes a grab cursor; a bar appears at each edge with a resize cursor. On a clip under 32 px wide the bars are omitted — they would cover the whole thing | Press, or move away |
+| 34 | **Reordering** | Press a clip body and travel ≥ 4 px | The clip lifts and rides with the cursor; the rest of the track holds still and an insertion marker shows the boundary it would land on | Release to drop; dropping it back where it started is a no-op |
+| 35 | **Press without travel** | Press and release under the threshold | Nothing moves; the press is a plain selection, exactly as before | — |
+| 36 | **Resizing** | Drag either edge handle | The clip's new length is previewed live and every clip after it slides along, so the track reads the way it will once released. A photo's keyframes travel with the head and are pinned inside the new range; a video's `trimStartMs` walks with its head | Release |
+| 37 | **Resize refused at a limit** | Dragging past a bound | The edge simply stops: a video cannot pass the first or last frame of its source (nor grow at all before its length is probed), a clip cannot go under 100 ms, and a photo cannot pass 10 minutes | Drag the other way |
+| 38 | **Trimming without a mouse** | Handle focused, ← / → | The same edit at 100 ms a press, or 1 s with Shift | Tab away |
+
+## 7. Film — three photos, two transitions
+
+Three photos *are* the keyframes: the film is nothing but the AI transitions between them
+(photo 1 → 2, photo 2 → 3), concatenated. A leg is an ordinary generation and is counted by
+the title bar's "n rendering" chip like any other — what is different is where its result
+goes. A film's clips are held back until every leg has landed, so a failed leg never leaves
+half a film on the track. The wizard chrome that drives these states is SOL-OS2YUM; the
+states themselves are what `lib/film.ts` and the store already define.
+
+| # | State | Trigger | What is shown | Way out |
+|---|---|---|---|---|
+| 39 | **Film idle** | Three photos chosen | Each leg carries a prefilled, editable prompt; nothing has been sent | Start, or edit a prompt |
+| 40 | **Film refused — no credential** | Start with no key ID *and* secret stored | An error toast pointing at settings. No film is created and nothing is sent — there is no local renderer to fall back to | Save both halves of the key |
+| 41 | **Film running** | Both legs queued | Each leg shows its own status and progress; the film shows a combined bar and its own count | Cancel, or wait |
+| 42 | **Leg landed, film unfinished** | One leg succeeded | The finished MP4 is **parked in film state, not placed on the timeline**; the film still reads "1 of 2 succeeded" | Wait for the other leg |
+| 43 | **Film partial — a leg failed** | A leg returns an error | The failed leg carries the API's own message (rows 18–20) and a retry that re-runs **only** that leg; the leg that landed keeps its file | Retry the leg, or dismiss |
+| 44 | **Film cancelled** | Cancel a running film | Legs in flight go `cancelled` — polling stops, the request already with the API is not recalled, exactly as a single cancel does. A leg that already rendered keeps its file | Retry a leg, or dismiss |
+| 45 | **Film succeeded** | Every leg in | The film goes onto the track **in one piece and in segment order** — whichever leg came back first — each clip badged AI and immediately playable | Play, or export |
