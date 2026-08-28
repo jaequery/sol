@@ -722,6 +722,146 @@ describe('the 3-photo film wizard', () => {
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
     expect(payloadForLeg(1).startFrame).toContain(stillOf('two.jpg'));
   });
+
+  // ------------------------------------------------------- three photos → an .mp4
+
+  /** Three photos chosen and both legs sent. Resolves to the two generation ids, in order. */
+  async function startWholeFilm(user: ReturnType<typeof userEvent.setup>): Promise<string[]> {
+    await openWizard(user);
+    await dropOnWizard([
+      file('one.jpg', 'image/jpeg'),
+      file('two.jpg', 'image/jpeg'),
+      file('three.jpg', 'image/jpeg'),
+    ]);
+    await user.click(generateFilm());
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(2));
+    return (useEditor.getState().film?.segments ?? []).map((s) => s.generationId as string);
+  }
+
+  /**
+   * A leg coming home.
+   *
+   * Wrapped in an async `act` because the film assembles itself a microtask later, once the
+   * finished file has been measured — the timeline lands inside the same commit.
+   */
+  async function legLands(generationId: string, outputPath: string) {
+    await act(async () => {
+      emitGenerationUpdate({
+        generationId,
+        status: 'succeeded',
+        progress: 1,
+        elapsedSecs: 60,
+        slow: false,
+        outputPath,
+      });
+    });
+  }
+
+  const filmClipPaths = () => {
+    const { clips, assets } = useEditor.getState();
+    return clips.map((c) => assets[c.assetId]?.path);
+  };
+
+  it('both transitions home — the film puts itself on the timeline, in order', async () => {
+    const user = userEvent.setup();
+    const [first, second] = await startWholeFilm(user);
+
+    // Out of order on purpose: leg 2 comes back first and the film still reads 1 → 2 → 3.
+    await legLands(second, '/cache/second.mp4');
+    expect(useEditor.getState().clips).toHaveLength(0);
+
+    await legLands(first, '/cache/first.mp4');
+
+    await waitFor(() => expect(useEditor.getState().clips).toHaveLength(2));
+    expect(filmClipPaths()).toEqual(['/cache/first.mp4', '/cache/second.mp4']);
+
+    // Two AI video clips on the one track, no manual placement asked of anyone.
+    const onTrack = screen.getAllByRole('button', { name: /video clip/i });
+    expect(onTrack).toHaveLength(2);
+    expect(onTrack.every((clip) => within(clip).queryByText('✦ AI'))).toBe(true);
+
+    const clips = useEditor.getState().clips;
+    expect(clips.every((c) => c.kind === 'video' && c.ai)).toBe(true);
+    expect(clips.map((c) => c.ai?.prompt)).toEqual([defaultFilmPrompt(0), defaultFilmPrompt(1)]);
+    // Two 5 s transitions back to back: a ~10 s film, nothing else on the track.
+    expect(clips.reduce((sum, c) => sum + c.durationMs, 0)).toBe(10_000);
+
+    // And it plays: the second transition is what the preview shows at 7 s.
+    act(() => useEditor.getState().setPlayhead(7000));
+    expect(await screen.findByTestId('preview-video')).toHaveAttribute(
+      'src',
+      'asset:///cache/second.mp4',
+    );
+  });
+
+  it('Export film writes the timeline through the real export, at 1920×1080 @ 30 fps', async () => {
+    const user = userEvent.setup();
+    vi.mocked(backend.pickExportPath).mockResolvedValue('/home/u/films/my-film.mp4');
+    vi.mocked(backend.exportTimeline).mockClear();
+    vi.mocked(backend.exportTimeline).mockResolvedValue('/home/u/films/my-film.mp4');
+
+    const [first, second] = await startWholeFilm(user);
+    await legLands(first, '/cache/first.mp4');
+    await legLands(second, '/cache/second.mp4');
+    await waitFor(() => expect(useEditor.getState().clips).toHaveLength(2));
+
+    await user.click(await screen.findByRole('button', { name: 'Export film' }));
+
+    await waitFor(() => expect(backend.exportTimeline).toHaveBeenCalledTimes(1));
+    const [spec, outPath] = vi.mocked(backend.exportTimeline).mock.calls[0];
+    expect(backend.pickExportPath).toHaveBeenCalledWith('solcut-export.mp4');
+    expect(outPath).toBe('/home/u/films/my-film.mp4');
+    expect(spec).toMatchObject({ width: 1920, height: 1080, fps: 30 });
+    expect((spec as ReturnType<typeof buildExportSpec>).clips).toMatchObject([
+      { kind: 'video', path: '/cache/first.mp4', durationMs: 5000, trimStartMs: 0 },
+      { kind: 'video', path: '/cache/second.mp4', durationMs: 5000, trimStartMs: 0 },
+    ]);
+
+    // The finished file is named back to the user, with a way to go and find it.
+    expect(await screen.findByText('Export complete')).toBeInTheDocument();
+    expect(screen.getByText('/home/u/films/my-film.mp4')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Reveal' })).toBeInTheDocument();
+  });
+
+  it('one leg short: nothing is assembled and nothing is offered to export, until the retry lands', async () => {
+    const user = userEvent.setup();
+    vi.mocked(backend.exportTimeline).mockClear();
+    const [first, second] = await startWholeFilm(user);
+
+    await legLands(first, '/cache/first.mp4');
+    act(() =>
+      emitGenerationUpdate({
+        generationId: second,
+        status: 'failed',
+        progress: 0,
+        elapsedSecs: 4,
+        slow: false,
+        error: { title: 'Rate limited', message: 'Too many requests.', retryable: true },
+      }),
+    );
+
+    // Half a film is not a film: the track stays empty and there is nothing to export.
+    expect(await screen.findByText('1 of 2 succeeded')).toBeInTheDocument();
+    expect(useEditor.getState().clips).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Export film' })).not.toBeInTheDocument();
+    expect(backend.exportTimeline).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Retry transition 2' }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(3));
+
+    // The retry's own generation is what finishes the film; the leg that landed is untouched.
+    const retried = useEditor.getState().film?.segments[1].generationId as string;
+    expect(retried).not.toBe(second);
+    await legLands(retried, '/cache/second-retry.mp4');
+
+    await waitFor(() => expect(useEditor.getState().clips).toHaveLength(2));
+    expect(filmClipPaths()).toEqual(['/cache/first.mp4', '/cache/second-retry.mp4']);
+    expect(await screen.findByRole('button', { name: 'Export film' })).toBeInTheDocument();
+
+    // Assembled once: the leg that had already landed does not get a second clip.
+    await legLands(first, '/cache/first.mp4');
+    expect(useEditor.getState().clips).toHaveLength(2);
+  });
 });
 
 async function setUpTwoKeyframes(user: ReturnType<typeof userEvent.setup>) {

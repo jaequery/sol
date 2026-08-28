@@ -9,6 +9,8 @@ import {
   FILM_SEGMENT_COUNT,
   FILM_SEGMENT_DURATION_MS,
   inFlightFilmGenerationIds,
+  isFilmAssembled,
+  markFilmAssembled,
   markFilmSegmentFailed,
   markFilmSegmentQueued,
   patchFilmSegment,
@@ -243,5 +245,19 @@ describe('assembling the film', () => {
     expect(
       assembleFilm(patchFilmSegment(succeed(launched(), 0, '/out/first.mp4'), 1, { status: 'succeeded' })),
     ).toBeNull();
+  });
+
+  it('remembers that it has gone onto the track, and will not do it twice', () => {
+    const film = succeed(succeed(launched(), 0, '/out/first.mp4'), 1, '/out/second.mp4');
+    expect(isFilmAssembled(film)).toBe(false);
+
+    const placed = markFilmAssembled(film, ['clip_1', 'clip_2']);
+    expect(isFilmAssembled(placed)).toBe(true);
+    expect(placed.assembledClipIds).toEqual(['clip_1', 'clip_2']);
+    // The film underneath is untouched — this records where it went, nothing more.
+    expect(placed.segments).toEqual(film.segments);
+
+    // A second completion — a leg retried after the film landed — changes nothing.
+    expect(markFilmAssembled(placed, ['clip_3', 'clip_4'])).toBe(placed);
   });
 });

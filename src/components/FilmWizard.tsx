@@ -18,9 +18,10 @@ import {
   filmProgress,
   FILM_IMAGE_COUNT,
   FILM_SEGMENT_COUNT,
+  isFilmAssembled,
   type FilmSegment,
 } from '../lib/film';
-import { makeId, truncateName } from '../lib/timeline';
+import { formatDuration, makeId, truncateName } from '../lib/timeline';
 import {
   kindOf,
   PHOTO_EXTS,
@@ -40,6 +41,7 @@ export function FilmWizard() {
   const open = useEditor((s) => s.filmWizardOpen);
   const film = useEditor((s) => s.film);
   const assets = useEditor((s) => s.assets);
+  const clips = useEditor((s) => s.clips);
   const settings = useEditor((s) => s.settings);
   const close = useEditor((s) => s.closeFilmWizard);
   const openSettings = useEditor((s) => s.openSettings);
@@ -47,8 +49,8 @@ export function FilmWizard() {
   const startFilm = useEditor((s) => s.startFilm);
   const retryFilmSegment = useEditor((s) => s.retryFilmSegment);
   const cancelFilm = useEditor((s) => s.cancelFilm);
-  const placeFilmOnTimeline = useEditor((s) => s.placeFilmOnTimeline);
   const dismissFilm = useEditor((s) => s.dismissFilm);
+  const runExport = useEditor((s) => s.runExport);
 
   const [picks, setPicks] = useState<Pick[]>([]);
   const [rejected, setRejected] = useState<ImportProblem[]>([]);
@@ -65,6 +67,13 @@ export function FilmWizard() {
   const connected = settings?.configured ?? false;
   const progress = film ? filmProgress(film) : null;
   const short = FILM_IMAGE_COUNT - picks.length;
+  // The film puts itself on the track the moment its last leg is in; until that has
+  // happened there is nothing to export, so the offer waits for it rather than leading
+  // the user into an export of somebody else's timeline.
+  const onTimeline = film ? isFilmAssembled(film) : false;
+  const filmClips = film?.assembledClipIds
+    ? clips.filter((c) => film.assembledClipIds?.includes(c.id))
+    : [];
 
   /** Take what the picker or the drop offered, and say out loud what was not taken. */
   function offer(sources: FilmPhotoSource[]) {
@@ -182,10 +191,27 @@ export function FilmWizard() {
               />
             ))}
 
+            {onTimeline && (
+              <div className="callout" role="status">
+                <b>
+                  On the timeline — {filmClips.length}{' '}
+                  {filmClips.length === 1 ? 'transition' : 'transitions'} ·{' '}
+                  {formatDuration(filmClips.reduce((sum, c) => sum + c.durationMs, 0))}
+                </b>
+                Export writes the timeline as one MP4 — H.264, 1920 × 1080, 30 fps.
+              </div>
+            )}
+
+            {progress.status === 'succeeded' && !onTimeline && (
+              <p className="hint">Both transitions are in — putting them on the timeline…</p>
+            )}
+
             <p className="hint">
               {progress.status === 'running'
                 ? 'One film at a time — this one is still rendering. Keep editing while it does; the transitions land on the timeline together, once both are in.'
-                : 'One film at a time — put this one on the timeline, or start over, to make another.'}
+                : onTimeline
+                  ? 'One film at a time — export it, keep editing it on the track, or start over to make another.'
+                  : 'One film at a time — retry the transition that did not land, or start over. The film goes onto the timeline by itself once both are in.'}
             </p>
           </>
         ) : (
@@ -345,18 +371,16 @@ export function FilmWizard() {
                 Start over
               </button>
             )}
-            <button
-              type="button"
-              className="btn btn--primary"
-              disabled={progress.status !== 'succeeded'}
-              onClick={() => {
-                placeFilmOnTimeline();
-                dismissFilm();
-                close();
-              }}
-            >
-              Add to timeline
-            </button>
+            {/*
+              Only offered once the film is actually on the track: an unfinished film has
+              nothing to write, and the export needs a save path from the user anyway, so
+              this is a button rather than a dialog that opens itself.
+            */}
+            {onTimeline && (
+              <button type="button" className="btn btn--primary" onClick={() => void runExport()}>
+                Export film
+              </button>
+            )}
           </>
         ) : (
           <>

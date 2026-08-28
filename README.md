@@ -18,11 +18,14 @@ timeline in place of the still.
 - **Prompt-driven AI segments.** Select the gap between two keyframes, describe the motion,
   and the two keyframe framings are rendered to stills and sent to Higgsfield as the first
   and last frame of the generation. The finished MP4 replaces that segment.
-- **A film from three photos.** **✦ New film from 3 photos** — in the title bar and in the
-  empty timeline — opens a panel that takes exactly three photos, puts them in order, and
-  offers a prompt per transition already filled in. Generate runs the two Higgsfield
-  transitions (photo 1 → 2 and 2 → 3) side by side and shows them landing leg by leg; the
-  panel is not modal, so the editor stays usable while they render.
+- **A film from three photos — three images in, one .mp4 out.** **✦ New film from 3
+  photos** — in the title bar and in the empty timeline — opens a panel that takes exactly
+  three photos, puts them in order, and offers a prompt per transition already filled in.
+  Generate runs the two Higgsfield transitions (photo 1 → 2 and 2 → 3) side by side and
+  shows them landing leg by leg; the panel is not modal, so the editor stays usable while
+  they render. When both are in, the film **puts itself on the timeline** — the two clips
+  in order, badged AI and playable — and the panel offers **Export film**. See
+  [the flow](#three-photos-to-an-mp4) below.
 - **MP4 export** of the whole timeline via ffmpeg, keyframe motion included.
 
 ## Running it
@@ -71,6 +74,31 @@ The base URL and the model endpoint are editable in the same dialog, so another 
 model — or an API revision — can be pointed at without shipping a new build. The dialog
 suggests the endpoints that take a first frame; DoP is the default because it is the one
 that also takes a *last* frame, which is what a SolCut segment is.
+
+## Three photos to an .mp4
+
+The shortest path through SolCut. The three photos **are** the film's keyframes — the film
+is nothing but the AI transitions between them, so no still is ever held on screen.
+
+1. **✦ New film from 3 photos**, from the title bar or the empty timeline.
+2. **Drop or choose exactly three photos.** A fourth, or a video, is left out by name with
+   the reason. ↑ / ↓ order them — slot order is the film's running order.
+3. **Both prompts arrive filled in.** Edit them or leave them; zero typing is required.
+4. **Generate film.** The photos go into the media bin as *inputs* — nothing lands on the
+   track — and the two transitions render side by side, each with its own progress and its
+   own retry. The editor stays usable throughout.
+5. **Both transitions in → the film assembles itself**: the two clips are appended to the
+   track in order (photo 1 → 2, then 2 → 3), badged AI and immediately playable. It appends
+   at the end of whatever is on the track *at that moment*, so editing while it renders is
+   safe. A film with a failed leg assembles nothing — retry the leg, and only that leg.
+6. **Export film** in the panel (or **Export MP4** in the title bar) opens the save dialog
+   and runs the ffmpeg export: **H.264, 1920 × 1080, 30 fps**. The toast names the file and
+   offers to reveal it.
+
+Two transitions give a film of about 10 s at 5 s a leg — the model decides the exact
+length, and the timeline takes it from the file. There is **no local fallback**: with no
+Higgsfield credential the panel refuses up front and sends nothing, and export refuses
+without ffmpeg on `PATH` rather than writing half a file.
 
 ## Checks
 
@@ -123,6 +151,9 @@ building) is then testable on any machine, including CI without a GTK toolchain.
 - **The model decides the clip length.** No Higgsfield endpoint takes a free-form duration
   — DoP has no duration parameter at all, and the others publish fixed choices — so the
   segment's own length is what the timeline keeps, not something the request asks for.
+- **A film goes onto the track once.** It lands the moment its last transition is in, and
+  is then an ordinary pair of clips: move, trim or delete them as you like. Retrying a leg
+  afterwards updates the film's own record but never lays down a second copy.
 - **Progress is queued-or-rendering.** The request status endpoint reports a state, not a
   percentage, so the bar only moves when the API volunteers one.
 - **Keyframes are uploaded, not inlined.** Every model parameter that takes an image takes

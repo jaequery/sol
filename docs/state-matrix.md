@@ -83,8 +83,8 @@ Three photos *are* the keyframes: the film is nothing but the AI transitions bet
 (photo 1 → 2, photo 2 → 3), concatenated. A leg is an ordinary generation and is counted by
 the title bar's "n rendering" chip like any other — what is different is where its result
 goes. A film's clips are held back until every leg has landed, so a failed leg never leaves
-half a film on the track. The wizard chrome that drives these states is SOL-OS2YUM; the
-states themselves are what `lib/film.ts` and the store already define.
+half a film on the track; when the last one does land the film puts *itself* on the track,
+in one piece, and the only thing left between three photos and an .mp4 is the save dialog.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
@@ -94,15 +94,18 @@ states themselves are what `lib/film.ts` and the store already define.
 | 42 | **Leg landed, film unfinished** | One leg succeeded | The finished MP4 is **parked in film state, not placed on the timeline**; the film still reads "1 of 2 succeeded" | Wait for the other leg |
 | 43 | **Film partial — a leg failed** | A leg returns an error | The failed leg carries the API's own message (rows 18–20) and a retry that re-runs **only** that leg; the leg that landed keeps its file | Retry the leg, or dismiss |
 | 44 | **Film cancelled** | Cancel a running film | Legs in flight go `cancelled` — polling stops, the request already with the API is not recalled, exactly as a single cancel does. A leg that already rendered keeps its file | Retry a leg, or dismiss |
-| 45 | **Film succeeded** | Every leg in | The film goes onto the track **in one piece and in segment order** — whichever leg came back first — each clip badged AI and immediately playable | Play, or export |
+| 45 | **Film succeeded** | Every leg in | The film goes onto the track **by itself, in one piece and in segment order** — whichever leg came back first — each clip badged AI and immediately playable. It is appended at the end of whatever is on the track *at that moment*, because the editor stayed usable while it rendered | Play, or export |
+| 45a | **Assembling** | The last leg's file is being measured | The brief gap between "both transitions are in" and the clips appearing: the finished MP4 is probed for its real length first, so the clips land at the length the file actually is. The panel says "putting them on the timeline…" and offers no export yet | Resolves to 45 |
+| 45b | **Assembled once** | A leg completes again after the film has landed — a retry, or a repeated update | Nothing new is placed. The film records which clips are it, and those clips are then ordinary timeline clips: moving, trimming or deleting them is an edit, not an invitation to lay the film down twice | — |
+| 45c | **Film exported** | **Export film** in the panel | The ordinary export path (rows 23–26): the save dialog, then ffmpeg at **H.264 1920 × 1080 30 fps**, then the toast naming the file with **Reveal**. It writes the *timeline*, which after 45 is the film — plus anything else the user put there | Reveal, or dismiss |
 
 ## 8. The 3-image film wizard
 
 The chrome over section 7: how three photos get chosen, ordered, prompted and watched. The
 panel is deliberately **not modal** — a film takes minutes and the editor behind it stays
 live — so it floats, closing it only hides it, and stopping a render is the explicit Cancel
-rather than a side effect of getting the panel out of the way. Rows 46–58 are the wizard's
-own states; what the film underneath is doing is rows 39–45.
+rather than a side effect of getting the panel out of the way. Rows 46–61 are the wizard's
+own states; what the film underneath is doing is rows 39–45c.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
@@ -120,4 +123,5 @@ own states; what the film underneath is doing is rows 39–45.
 | 57 | **Import refused** | The backend will not take one of the files | The panel keeps the run view out and shows "The film could not start" with the backend's own per-file reason; no film is created | Remove the file, retry |
 | 58 | **Watching the run** | A film is under way | The panel switches to the run view: the three photos as a strip, a combined bar with "n of 2 succeeded", and a row per leg with its own status, bar, error (rows 18–20) and **Retry this transition**. The editor behind it stays fully usable, and the title bar's "n rendering" chip counts the legs | Cancel film, or Close (the film keeps running) |
 | 59 | **Reopening mid-film** | Entry action clicked while a film runs | The same panel comes back on the in-flight run, not on a fresh intake — one film at a time, and the panel says so | Cancel film, or wait |
-| 60 | **Run finished** | Every leg in, or the run stopped | **Add to timeline** enables only once every leg succeeded; it places the film in one piece (row 45), then puts the panel away. **Start over** forgets the film and returns the panel to row 47 | Add to timeline, or start over |
+| 60 | **Run finished — whole** | Every leg in and placed (row 45) | The panel says **On the timeline — 2 transitions · 10.0s** and offers **Export film**, which is the title bar's export reached from where the user already is (row 45c). **Start over** forgets the film and returns the panel to row 47 | Export film, start over, or Close |
+| 61 | **Run finished — a leg short** | The run stopped with a leg failed or cancelled | No export is offered at all — there is nothing whole to write — and the panel keeps the failed leg's message and **Retry this transition** (row 43). Retrying and succeeding finishes the film, which then places itself | Retry the leg, or start over |
