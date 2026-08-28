@@ -410,6 +410,49 @@ describe('AI transitions between photos', () => {
     expect(spec.clips.map((c) => c.kind)).toEqual(['photo', 'video', 'photo']);
   });
 
+  it('3b — a gap dragged open between the pair keeps its ✦ chip, and the render fills the gap', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropPhotoPair();
+
+    // The ticket's gesture: the second photo dragged 2 s into the future opens a gap.
+    await dragFromTo(
+      screen.getByRole('button', { name: 'cliff.png photo clip' }),
+      700,
+      900,
+    );
+    expect(useEditor.getState().clips.map((c) => [c.name, c.startMs])).toEqual([
+      ['sunset.jpg', 0],
+      ['cliff.png', 7000],
+    ]);
+
+    // The gap did not kill the affordance: the chip stands, centred in the gap.
+    const chip = screen.getByRole('button', { name: CUT_CHIP });
+    expect(chip.style.left).toBe('600px');
+
+    await user.click(chip);
+    await user.click(await screen.findByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    // The frames sent are still the pair's own stills — the gap changes nothing upstream.
+    const srcOf = (name: string) =>
+      Object.values(useEditor.getState().assets).find((a) => a.name === name)?.src;
+    expect(generateAnimation.mock.calls[0][0].startFrame).toContain(`frame-of-${srcOf('sunset.jpg')}`);
+    expect(generateAnimation.mock.calls[0][0].endFrame).toContain(`frame-of-${srcOf('cliff.png')}`);
+
+    await succeed(Object.keys(useEditor.getState().generations)[0]);
+
+    // The 5 s render starts where sunset.jpg ends, consumes the 2 s gap, and cliff.png
+    // comes to rest flush against its tail — continuous film, no black left behind.
+    const clips = useEditor.getState().clips;
+    expect(clips.map((c) => [c.kind, c.startMs])).toEqual([
+      ['photo', 0],
+      ['video', 5000],
+      ['photo', 10_000],
+    ]);
+    expect(clips[1].transition).toBeTruthy();
+    expect(screen.queryByRole('button', { name: CUT_CHIP })).not.toBeInTheDocument();
+  });
+
   it('4 — a failure turns the chip rose and Retry resubmits the same cut', async () => {
     const user = userEvent.setup();
     render(<App />);

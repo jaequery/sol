@@ -101,15 +101,16 @@ Each lane holds one sound.
 
 ## 8. AI transitions
 
-A ✦ chip stands on every cut between two **photos** — a shared edge, since a gap is
-black film the user placed on purpose, not a cut. The chip only ever
+A ✦ chip stands on every cut between two **photos** side by side on the track — edges
+touching, or with a gap the user dragged open between them, which is exactly where a
+transition goes: the render fills it. The chip only ever
 *selects* its cut — generation (a paid Higgsfield call) fires exclusively from the cut
 card's button, ✦ Animate all, Retry, or Regenerate, so a stray click can never spend
 credits and staleness never re-renders on its own.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 46 | **Idle chip** | Two photos sit edge to edge on the track | A small ✦ chip vertically centred on the boundary; the toolbar shows ✦ Animate all · n when at least one cut is fillable | Tap the chip, or Animate all |
+| 46 | **Idle chip** | Two photos sit side by side on the track — edge to edge, or with a gap between them | A small ✦ chip vertically centred on the shared edge, or floating in the middle of the gap (its tooltip names the gap's length); the toolbar shows ✦ Animate all · n when at least one cut is fillable | Tap the chip, or Animate all |
 | 47 | **Chip disabled (media offline)** | A photo on the cut lost its source file | The chip dims with the reason in its tooltip; nothing can be sent for a frame that cannot be rendered | Re-import the photo |
 | 48 | **Cut selected** | Chip tapped | The chip takes the accent ring; the inspector shows the transition card naming both photos, an *optional* prompt (empty means the default `Smooth cinematic motion transition`), suggestion chips, and one ✦ Generate transition button | Generate, type first, or click elsewhere |
 | 49 | **No credential** | Cut selected with no key stored | The card's button is replaced by the "Connect Higgsfield to generate" callout; nothing is sent | Save the key in settings |
@@ -117,7 +118,7 @@ credits and staleness never re-renders on its own.
 | 51 | **Running** | Poll returns progress | The pill shows ◐ n% (or elapsed seconds when the API reports no percentage); **the rest of the app stays fully usable** | Cancel, or wait |
 | 52 | **Slow (> 90 s)** | Still running past the soft threshold | The pill takes an amber tint and the card adds the calm "taking longer than usual" advisory — no modal, no lock | Cancel, or wait |
 | 53 | **Failed** | API error / rate limit / transport | The pill turns rose reading ✕ FAILED; the card explains and offers Retry (same cut, kept prompt) and Dismiss (timeline exactly as it was) | Retry, or dismiss |
-| 54 | **Succeeded — inserted at the cut** | Render downloaded | The MP4 is inserted *at the cut* as a normal video clip with the ✦ AI badge, provisionally 5 s and probe-corrected to its real length; the reel grows, the chip disappears structurally (the boundary is no longer photo→photo), and both remaining cuts keep their chips | Play, edit, or fill the next cut |
+| 54 | **Succeeded — inserted at the cut** | Render downloaded | The MP4 is inserted *at the cut* as a normal video clip with the ✦ AI badge, provisionally 5 s and probe-corrected to its real length. It starts where the left photo ends and the right photo comes to rest flush against its tail — a gap the user dragged open for it is consumed, not left as black — so the reel grows by the render's length minus the gap's; the chip disappears structurally (the boundary is no longer photo→photo), and both remaining cuts keep their chips | Play, edit, or fill the next cut |
 | 55 | **Transition selected** | Click the generated clip | The AI transition card: From/To photos, editable prompt, ⟳ Regenerate. Trim, drag and delete work exactly as for any video clip | Regenerate, edit, or leave it |
 | 56 | **Stale** | A source photo was reframed, replaced, or a different clip now stands beside the transition | The clip wears an amber `⟳ SOURCES CHANGED` tag and the card says why; it still plays and exports. Nothing regenerates — or costs — on its own | One-tap Regenerate (uses the *current* neighbours), or ignore |
 | 57 | **Orphaned** | A source photo was deleted, or a neighbour is no longer a photo | Amber `⟳ SOURCE MISSING` tag; Regenerate is disabled with the reason. The paid clip is kept — it renders and exports fine | Delete it for a hard cut, or leave it |

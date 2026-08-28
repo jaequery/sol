@@ -32,7 +32,8 @@ export function Inspector() {
   const track =
     selection.kind === 'audio' ? audioTracks.find((t) => t.id === selection.trackId) : undefined;
 
-  // A selected cut is only real while its pair still forms one — two photos, edges touching.
+  // A selected cut is only real while its pair still forms one — two photos side by side,
+  // touching or with a gap a transition would fill.
   let cutPair: { a: Clip; b: Clip } | undefined;
   if (selection.kind === 'cut') {
     const stands = photoCuts(clips).some(
@@ -535,6 +536,7 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
   const assetA = assets[a.assetId];
   const assetB = assets[b.assetId];
   const offline = !assetA || !assetB || assetA.missing || assetB.missing;
+  const gapMs = b.startMs - (a.startMs + a.durationMs);
 
   return (
     <div className="card card--ai">
@@ -543,6 +545,9 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
         <p className="hint" style={{ marginTop: 0 }}>
           Higgsfield animates from the last frame of <b>{a.name}</b> to the first frame of{' '}
           <b>{b.name}</b>.
+          {gapMs > 0 && (
+            <> The finished clip fills the {formatDuration(gapMs)} gap between them.</>
+          )}
         </p>
         <label className="visually-hidden" htmlFor="cut-prompt">
           Describe the transition between the two photos
