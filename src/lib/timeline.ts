@@ -679,21 +679,28 @@ function pickPrompts(clip: Clip, keep: (k: Keyframe) => boolean): Record<string,
 
 // ---------------------------------------------------------------- cuts & transitions
 
-/** A photo→photo cut: two photos whose edges touch — the place a transition can fill. */
+/**
+ * A photo→photo cut: two photos next to each other — the place a transition can fill.
+ * Their edges may touch, or the user may have dragged one away to leave a gap; either way
+ * the pair can be bridged, and a render into a gap consumes it.
+ */
 export interface Cut {
   /** The photo on the left; the transition lands right after it. */
   afterClipId: string;
   /** The photo on the right. */
   beforeClipId: string;
-  /** Where the shared edge sits on the timeline. */
+  /** Where the ✦ chip sits: the shared edge, or the middle of the gap between the pair. */
   timeMs: number;
+  /** How much empty track separates the pair. Zero when their edges touch. */
+  gapMs: number;
 }
 
 /**
- * Every cut between two photos: consecutive in time order AND touching — a gap is black
- * film the user placed on purpose, not a cut. Only photos: a generated transition needs a
- * still on each side, so boundaries touching video (including a landed transition, which
- * breaks its own pair into photo|video and video|photo) simply are not offered.
+ * Every cut between two photos: consecutive in time order, touching or with a gap between
+ * them — a gap a user drags open between two photos is exactly where a transition goes, so
+ * it keeps the pair's chip rather than losing it. Only photos: a generated transition
+ * needs a still on each side, so boundaries touching video (including a landed transition,
+ * which breaks its own pair into photo|video and video|photo) simply are not offered.
  */
 export function photoCuts(clips: Clip[]): Cut[] {
   const placed = layout(clips);
@@ -701,8 +708,14 @@ export function photoCuts(clips: Clip[]): Cut[] {
   for (let i = 0; i < placed.length - 1; i += 1) {
     const a = placed[i];
     const b = placed[i + 1];
-    if (a.clip.kind === 'photo' && b.clip.kind === 'photo' && a.endMs === b.startMs) {
-      cuts.push({ afterClipId: a.clip.id, beforeClipId: b.clip.id, timeMs: a.endMs });
+    if (a.clip.kind === 'photo' && b.clip.kind === 'photo') {
+      const gapMs = b.startMs - a.endMs;
+      cuts.push({
+        afterClipId: a.clip.id,
+        beforeClipId: b.clip.id,
+        timeMs: a.endMs + Math.round(gapMs / 2),
+        gapMs,
+      });
     }
   }
   return cuts;
@@ -737,9 +750,14 @@ function transitionClip(id: string, startMs: number, generated: GeneratedTransit
 /**
  * Put a finished transition into its cut. The pair must still form a cut — the timeline
  * may have been edited while Higgsfield rendered — otherwise this is an identity no-op and
- * the caller explains rather than inserting the clip somewhere wrong. Everything from the
- * boundary onwards ripples right to make room, exactly as an import does, so gaps further
- * along keep their shape.
+ * the caller explains rather than inserting the clip somewhere wrong.
+ *
+ * The clip lands right after the left photo and the right photo comes to rest flush
+ * against its tail — a transition is continuous film from one still to the other, so a
+ * gap the user dragged open for it is consumed rather than left as black. Everything from
+ * the right photo onwards shifts by the difference between the render's length and the
+ * gap's (right for a touching pair, either way across a gap), so gaps further along keep
+ * their shape.
  */
 export function insertTransitionClip(
   clips: Clip[],
@@ -750,10 +768,15 @@ export function insertTransitionClip(
   const cut = photoCuts(clips).find(
     (c) => c.afterClipId === afterClipId && c.beforeClipId === beforeClipId,
   );
-  if (!cut) return clips;
-  const clip = transitionClip(makeId('clip'), cut.timeMs, generated);
+  const after = clips.find((c) => c.id === afterClipId);
+  if (!cut || !after) return clips;
+
+  const startMs = after.startMs + after.durationMs;
+  const clip = transitionClip(makeId('clip'), startMs, generated);
+  const delta = clip.durationMs - cut.gapMs;
+  const rightStartMs = startMs + cut.gapMs;
   return sortClips([
-    ...clips.map((c) => (c.startMs >= cut.timeMs ? { ...c, startMs: c.startMs + clip.durationMs } : c)),
+    ...clips.map((c) => (c.startMs >= rightStartMs ? { ...c, startMs: c.startMs + delta } : c)),
     clip,
   ]);
 }

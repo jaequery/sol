@@ -1023,7 +1023,9 @@ function CutChip({
       title={
         offline
           ? 'A photo on this cut has no media — re-import it first'
-          : `Generate an AI transition between ${nameA} and ${nameB}`
+          : cut.gapMs > 0
+            ? `Generate an AI transition to fill the ${formatDuration(cut.gapMs)} gap between ${nameA} and ${nameB}`
+            : `Generate an AI transition between ${nameA} and ${nameB}`
       }
       disabled={offline}
       onPointerDown={(e) => e.stopPropagation()}

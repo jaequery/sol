@@ -1201,8 +1201,9 @@ function liveGeneration(g: Generation): boolean {
 
 /**
  * Whether this cut could start a generation right now: the pair still forms a photo→photo
- * cut (touching edges), both sources on hand, and no job already running for it. Settings
- * are checked separately — an unconfigured app changes what the UI says, not what a cut is.
+ * cut (side by side, touching or across a gap), both sources on hand, and no job already
+ * running for it. Settings are checked separately — an unconfigured app changes what the
+ * UI says, not what a cut is.
  */
 export function cutEligible(
   s: Pick<EditorState, 'clips' | 'assets' | 'generations'>,

@@ -636,22 +636,24 @@ describe('cuts & transitions', () => {
   }
 
   describe('photoCuts', () => {
-    it('offers one cut per touching photo pair, and none touching video', () => {
+    it('offers one cut per adjacent photo pair, and none touching video', () => {
       const [a, b] = pair();
       const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 4000, 5000);
       const c = photoClip({ id: 'asset_c', name: 'c.jpg' }, 1000, 9000);
 
       expect(photoCuts([a, b, v, c])).toEqual([
-        { afterClipId: a.id, beforeClipId: b.id, timeMs: 2000 },
+        { afterClipId: a.id, beforeClipId: b.id, timeMs: 2000, gapMs: 0 },
       ]);
       expect(photoCuts([a])).toEqual([]);
       expect(photoCuts([])).toEqual([]);
     });
 
-    it('a gap between two photos is black film the user chose, not a cut', () => {
+    it('a gap dragged open between two photos keeps the cut, chip centred in the gap', () => {
       const a = photoClip({ id: 'asset_a', name: 'a.jpg' }, 2000, 0);
       const b = photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000, 2500);
-      expect(photoCuts([a, b])).toEqual([]);
+      expect(photoCuts([a, b])).toEqual([
+        { afterClipId: a.id, beforeClipId: b.id, timeMs: 2250, gapMs: 500 },
+      ]);
     });
 
     it('a landed transition breaks its own pair, so its chip disappears structurally', () => {
@@ -693,15 +695,53 @@ describe('cuts & transitions', () => {
       });
     });
 
+    it('fills a gap between the pair: the render lands after the left photo and the right one comes flush', () => {
+      const [a, b] = pair();
+      // b dragged 2 s later to make room, and a photo further along keeping its own gap.
+      const apart = { ...b, startMs: 4000 };
+      const d = photoClip({ id: 'asset_d', name: 'd.jpg' }, 1000, 8000);
+
+      const result = insertTransitionClip([a, apart, d], a.id, b.id, generatedBetween(a, apart));
+      expect(result.map((c) => [c.kind, c.startMs])).toEqual([
+        ['photo', 0],
+        // The 5 s render starts where a ends and consumes the 2 s gap…
+        ['video', 2000],
+        // …so b sits flush against its tail, and d keeps its 1 s of spacing after b.
+        ['photo', 7000],
+        ['photo', 11_000],
+      ]);
+    });
+
+    it('a render shorter than the gap pulls the right photo back flush rather than leaving black', () => {
+      const [a, b] = pair();
+      const apart = { ...b, startMs: 10_000 };
+
+      const result = insertTransitionClip([a, apart], a.id, b.id, {
+        ...generatedBetween(a, apart),
+        durationMs: 3000,
+      });
+      expect(result.map((c) => [c.kind, c.startMs])).toEqual([
+        ['photo', 0],
+        ['video', 2000],
+        ['photo', 5000],
+      ]);
+    });
+
     it('is an identity no-op when the pair no longer forms a cut', () => {
       const [a, b] = pair();
-      const apart = { ...b, startMs: 2500 };
       const generated = generatedBetween(a, b);
 
-      expect(insertTransitionClip([a, apart], a.id, b.id, generated)).toEqual([a, apart]);
       expect(insertTransitionClip([b], a.id, b.id, generated)).toEqual([b]);
       const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 3000, 2000);
       expect(insertTransitionClip([a, v], a.id, v.id, generated)).toEqual([a, v]);
+      // A third clip between the pair means they are no longer adjacent — nowhere to land.
+      const between = photoClip({ id: 'asset_x', name: 'x.jpg' }, 1000, 2000);
+      const shifted = { ...b, startMs: 3000 };
+      expect(insertTransitionClip([a, between, shifted], a.id, b.id, generated)).toEqual([
+        a,
+        between,
+        shifted,
+      ]);
     });
 
     it('never inserts a clip too short to grab', () => {
