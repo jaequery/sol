@@ -30,8 +30,8 @@ hi-fi walkthrough artifact.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 13 | **No API key** | Generate clicked with no key stored | Inline callout in the AI card: "Connect Higgsfield to generate" + Open settings; nothing is sent | Save a key |
-| 14 | **Settings dialog** | Open settings | Key/secret fields (masked), base URL, model; Test connection reports pass/fail inline | Save / cancel |
+| 13 | **No credential** | Generate clicked with no key ID *and* secret stored | Inline callout in the AI card: "Connect Higgsfield to generate" + Open settings; nothing is sent | Save both halves of the key |
+| 14 | **Settings dialog** | Open settings | Key ID/secret fields (masked), base URL, model endpoint; Test connection reports pass/fail inline | Save / cancel |
 | 15 | **Queued** | Job accepted by the API | Segment on the timeline becomes a hatched placeholder reading "Queued"; inspector shows the job id | Cancel |
 | 16 | **Running (partial/slow)** | Poll returns progress | Placeholder shows a live percentage and a progress bar; **the rest of the app stays fully usable** — you can select other clips, add keyframes, start a second generation | Cancel, or wait |
 | 17 | **Slow (> 90 s)** | Still running past the soft threshold | The placeholder adds "Taking longer than usual — you can keep editing"; no spinner-lock, no modal | Cancel, or wait |

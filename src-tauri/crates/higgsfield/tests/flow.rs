@@ -1,96 +1,186 @@
-//! End-to-end exercise of the client against a local stub of the Higgsfield API:
-//! submit a prompt with two keyframes, poll until done, download the result.
+//! End-to-end exercise of the client against a local stub of the documented Higgsfield
+//! API: upload both keyframes, submit the prompt, poll until done, download the result.
+//!
+//! Every URL, header and JSON key the stub asserts on comes from
+//! <https://docs.higgsfield.ai> and its OpenAPI document, so this file doubles as the
+//! record of what the integration is supposed to put on the wire.
 
 mod mock_server;
 
-use mock_server::{MockServer, Response};
+use mock_server::{MockServer, Request, Response};
 use solcut_higgsfield::{Client, Config, Frame, GenerateRequest, HiggsfieldError, JobState};
 use std::sync::{Arc, OnceLock};
+
+const START_JPEG: &[u8] = &[0xff, 0xd8, 0x01];
+const END_JPEG: &[u8] = &[0xff, 0xd8, 0x02];
 
 fn request() -> GenerateRequest {
     GenerateRequest {
         prompt: "slow dolly-in over the water".into(),
-        start_frame: Frame::from_jpeg_bytes(&[0xff, 0xd8, 0x01]),
-        end_frame: Some(Frame::from_jpeg_bytes(&[0xff, 0xd8, 0x02])),
-        duration_seconds: 3.2,
+        start_frame: Frame::from_jpeg_bytes(START_JPEG),
+        end_frame: Some(Frame::from_jpeg_bytes(END_JPEG)),
         seed: None,
     }
 }
 
 fn config(server: &MockServer) -> Config {
     Config {
-        api_key: "test-key".into(),
-        api_secret: "test-secret".into(),
+        api_key_id: "test-id".into(),
+        api_key_secret: "test-secret".into(),
         base_url: server.base_url(),
         ..Config::default()
     }
 }
 
+/// The stub's own address, which the payloads have to name but which is only known once
+/// it is listening — so the handler reads it from a cell filled immediately after start.
+fn shared_base() -> Arc<OnceLock<String>> {
+    Arc::new(OnceLock::new())
+}
+
 #[tokio::test]
-async fn submits_polls_and_downloads_a_generated_clip() {
+async fn uploads_submits_polls_and_downloads_a_generated_clip() {
     let video = b"\x00\x00\x00\x18ftypmp42-pretend-this-is-an-mp4".to_vec();
     let payload = video.clone();
 
-    // The success payload has to name the stub's own address, which is only known once it
-    // is listening — so the handler reads it from a cell filled immediately after start.
-    let base: Arc<OnceLock<String>> = Arc::new(OnceLock::new());
-    let base_for_handler = Arc::clone(&base);
+    let base = shared_base();
+    let handler_base = Arc::clone(&base);
+    let polls = std::sync::atomic::AtomicUsize::new(0);
 
-    let server = MockServer::start(move |req, index| match (req.method.as_str(), index) {
-        ("POST", 0) => Response::json(200, r#"{"id":"js_test_1"}"#),
-        ("GET", 1) => Response::json(200, r#"{"jobs":[{"status":"queued"}]}"#),
-        ("GET", 2) => Response::json(200, r#"{"jobs":[{"status":"processing","progress":42}]}"#),
-        ("GET", 3) => Response::json(
-            200,
-            &format!(
-                r#"{{"jobs":[{{"status":"completed","results":{{"raw":{{"url":"{}/generated.mp4"}}}}}}]}}"#,
-                base_for_handler
-                    .get()
-                    .expect("base url is set before any request")
+    let server = MockServer::start(move |req: &Request, _| {
+        let base = handler_base
+            .get()
+            .expect("base url is set before any request");
+        match (req.method.as_str(), req.path.as_str()) {
+            // 1. a presigned upload, one per keyframe
+            ("POST", "/files/generate-upload-url") => Response::json(
+                200,
+                &format!(
+                    r#"{{"public_url":"{base}/cdn/frame.jpeg",
+                         "upload_url":"{base}/storage/presigned",
+                         "content_type":"image/jpeg",
+                         "upload_headers":{{"Content-Type":"image/jpeg","x-amz-tagging":"retention=temporary"}}}}"#
+                ),
             ),
-        ),
-        ("GET", _) => Response::bytes(200, payload.clone()),
-        _ => Response::json(500, r#"{"error":"unexpected"}"#),
+            ("PUT", "/storage/presigned") => Response::json(200, "{}"),
+
+            // 2. the submission
+            ("POST", "/higgsfield-ai/dop/standard") => Response::json(
+                200,
+                &format!(
+                    r#"{{"status":"queued",
+                         "request_id":"d7e6c0f3-6699-4f6c-bb45-2ad7fd9158ff",
+                         "status_url":"{base}/requests/d7e6c0f3-6699-4f6c-bb45-2ad7fd9158ff/status",
+                         "cancel_url":"{base}/requests/d7e6c0f3-6699-4f6c-bb45-2ad7fd9158ff/cancel"}}"#
+                ),
+            ),
+
+            // 3. queued -> in_progress -> completed
+            ("GET", "/requests/d7e6c0f3-6699-4f6c-bb45-2ad7fd9158ff/status") => {
+                let n = polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                match n {
+                    0 => Response::json(200, r#"{"status":"queued","request_id":"d7e6c0f3"}"#),
+                    1 => Response::json(
+                        200,
+                        r#"{"status":"in_progress","request_id":"d7e6c0f3","progress":42}"#,
+                    ),
+                    _ => Response::json(
+                        200,
+                        &format!(
+                            r#"{{"status":"completed","request_id":"d7e6c0f3",
+                                 "video":{{"url":"{base}/cdn/generated.mp4"}}}}"#
+                        ),
+                    ),
+                }
+            }
+
+            // 4. the finished file
+            ("GET", "/cdn/generated.mp4") => Response::bytes(200, payload.clone()),
+
+            _ => Response::json(500, r#"{"detail":"unexpected request"}"#),
+        }
     });
     base.set(server.base_url()).expect("set once");
 
     let client = Client::new(config(&server)).expect("client");
 
-    // 1. submit
-    let handle = client.submit(&request()).await.expect("submit");
-    assert_eq!(handle.job_set_id, "js_test_1");
+    // ---- submit (which uploads both stills first)
+    let accepted = client.submit(&request()).await.expect("submit");
+    assert_eq!(accepted.request_id, "d7e6c0f3-6699-4f6c-bb45-2ad7fd9158ff");
+    assert!(
+        accepted.status_url.ends_with("/status"),
+        "the status_url the API returned is used verbatim: {}",
+        accepted.status_url
+    );
 
-    server.with_request(0, |req| {
-        assert_eq!(req.path, "/v1/image2video");
-        assert_eq!(req.header("hf-api-key"), Some("test-key"));
-        assert_eq!(req.header("hf-secret"), Some("test-secret"));
-        let body: serde_json::Value = serde_json::from_str(&req.body).expect("json body");
-        assert_eq!(body["params"]["prompt"], "slow dolly-in over the water");
-        let images = body["params"]["input_images"].as_array().unwrap();
-        assert_eq!(images.len(), 2, "both keyframes are sent");
-        assert!(images[0]["image_url"]
-            .as_str()
-            .unwrap()
-            .starts_with("data:image/jpeg;base64,"));
+    server.with_first("/files/generate-upload-url", |req| {
+        assert_eq!(
+            req.header("authorization"),
+            Some("Key test-id:test-secret"),
+            "the documented `Key {{id}}:{{secret}}` header"
+        );
+        assert_eq!(req.json()["content_type"], "image/jpeg");
     });
 
-    // 2. poll through queued -> running -> succeeded
+    server.with_first("/storage/presigned", |req| {
+        assert_eq!(req.body, START_JPEG, "the raw JPEG is PUT, not a data URL");
+        assert_eq!(req.header("content-type"), Some("image/jpeg"));
+        assert_eq!(
+            req.header("x-amz-tagging"),
+            Some("retention=temporary"),
+            "every returned upload header is replayed"
+        );
+        assert_eq!(
+            req.header("authorization"),
+            None,
+            "the API credential never reaches the storage host"
+        );
+    });
+
+    server.with_first("/higgsfield-ai/dop/standard", |req| {
+        assert_eq!(req.header("authorization"), Some("Key test-id:test-secret"));
+        let body = req.json();
+        assert_eq!(body["prompt"], "slow dolly-in over the water");
+        assert_eq!(
+            body["image_url"],
+            format!("{}/cdn/frame.jpeg", server.base_url())
+        );
+        assert_eq!(
+            body["end_image_url"],
+            format!("{}/cdn/frame.jpeg", server.base_url())
+        );
+        assert!(
+            body.get("params").is_none(),
+            "the body is flat, with no `params` envelope: {body}"
+        );
+    });
+
     assert_eq!(
-        client.poll("js_test_1").await.expect("poll"),
+        server.paths()[..2],
+        [
+            "POST /files/generate-upload-url".to_string(),
+            "PUT /storage/presigned".to_string()
+        ],
+        "each still is uploaded before the submission that references it"
+    );
+
+    // ---- poll through queued -> running -> succeeded
+    assert_eq!(
+        client.poll(&accepted.status_url).await.expect("poll"),
         JobState::Queued
     );
     assert_eq!(
-        client.poll("js_test_1").await.expect("poll"),
+        client.poll(&accepted.status_url).await.expect("poll"),
         JobState::Running { progress: 0.42 }
     );
 
-    let done = client.poll("js_test_1").await.expect("poll");
+    let done = client.poll(&accepted.status_url).await.expect("poll");
     let JobState::Succeeded { video_url } = done else {
         panic!("expected success, got {done:?}");
     };
-    assert!(video_url.ends_with("/generated.mp4"), "{video_url}");
+    assert!(video_url.ends_with("/cdn/generated.mp4"), "{video_url}");
 
-    // 3. download
+    // ---- download
     let dir = std::env::temp_dir().join(format!("solcut-test-{}", std::process::id()));
     let dest = dir.join("generated.mp4");
     let written = client.download(&video_url, &dest).await.expect("download");
@@ -102,6 +192,76 @@ async fn submits_polls_and_downloads_a_generated_clip() {
         "the partial file is renamed away on success"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_queued_request_is_cancelled_through_the_api() {
+    let base = shared_base();
+    let handler_base = Arc::clone(&base);
+
+    let server = MockServer::start(move |req: &Request, _| {
+        let base = handler_base.get().expect("base url");
+        match (req.method.as_str(), req.path.as_str()) {
+            ("POST", "/higgsfield-ai/dop/standard") => Response::json(
+                200,
+                &format!(
+                    r#"{{"status":"queued","request_id":"r1","cancel_url":"{base}/requests/r1/cancel"}}"#
+                ),
+            ),
+            // 202 with an empty body is the documented success for a cancellation.
+            ("POST", "/requests/r1/cancel") => Response::json(202, ""),
+            ("POST", "/requests/started/cancel") => {
+                Response::json(400, r#"{"detail":"request already processing"}"#)
+            }
+            _ => Response::json(200, r#"{"public_url":"u","upload_url":"u"}"#),
+        }
+    });
+    base.set(server.base_url()).expect("set once");
+
+    let client = Client::new(config(&server)).expect("client");
+    let accepted = client
+        .submit(&GenerateRequest {
+            prompt: "drift".into(),
+            start_frame: Frame::Url("https://cdn.test/a.jpg".into()),
+            end_frame: None,
+            seed: None,
+        })
+        .await
+        .expect("submit");
+
+    assert!(client.cancel(&accepted.cancel_url).await.expect("cancel"));
+    assert!(
+        !client
+            .cancel(&format!("{}/requests/started/cancel", server.base_url()))
+            .await
+            .expect("a 400 is a lost race, not an error"),
+        "a request that has already started reports itself as not cancelled"
+    );
+}
+
+#[tokio::test]
+async fn an_already_hosted_frame_is_passed_through_without_an_upload() {
+    let server = MockServer::start(|req: &Request, _| match req.path.as_str() {
+        "/higgsfield-ai/dop/standard" => Response::json(200, r#"{"request_id":"r1"}"#),
+        _ => Response::json(500, r#"{"detail":"nothing else should be called"}"#),
+    });
+    let client = Client::new(config(&server)).expect("client");
+
+    client
+        .submit(&GenerateRequest {
+            prompt: "drift".into(),
+            start_frame: Frame::Url("https://cdn.test/a.jpg".into()),
+            end_frame: None,
+            seed: None,
+        })
+        .await
+        .expect("submit");
+
+    assert_eq!(
+        server.paths(),
+        ["POST /higgsfield-ai/dop/standard".to_string()],
+        "no presigned upload is minted for an image that already has a URL"
+    );
 }
 
 #[tokio::test]
@@ -127,32 +287,105 @@ async fn surfaces_rate_limiting_with_its_retry_after() {
 }
 
 #[tokio::test]
-async fn surfaces_a_bad_key_as_unauthorized() {
-    let server = MockServer::start(|_, _| Response::json(401, r#"{"detail":"bad key"}"#));
+async fn surfaces_a_bad_credential_as_unauthorized() {
+    let server =
+        MockServer::start(|_, _| Response::json(401, r#"{"detail":"Invalid credentials"}"#));
     let client = Client::new(config(&server)).expect("client");
 
     let err = client.submit(&request()).await.unwrap_err();
-    assert!(
-        matches!(err, HiggsfieldError::Unauthorized { status: 401 }),
-        "{err:?}"
+    let HiggsfieldError::Unauthorized { status, detail } = &err else {
+        panic!("expected an auth failure, got {err:?}");
+    };
+    assert_eq!(*status, 401);
+    assert_eq!(
+        detail, "Invalid credentials",
+        "the FastAPI detail is quoted back"
     );
-    assert!(!err.is_retryable(), "a bad key is not fixed by retrying");
+    assert!(
+        !err.is_retryable(),
+        "a bad credential is not fixed by retrying"
+    );
 }
 
 #[tokio::test]
-async fn reports_a_failed_job_with_its_reason() {
-    let server = MockServer::start(|req, _| match req.method.as_str() {
-        "POST" => Response::json(200, r#"{"job_set_id":"js_bad"}"#),
+async fn a_403_is_reported_as_missing_credits_rather_than_a_bad_key() {
+    let server =
+        MockServer::start(|_, _| Response::json(403, r#"{"detail":"Insufficient credits"}"#));
+    let err = Client::new(config(&server))
+        .unwrap()
+        .submit(&request())
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(err, HiggsfieldError::InsufficientCredits { .. }),
+        "{err:?}"
+    );
+    assert_eq!(err.title(), "Out of credits");
+}
+
+#[tokio::test]
+async fn a_rejected_body_quotes_the_validation_detail() {
+    let server = MockServer::start(|req: &Request, _| match req.path.as_str() {
+        "/higgsfield-ai/dop/standard" => Response::json(
+            422,
+            r#"{"detail":[{"loc":["body","image_url"],"msg":"field required"}]}"#,
+        ),
         _ => Response::json(
             200,
-            r#"{"jobs":[{"status":"failed","error":"content policy"}]}"#,
+            r#"{"public_url":"https://cdn.test/a.jpg","upload_url":"https://cdn.test/put"}"#,
         ),
     });
     let client = Client::new(config(&server)).expect("client");
 
-    client.submit(&request()).await.expect("submit");
+    let err = client
+        .submit(&GenerateRequest {
+            prompt: "drift".into(),
+            start_frame: Frame::Url("https://cdn.test/a.jpg".into()),
+            end_frame: None,
+            seed: None,
+        })
+        .await
+        .unwrap_err();
+
+    let HiggsfieldError::Http { status, body } = &err else {
+        panic!("expected an HTTP error, got {err:?}");
+    };
+    assert_eq!(*status, 422);
+    assert!(body.contains("image_url"), "{body}");
+    assert!(
+        !err.is_retryable(),
+        "a rejected body is not fixed by retrying"
+    );
+}
+
+#[tokio::test]
+async fn reports_a_failed_generation_with_its_reason() {
+    let server = MockServer::start(|req: &Request, _| match req.method.as_str() {
+        "GET" => Response::json(
+            200,
+            r#"{"status":"failed","request_id":"r1","error":"content policy"}"#,
+        ),
+        _ => Response::json(200, r#"{"request_id":"r1"}"#),
+    });
+    let client = Client::new(config(&server)).expect("client");
+
+    let accepted = client
+        .submit(&GenerateRequest {
+            prompt: "drift".into(),
+            start_frame: Frame::Url("https://cdn.test/a.jpg".into()),
+            end_frame: None,
+            seed: None,
+        })
+        .await
+        .expect("submit");
     assert_eq!(
-        client.poll("js_bad").await.expect("poll"),
+        accepted.status_url,
+        format!("{}/requests/r1/status", server.base_url()),
+        "a response without a status_url still yields the documented path"
+    );
+    assert_eq!(
+        client.poll(&accepted.status_url).await.expect("poll"),
         JobState::Failed {
             message: "content policy".into()
         }
@@ -193,22 +426,32 @@ async fn a_failed_download_leaves_no_playable_file_behind() {
 }
 
 #[tokio::test]
-async fn credential_check_accepts_a_404_but_rejects_a_401() {
-    let ok = MockServer::start(|_, _| Response::json(404, r#"{"detail":"no such job set"}"#));
-    assert!(Client::new(config(&ok))
+async fn the_connection_check_proves_the_credential_without_generating_anything() {
+    let ok = MockServer::start(|_, _| {
+        Response::json(
+            200,
+            r#"{"public_url":"https://cdn.test/a.jpeg","upload_url":"https://storage.test/put"}"#,
+        )
+    });
+    Client::new(config(&ok))
         .unwrap()
         .check_credentials()
         .await
-        .is_ok());
+        .expect("a 200 from the upload endpoint means the credential works");
+    assert_eq!(
+        ok.paths(),
+        ["POST /files/generate-upload-url".to_string()],
+        "nothing is submitted, so nothing is charged"
+    );
 
-    let bad = MockServer::start(|_, _| Response::json(403, r#"{"detail":"forbidden"}"#));
+    let bad = MockServer::start(|_, _| Response::json(401, r#"{"detail":"Invalid credentials"}"#));
     let err = Client::new(config(&bad))
         .unwrap()
         .check_credentials()
         .await
         .unwrap_err();
     assert!(
-        matches!(err, HiggsfieldError::Unauthorized { status: 403 }),
+        matches!(err, HiggsfieldError::Unauthorized { status: 401, .. }),
         "{err:?}"
     );
 }

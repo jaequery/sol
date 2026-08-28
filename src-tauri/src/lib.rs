@@ -9,7 +9,9 @@ pub mod settings;
 
 use serde::{Deserialize, Serialize};
 use settings::{SettingsInput, SettingsView};
-use solcut_higgsfield::{Client, Config, Frame, GenerateRequest, HiggsfieldError, JobState};
+use solcut_higgsfield::{
+    Accepted, Client, Config, Frame, GenerateRequest, HiggsfieldError, JobState,
+};
 use solcut_render::{ExportSpec, Progress, Renderer};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -17,8 +19,15 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-/// How often a running job is polled, and how long we keep at it before giving up.
-const POLL_INTERVAL: Duration = Duration::from_secs(3);
+/// The polling cadence Higgsfield asks for: start at two seconds, ease off towards ten,
+/// and give up at an application-level timeout.
+/// <https://docs.higgsfield.ai/docs/concepts/polling>
+const POLL_INTERVAL_START: Duration = Duration::from_secs(2);
+const POLL_INTERVAL_MAX: Duration = Duration::from_secs(10);
+const POLL_BACKOFF: f32 = 1.5;
+/// The wait is spent in short slices so a cancellation still reaches the API while the
+/// request is queued — which is the only window in which it can be cancelled at all.
+const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const POLL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Past this, the UI switches to its "taking longer than usual" copy.
 const SLOW_AFTER: Duration = Duration::from_secs(90);
@@ -104,11 +113,11 @@ pub struct GenerateInput {
     /// Chosen by the frontend so it can match events to the segment that asked for them.
     pub generation_id: String,
     pub prompt: String,
-    /// `data:image/jpeg;base64,…` of the photo framed as the first keyframe.
+    /// `data:image/jpeg;base64,…` of the photo framed as the first keyframe. The client
+    /// uploads it and passes the resulting public URL, which is all the API accepts.
     pub start_frame: String,
     /// The same for the second keyframe, when there is one.
     pub end_frame: Option<String>,
-    pub duration_seconds: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -238,7 +247,6 @@ async fn run_generation(app: AppHandle, config: Config, media_dir: PathBuf, inpu
         prompt: input.prompt,
         start_frame: Frame::DataUrl(input.start_frame),
         end_frame: input.end_frame.map(Frame::DataUrl),
-        duration_seconds: input.duration_seconds,
         seed: None,
     };
 
@@ -247,20 +255,26 @@ async fn run_generation(app: AppHandle, config: Config, media_dir: PathBuf, inpu
         GenerationUpdate::new(&id, "queued", started.elapsed()),
     );
 
-    let handle = match client.submit(&request).await {
-        Ok(h) => h,
+    // `submit` uploads both stills before it posts, so this is the slow part of the flow.
+    let accepted = match client.submit(&request).await {
+        Ok(a) => a,
         Err(e) => return fail(&app, &id, started, &e),
     };
 
-    let mut queued = GenerationUpdate::new(&id, "queued", started.elapsed());
-    queued.job_id = Some(handle.job_set_id.clone());
-    emit(&app, queued);
+    emit(
+        &app,
+        update_for(&id, "queued", started.elapsed(), &accepted),
+    );
 
+    let mut interval = POLL_INTERVAL_START;
     loop {
-        if cancelled(&app, &id) {
+        if wait_unless_cancelled(&app, &id, interval).await {
+            // Best effort: the API only cancels a request that has not started, and says
+            // so with a 400 we deliberately ignore. Either way we stop watching it.
+            let _ = client.cancel(&accepted.cancel_url).await;
             emit(
                 &app,
-                GenerationUpdate::new(&id, "cancelled", started.elapsed()),
+                update_for(&id, "cancelled", started.elapsed(), &accepted),
             );
             return;
         }
@@ -275,20 +289,26 @@ async fn run_generation(app: AppHandle, config: Config, media_dir: PathBuf, inpu
                 )),
             );
         }
+        interval = next_interval(interval);
 
-        tokio::time::sleep(POLL_INTERVAL).await;
-
-        match client.poll(&handle.job_set_id).await {
+        match client.poll(&accepted.status_url).await {
             Ok(JobState::Queued) => {
-                let mut u = GenerationUpdate::new(&id, "queued", started.elapsed());
-                u.job_id = Some(handle.job_set_id.clone());
-                emit(&app, u);
+                emit(
+                    &app,
+                    update_for(&id, "queued", started.elapsed(), &accepted),
+                );
             }
             Ok(JobState::Running { progress }) => {
-                let mut u = GenerationUpdate::new(&id, "running", started.elapsed());
+                let mut u = update_for(&id, "running", started.elapsed(), &accepted);
                 u.progress = progress;
-                u.job_id = Some(handle.job_set_id.clone());
                 emit(&app, u);
+            }
+            Ok(JobState::Cancelled) => {
+                emit(
+                    &app,
+                    update_for(&id, "cancelled", started.elapsed(), &accepted),
+                );
+                return;
             }
             Ok(JobState::Failed { message }) => {
                 return fail(&app, &id, started, &HiggsfieldError::JobFailed(message));
@@ -297,9 +317,8 @@ async fn run_generation(app: AppHandle, config: Config, media_dir: PathBuf, inpu
                 let dest = media_dir.join(format!("{id}.mp4"));
                 match client.download(&video_url, &dest).await {
                     Ok(_) => {
-                        let mut u = GenerationUpdate::new(&id, "succeeded", started.elapsed());
+                        let mut u = update_for(&id, "succeeded", started.elapsed(), &accepted);
                         u.progress = 1.0;
-                        u.job_id = Some(handle.job_set_id.clone());
                         u.output_path = Some(dest.display().to_string());
                         emit(&app, u);
                     }
@@ -310,13 +329,41 @@ async fn run_generation(app: AppHandle, config: Config, media_dir: PathBuf, inpu
             // A single failed poll is usually a blip; keep going until the timeout, but
             // surface anything that retrying cannot fix.
             Err(e) if e.is_retryable() => {
-                let mut u = GenerationUpdate::new(&id, "running", started.elapsed());
+                let mut u = update_for(&id, "running", started.elapsed(), &accepted);
                 u.error = Some(GenerationError::from(&e));
                 emit(&app, u);
             }
             Err(e) => return fail(&app, &id, started, &e),
         }
     }
+}
+
+/// An update tagged with the request it belongs to, so the UI can quote the `request_id`
+/// the docs ask people to include in support requests.
+fn update_for(id: &str, status: &str, elapsed: Duration, accepted: &Accepted) -> GenerationUpdate {
+    let mut update = GenerationUpdate::new(id, status, elapsed);
+    update.job_id = Some(accepted.request_id.clone());
+    update
+}
+
+/// Wait out one polling interval, returning early — and `true` — the moment the user
+/// cancels, so the cancellation reaches the API rather than a poll's worth of seconds later.
+async fn wait_unless_cancelled(app: &AppHandle, id: &str, interval: Duration) -> bool {
+    let deadline = Instant::now() + interval;
+    loop {
+        if cancelled(app, id) {
+            return true;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        tokio::time::sleep(left.min(CANCEL_CHECK_INTERVAL)).await;
+    }
+}
+
+fn next_interval(current: Duration) -> Duration {
+    current.mul_f32(POLL_BACKOFF).min(POLL_INTERVAL_MAX)
 }
 
 fn cancelled(app: &AppHandle, id: &str) -> bool {
