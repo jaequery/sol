@@ -13,6 +13,7 @@ import {
   DEFAULT_PHOTO_DURATION_MS,
   DEFAULT_VIDEO_DURATION_MS,
   type Clip,
+  type ClipEdge,
   type Generation,
   type MediaAsset,
   type MediaKind,
@@ -25,10 +26,12 @@ import {
   findSegment,
   insertClips,
   makeId,
+  moveClip as moveClipInList,
   moveKeyframe,
   photoClip,
   removeKeyframe,
   replaceSegment,
+  resizeClip as resizeClipEdge,
   segmentsOf,
   setPrompt,
   totalDurationMs,
@@ -104,6 +107,8 @@ export interface EditorState {
   deleteSelection: () => void;
   setSegmentPrompt: (prompt: string) => void;
   splitAtPlayhead: () => void;
+  moveClip: (clipId: string, toIndex: number) => void;
+  resizeClip: (clipId: string, edge: ClipEdge, deltaMs: number) => void;
 
   // ---- playback
   setPlayhead: (ms: number) => void;
@@ -351,6 +356,31 @@ export const useEditor = create<EditorState>((set, get) => ({
     });
   },
 
+  /** Drag along the track: `toIndex` counts positions among the clips it leaves behind. */
+  moveClip(clipId, toIndex) {
+    const { clips } = get();
+    const next = moveClipInList(clips, clipId, toIndex);
+    if (next === clips) return;
+    set({ clips: next, selection: { kind: 'clip', clipId } });
+  },
+
+  /** Drag an edge: `deltaMs` is how far it moved to the right, whichever edge it is. */
+  resizeClip(clipId, edge, deltaMs) {
+    const { clips, assets, playheadMs } = get();
+    const clip = clips.find((c) => c.id === clipId);
+    if (!clip) return;
+
+    const resized = resizeClipEdge(clip, edge, deltaMs, assets[clip.assetId]?.durationMs);
+    if (resized === clip) return;
+
+    const next = clips.map((c) => (c.id === clipId ? resized : c));
+    set({
+      clips: next,
+      // The track just got shorter under the playhead, or it did not — either way it stays on it.
+      playheadMs: Math.min(playheadMs, totalDurationMs(next)),
+    });
+  },
+
   // ------------------------------------------------------------------ playback
 
   setPlayhead(ms) {
@@ -456,6 +486,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (update.status !== 'succeeded' || !update.outputPath) return;
 
     // The clip is on the timeline; put the rendered video where the segment was.
+    const source = get().clips.find((c) => c.id === next.clipId);
     const asset: MediaAsset = {
       id: makeId('asset'),
       name: `ai-${update.generationId}.mp4`,
@@ -463,6 +494,10 @@ export const useEditor = create<EditorState>((set, get) => ({
       path: update.outputPath,
       src: backend.assetSrc(update.outputPath),
       sizeBytes: 0,
+      // Higgsfield rendered exactly the segment it was given, so that is the whole file.
+      durationMs: source
+        ? findSegment(source, next.fromKeyframeId, next.toKeyframeId)?.durationMs
+        : undefined,
     };
 
     set((s) => {
@@ -631,7 +666,16 @@ async function probeDurations(set: Setter, accepted: { asset: MediaAsset; clip: 
     videos.map(async ({ asset, clip }) => {
       const durationMs = await probeVideoDurationMs(asset.src, DEFAULT_VIDEO_DURATION_MS);
       set((s) => ({
-        clips: s.clips.map((c) => (c.id === clip.id ? { ...c, durationMs } : c)),
+        // The asset keeps the source length for good: it is what bounds a later trim.
+        assets: s.assets[asset.id]
+          ? { ...s.assets, [asset.id]: { ...s.assets[asset.id], durationMs } }
+          : s.assets,
+        clips: s.clips.map((c) =>
+          // A trim that landed while the probe was in flight is the user's, not ours.
+          c.id === clip.id && c.durationMs === DEFAULT_VIDEO_DURATION_MS && c.trimStartMs === 0
+            ? { ...c, durationMs }
+            : c,
+        ),
       }));
     }),
   );

@@ -10,9 +10,12 @@
 import {
   DEFAULT_PHOTO_DURATION_MS,
   IDENTITY_TRANSFORM,
+  MAX_PHOTO_DURATION_MS,
   MAX_SCALE,
+  MIN_CLIP_DURATION_MS,
   MIN_SCALE,
   type Clip,
+  type ClipEdge,
   type Keyframe,
   type PlacedClip,
   type Segment,
@@ -225,7 +228,7 @@ export function videoClip(asset: { id: string; name: string }, durationMs: numbe
     assetId: asset.id,
     kind: 'video',
     name: asset.name,
-    durationMs: Math.max(100, Math.round(durationMs)),
+    durationMs: Math.max(MIN_CLIP_DURATION_MS, Math.round(durationMs)),
     trimStartMs: 0,
     keyframes: [],
     prompts: {},
@@ -237,17 +240,138 @@ export function insertClips(clips: Clip[], index: number, incoming: Clip[]): Cli
   return [...clips.slice(0, at), ...incoming, ...clips.slice(at)];
 }
 
-/** Where a drop at `xRatio` (0..1 across the track) should land. */
-export function insertIndexAt(clips: Clip[], xRatio: number): number {
-  const total = totalDurationMs(clips);
-  if (total === 0) return 0;
-  const timeMs = clamp(xRatio, 0, 1) * total;
+/** The boundary nearest `timeMs`, as an index into `clips`. */
+export function insertIndexAtTime(clips: Clip[], timeMs: number): number {
   const placed = layout(clips);
   for (let i = 0; i < placed.length; i += 1) {
     const { startMs, endMs } = placed[i];
     if (timeMs < startMs + (endMs - startMs) / 2) return i;
   }
   return clips.length;
+}
+
+/** Where a drop at `xRatio` (0..1 across the track) should land. */
+export function insertIndexAt(clips: Clip[], xRatio: number): number {
+  const total = totalDurationMs(clips);
+  if (total === 0) return 0;
+  return insertIndexAtTime(clips, clamp(xRatio, 0, 1) * total);
+}
+
+/** Where the clip at `index` starts — the boundary an insertion marker is drawn on. */
+export function startOfIndex(clips: Clip[], index: number): number {
+  return clips
+    .slice(0, clamp(index, 0, clips.length))
+    .reduce((sum, c) => sum + c.durationMs, 0);
+}
+
+/**
+ * Where a clip dragged to `timeMs` wants to land, counted among the clips it leaves
+ * behind — the same index `moveClip` takes.
+ */
+export function dropIndexFor(clips: Clip[], clipId: string, timeMs: number): number {
+  return insertIndexAtTime(
+    clips.filter((c) => c.id !== clipId),
+    timeMs,
+  );
+}
+
+/**
+ * Reposition a clip in the order. `toIndex` counts positions among the *other* clips, so
+ * "put it back where it was" is a no-op rather than an off-by-one.
+ */
+export function moveClip(clips: Clip[], clipId: string, toIndex: number): Clip[] {
+  const from = clips.findIndex((c) => c.id === clipId);
+  if (from === -1) return clips;
+  const rest = [...clips.slice(0, from), ...clips.slice(from + 1)];
+  const at = clamp(Math.round(toIndex), 0, rest.length);
+  if (at === from) return clips;
+  return [...rest.slice(0, at), clips[from], ...rest.slice(at)];
+}
+
+/**
+ * Move one edge of a clip by `deltaMs` — positive is always "to the right", whichever edge
+ * it is.
+ *
+ * The track is gapless, so the head edge is a trim rather than a move: pulling it right
+ * shortens the clip from the front and everything after slides left with it. On a video
+ * that walks `trimStartMs` by the same amount, so the frames still on screen stay on the
+ * frames they were on and only the in-point moves.
+ *
+ * `sourceDurationMs` is the real length of the file behind the clip. Leave it `undefined`
+ * when it has not been probed yet: the clip can then only shrink, because nothing proves
+ * there are more frames to show.
+ */
+export function resizeClip(
+  clip: Clip,
+  edge: ClipEdge,
+  deltaMs: number,
+  sourceDurationMs?: number,
+): Clip {
+  const delta = Math.round(deltaMs);
+  if (!Number.isFinite(delta) || delta === 0) return clip;
+  return edge === 'end' ? resizeEnd(clip, delta, sourceDurationMs) : resizeStart(clip, delta);
+}
+
+function resizeEnd(clip: Clip, delta: number, sourceDurationMs?: number): Clip {
+  const durationMs = clamp(
+    clip.durationMs + delta,
+    MIN_CLIP_DURATION_MS,
+    maxDurationOf(clip, sourceDurationMs),
+  );
+  if (durationMs === clip.durationMs) return clip;
+  return withKeyframesInside({ ...clip, durationMs }, 0);
+}
+
+// No `sourceDurationMs` here: a head trim moves the in-point and the length by the same
+// amount, so the out-point never moves and whatever bound it was already inside, it stays in.
+function resizeStart(clip: Clip, delta: number): Clip {
+  // How far left the head can go: back to the start of the source, or — for a photo, which
+  // has no source to run out of — as far as the overall cap allows.
+  const headroom =
+    clip.kind === 'video' ? clip.trimStartMs : MAX_PHOTO_DURATION_MS - clip.durationMs;
+  const shift = clamp(delta, -headroom, clip.durationMs - MIN_CLIP_DURATION_MS);
+  if (shift === 0) return clip;
+
+  // `trimStartMs + durationMs` is unchanged, so the out-point cannot escape the source.
+  return withKeyframesInside(
+    {
+      ...clip,
+      durationMs: clip.durationMs - shift,
+      trimStartMs: clip.kind === 'video' ? clip.trimStartMs + shift : clip.trimStartMs,
+    },
+    -shift,
+  );
+}
+
+/** The longest this clip could be played from its current in-point. */
+function maxDurationOf(clip: Clip, sourceDurationMs?: number): number {
+  if (clip.kind !== 'video') return MAX_PHOTO_DURATION_MS;
+  // Unprobed: the only frames known to exist are the ones the clip already plays.
+  const available =
+    sourceDurationMs === undefined ? clip.durationMs : sourceDurationMs - clip.trimStartMs;
+  return Math.max(available, MIN_CLIP_DURATION_MS);
+}
+
+/**
+ * Keep a resized clip's keyframes inside it.
+ *
+ * They travel with the content by `shiftMs`, and anything that ends up outside is pinned to
+ * the nearest edge rather than dropped — the framing a user set for the end of a photo is
+ * still the framing they want at its new end. Keyframes that come to rest on the same
+ * instant collapse to the last of them, and prompts hanging off the ones that went with
+ * them go too.
+ */
+function withKeyframesInside(clip: Clip, shiftMs: number): Clip {
+  if (clip.keyframes.length === 0) return clip;
+
+  const byTime = new Map<number, Keyframe>();
+  for (const kf of sortKeyframes(clip.keyframes)) {
+    const timeMs = clamp(kf.timeMs + shiftMs, 0, clip.durationMs);
+    byTime.set(timeMs, { ...kf, timeMs });
+  }
+  const keyframes = sortKeyframes([...byTime.values()]);
+  const kept = new Set(keyframes.map((k) => k.id));
+  return { ...clip, keyframes, prompts: pickPrompts(clip, (k) => kept.has(k.id)) };
 }
 
 /**

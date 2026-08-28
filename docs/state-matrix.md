@@ -58,7 +58,21 @@ hi-fi walkthrough artifact.
 |---|---|---|---|---|
 | 27 | **Long timeline** | More clips than fit | Timeline scrolls horizontally; the ruler and playhead stay in sync; zoom control rescales | Zoom out |
 | 28 | **Long file name** | Name wider than the clip | Name truncates with an ellipsis in the middle and keeps the extension; full name in the tooltip and the bin | — |
-| 29 | **Very short clip** | Clip narrower than its label | Label and duration are dropped in favour of the thumbnail; the clip stays grabbable at a 12 px minimum | Zoom in |
+| 29 | **Very short clip** | Clip narrower than its label | Label and duration are dropped in favour of the thumbnail; the clip stays grabbable at a 12 px minimum, and under 32 px the two resize handles step aside so there is still something to grab for a reorder | Zoom in |
 | 30 | **Dense keyframes** | Many keyframes in a small span | Diamonds keep a minimum spacing and collapse into a "+n" cluster chip that expands on zoom | Zoom in |
 | 31 | **Long prompt** | Prompt longer than the textarea | Textarea scrolls at a fixed height (never pushes the Generate button off-panel); the timeline segment chip truncates to one line | — |
 | 32 | **Many generations** | Several jobs at once | Each placeholder shows its own progress; the title bar shows an aggregate "n rendering" chip | — |
+
+## 6. Direct manipulation on the track
+
+Position is still implied by a clip's index and length by `durationMs`/`trimStartMs` — these states
+are the ways a user edits those two numbers by hand rather than by re-importing or splitting.
+
+| # | State | Trigger | What is shown | Way out |
+|---|---|---|---|---|
+| 33 | **Idle clip** | Pointer over a clip | The body takes a grab cursor; a bar appears at each edge with a resize cursor. On a clip under 32 px wide the bars are omitted — they would cover the whole thing | Press, or move away |
+| 34 | **Reordering** | Press a clip body and travel ≥ 4 px | The clip lifts and rides with the cursor; the rest of the track holds still and an insertion marker shows the boundary it would land on | Release to drop; dropping it back where it started is a no-op |
+| 35 | **Press without travel** | Press and release under the threshold | Nothing moves; the press is a plain selection, exactly as before | — |
+| 36 | **Resizing** | Drag either edge handle | The clip's new length is previewed live and every clip after it slides along, so the track reads the way it will once released. A photo's keyframes travel with the head and are pinned inside the new range; a video's `trimStartMs` walks with its head | Release |
+| 37 | **Resize refused at a limit** | Dragging past a bound | The edge simply stops: a video cannot pass the first or last frame of its source (nor grow at all before its length is probed), a clip cannot go under 100 ms, and a photo cannot pass 10 minutes | Drag the other way |
+| 38 | **Trimming without a mouse** | Handle focused, ← / → | The same edit at 100 ms a press, or 1 s with Shift | Tab away |

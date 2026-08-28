@@ -11,6 +11,11 @@ export interface MediaAsset {
   /** Something an `<img>`/`<video>` can load: an `asset:` URL or an object URL. */
   src: string;
   sizeBytes: number;
+  /**
+   * Videos only: the source's real length, once it has been probed. It is the wall a clip
+   * on this asset cannot be trimmed past; while it is unknown, that clip can only shrink.
+   */
+  durationMs?: number;
   /** Set when the source file has gone missing since it was imported. */
   missing?: boolean;
 }
@@ -77,6 +82,9 @@ export interface Clip {
   };
 }
 
+/** Which end of a clip a resize drag has hold of. */
+export type ClipEdge = 'start' | 'end';
+
 /** A gap between two consecutive keyframes — the thing a prompt is attached to. */
 export interface Segment {
   fromKeyframeId: string;
@@ -112,3 +120,11 @@ export const MAX_SCALE = 4;
 
 export const DEFAULT_PHOTO_DURATION_MS = 5000;
 export const DEFAULT_VIDEO_DURATION_MS = 5000;
+
+/** A resize floor. Below this there is nothing left to grab, and barely a frame to show. */
+export const MIN_CLIP_DURATION_MS = 100;
+/**
+ * A photo has no source length to run out of, so its only ceiling is a sane one — long
+ * enough for any real hold, short enough that a runaway drag cannot make the track useless.
+ */
+export const MAX_PHOTO_DURATION_MS = 10 * 60 * 1000;
