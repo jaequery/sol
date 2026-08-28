@@ -119,6 +119,35 @@ impl ExportClip {
     }
 }
 
+/// One sound lane, mixed under the stitched film. The editor drops muted lanes before the
+/// spec is sent, so every track here is meant to be heard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioTrack {
+    pub path: PathBuf,
+    /// Where on the timeline the sound starts.
+    pub start_ms: u32,
+    /// Where playback starts inside the source file.
+    pub trim_start_ms: u32,
+    pub duration_ms: u32,
+    #[serde(default = "full_volume")]
+    pub volume: f32,
+}
+
+fn full_volume() -> f32 {
+    1.0
+}
+
+impl AudioTrack {
+    fn name(&self) -> String {
+        self.path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("audio track")
+            .to_string()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportSpec {
@@ -126,6 +155,9 @@ pub struct ExportSpec {
     pub height: u32,
     pub fps: u32,
     pub clips: Vec<ExportClip>,
+    /// Defaulted so a spec from an editor that predates audio still deserialises.
+    #[serde(default)]
+    pub audio: Vec<AudioTrack>,
 }
 
 impl Default for ExportSpec {
@@ -135,6 +167,7 @@ impl Default for ExportSpec {
             height: 1080,
             fps: 30,
             clips: Vec::new(),
+            audio: Vec::new(),
         }
     }
 }
@@ -333,6 +366,72 @@ pub fn normalize_args(
     args
 }
 
+/// The filter graph that lays every audio track over the stitched film's own sound.
+///
+/// Track `i` is ffmpeg input `i + 1` (the film is input 0): trimmed to the segment the
+/// lane plays, converted to the bed's layout so `amix` never guesses, and delayed to its
+/// place on the timeline. `duration=first` pins the output to the film's length — a music
+/// bed running past the last clip is cut, never padded — and `normalize=0` keeps the
+/// levels as authored instead of dividing everything by the track count.
+pub fn audio_mix_filter(tracks: &[AudioTrack]) -> String {
+    let mut parts = Vec::new();
+    let mut labels = vec!["[0:a]".to_string()];
+
+    for (i, track) in tracks.iter().enumerate() {
+        let input = i + 1;
+        let from = num(track.trim_start_ms as f32 / 1000.0);
+        let to = num((track.trim_start_ms + track.duration_ms) as f32 / 1000.0);
+        let mut chain = vec![
+            format!("atrim=start={from}:end={to}"),
+            "asetpts=PTS-STARTPTS".to_string(),
+            "aformat=sample_rates=48000:channel_layouts=stereo".to_string(),
+        ];
+        if (track.volume - 1.0).abs() > f32::EPSILON {
+            chain.push(format!("volume={}", num(track.volume.clamp(0.0, 1.0))));
+        }
+        if track.start_ms > 0 {
+            chain.push(format!("adelay={ms}|{ms}", ms = track.start_ms));
+        }
+        parts.push(format!("[{input}:a]{}[mix{input}]", chain.join(",")));
+        labels.push(format!("[mix{input}]"));
+    }
+
+    parts.push(format!(
+        "{}amix=inputs={}:duration=first:normalize=0[aout]",
+        labels.join(""),
+        labels.len(),
+    ));
+    parts.join(";")
+}
+
+/// Full ffmpeg argv for the mixing pass. The picture is already final, so it is
+/// stream-copied; only the mixed audio is encoded.
+pub fn mix_args(stitched: &Path, tracks: &[AudioTrack], out: &Path) -> Vec<String> {
+    let mut args: Vec<String> = vec!["-hide_banner".into(), "-nostdin".into(), "-y".into()];
+    args.extend(["-i".into(), stitched.display().to_string()]);
+    for track in tracks {
+        args.extend(["-i".into(), track.path.display().to_string()]);
+    }
+    args.extend(["-filter_complex".into(), audio_mix_filter(tracks)]);
+    args.extend(["-map".into(), "0:v".into(), "-map".into(), "[aout]".into()]);
+    args.extend([
+        "-c:v".into(),
+        "copy".into(),
+        "-c:a".into(),
+        "aac".into(),
+        "-b:a".into(),
+        "128k".into(),
+        "-ar".into(),
+        "48000".into(),
+        "-ac".into(),
+        "2".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        out.display().to_string(),
+    ]);
+    args
+}
+
 /// Full ffmpeg argv for stitching the normalised parts. They share codec parameters by
 /// construction, so this is a stream copy.
 pub fn concat_args(list_file: &Path, out: &Path) -> Vec<String> {
@@ -440,9 +539,17 @@ impl Renderer {
                 });
             }
         }
+        for track in &spec.audio {
+            if !track.path.exists() {
+                return Err(RenderError::SourceMissing {
+                    clip: track.name(),
+                    path: track.path.display().to_string(),
+                });
+            }
+        }
 
         tokio::fs::create_dir_all(workdir).await?;
-        let total = spec.clips.len() + 1;
+        let total = spec.clips.len() + 1 + usize::from(!spec.audio.is_empty());
         let mut parts = Vec::with_capacity(spec.clips.len());
 
         for (i, clip) in spec.clips.iter().enumerate() {
@@ -471,10 +578,29 @@ impl Renderer {
             total,
         });
 
+        // With audio lanes to mix, the stitch is an intermediate; without, it is the file.
+        let stitched = if spec.audio.is_empty() {
+            out.to_path_buf()
+        } else {
+            workdir.join("stitched.mp4")
+        };
         let list = workdir.join("concat.txt");
         tokio::fs::write(&list, concat_list(&parts)).await?;
-        self.run(&concat_args(&list, out), "joining the clips")
+        self.run(&concat_args(&list, &stitched), "joining the clips")
             .await?;
+
+        if !spec.audio.is_empty() {
+            on_progress(Progress {
+                stage: "Mixing audio".into(),
+                done: spec.clips.len() + 1,
+                total,
+            });
+            self.run(
+                &mix_args(&stitched, &spec.audio, out),
+                "mixing the audio tracks",
+            )
+            .await?;
+        }
 
         on_progress(Progress {
             stage: "Done".into(),
@@ -518,6 +644,17 @@ mod tests {
             height: 360,
             fps: 30,
             clips: vec![],
+            audio: vec![],
+        }
+    }
+
+    fn track(start_ms: u32, trim_start_ms: u32, duration_ms: u32, volume: f32) -> AudioTrack {
+        AudioTrack {
+            path: "/tmp/theme.mp3".into(),
+            start_ms,
+            trim_start_ms,
+            duration_ms,
+            volume,
         }
     }
 
@@ -719,6 +856,59 @@ mod tests {
     }
 
     #[test]
+    fn each_audio_lane_is_trimmed_delayed_and_mixed_over_the_films_own_sound() {
+        let f = audio_mix_filter(&[track(1500, 500, 2000, 1.0), track(0, 0, 3000, 0.5)]);
+
+        // Lane 1: playback window inside the source, then its place on the timeline.
+        assert!(f.contains("[1:a]atrim=start=0.5:end=2.5"), "{f}");
+        assert!(f.contains("adelay=1500|1500"), "{f}");
+        // Lane 2 starts at zero, so no delay filter — but its volume is not unity.
+        assert!(f.contains("[2:a]atrim=start=0:end=3"), "{f}");
+        assert!(f.contains("volume=0.5"), "{f}");
+        // The film's own bed plus both lanes, pinned to the film's length.
+        assert!(f.contains("[0:a][mix1][mix2]amix=inputs=3"), "{f}");
+        assert!(f.contains("duration=first"), "{f}");
+        assert!(f.contains("normalize=0"), "{f}");
+    }
+
+    #[test]
+    fn a_lane_at_full_volume_from_zero_gets_no_needless_filters() {
+        let f = audio_mix_filter(&[track(0, 0, 2000, 1.0)]);
+        assert!(!f.contains("volume="), "{f}");
+        assert!(!f.contains("adelay"), "{f}");
+        // Every lane still lands on the bed's layout so amix never has to guess.
+        assert!(
+            f.contains("aformat=sample_rates=48000:channel_layouts=stereo"),
+            "{f}"
+        );
+    }
+
+    #[test]
+    fn the_mix_pass_copies_the_picture_and_encodes_only_the_sound() {
+        let args = mix_args(
+            Path::new("/tmp/stitched.mp4"),
+            &[track(0, 0, 2000, 1.0)],
+            Path::new("/tmp/out.mp4"),
+        );
+
+        // The film first, then one input per lane.
+        assert_eq!(args.iter().filter(|a| *a == "-i").count(), 2, "{args:?}");
+        assert!(
+            args.windows(2).any(|w| w[0] == "-c:v" && w[1] == "copy"),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2).any(|w| w[0] == "-map" && w[1] == "[aout]"),
+            "{args:?}"
+        );
+        // The audio parameters match the parts', so nothing about the format drifts.
+        assert!(
+            args.windows(2).any(|w| w[0] == "-c:a" && w[1] == "aac"),
+            "{args:?}"
+        );
+    }
+
+    #[test]
     fn progress_is_a_usable_fraction() {
         assert_eq!(
             Progress {
@@ -804,6 +994,9 @@ mod wire_format {
     fn deserialises_the_json_the_editor_sends() {
         let json = r#"{
             "width": 1920, "height": 1080, "fps": 30,
+            "audio": [
+                {"path": "/tmp/theme.mp3", "startMs": 1500, "trimStartMs": 250, "durationMs": 8000, "volume": 0.8}
+            ],
             "clips": [
                 {
                     "name": "sunset.jpg", "durationMs": 6000, "kind": "photo",
@@ -834,5 +1027,18 @@ mod wire_format {
             panic!("second clip is a video");
         };
         assert_eq!(*trim_start_ms, 1500);
+
+        assert_eq!(spec.audio.len(), 1);
+        assert_eq!(spec.audio[0].start_ms, 1500);
+        assert_eq!(spec.audio[0].trim_start_ms, 250);
+        assert_eq!(spec.audio[0].volume, 0.8);
+    }
+
+    /// A spec with no `audio` key — from before the lanes existed — still parses.
+    #[test]
+    fn a_spec_without_audio_lanes_still_parses() {
+        let json = r#"{"width": 640, "height": 360, "fps": 30, "clips": []}"#;
+        let spec: ExportSpec = serde_json::from_str(json).expect("parses");
+        assert!(spec.audio.is_empty());
     }
 }

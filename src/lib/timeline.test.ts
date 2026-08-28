@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   addKeyframe,
+  audioEndMs,
+  audioTrack,
   clipAt,
   cssTransform,
   dropIndexFor,
@@ -11,16 +13,19 @@ import {
   insertIndexAt,
   insertIndexAtTime,
   layout,
+  moveAudio,
   moveClip,
   moveKeyframe,
   photoClip,
   removeKeyframe,
   replaceSegment,
   resetIds,
+  resizeAudio,
   resizeClip,
   segmentsOf,
   setPrompt,
   startOfIndex,
+  timelineEndMs,
   totalDurationMs,
   transformAt,
   truncateName,
@@ -443,5 +448,56 @@ describe('resizing a clip', () => {
     expect(resizeClip(clip, 'end', 0)).toBe(clip);
     expect(resizeClip(clip, 'end', Number.NaN)).toBe(clip);
     expect(resizeClip(clip, 'start', 0.4)).toBe(clip);
+  });
+});
+
+describe('audio tracks', () => {
+  const asset = { id: 'asset_song', name: 'theme.mp3' };
+
+  it('starts where it was placed, never before zero, and never absurdly short', () => {
+    const track = audioTrack(asset, 2500, 8000);
+    expect([track.startMs, track.durationMs, track.trimStartMs]).toEqual([2500, 8000, 0]);
+    expect([track.volume, track.muted]).toEqual([1, false]);
+    expect(audioTrack(asset, -50, 8000).startMs).toBe(0);
+    expect(audioTrack(asset, 0, 1).durationMs).toBe(MIN_CLIP_DURATION_MS);
+  });
+
+  it('slides along the lane but cannot start before the timeline does', () => {
+    const track = audioTrack(asset, 2000, 8000);
+    expect(moveAudio(track, 5000).startMs).toBe(5000);
+    expect(moveAudio(track, -3000).startMs).toBe(0);
+    expect(moveAudio(track, 2000)).toBe(track);
+  });
+
+  it('trims its head like a video: the sound stays on the samples it was on', () => {
+    const track = audioTrack(asset, 2000, 8000);
+    const trimmed = resizeAudio(track, 'start', 1500, 8000);
+    expect([trimmed.startMs, trimmed.trimStartMs, trimmed.durationMs]).toEqual([3500, 1500, 6500]);
+    // Pulling back restores it — and stops at the start of the source.
+    const back = resizeAudio(trimmed, 'start', -5000, 8000);
+    expect([back.startMs, back.trimStartMs, back.durationMs]).toEqual([2000, 0, 8000]);
+  });
+
+  it('cannot reveal sound from before the timeline or the source starts', () => {
+    // Sitting at 1s with 3s already trimmed: the timeline is the nearer wall.
+    const track = { ...audioTrack(asset, 1000, 4000), trimStartMs: 3000 };
+    const pulled = resizeAudio(track, 'start', -9000, 10_000);
+    expect([pulled.startMs, pulled.trimStartMs, pulled.durationMs]).toEqual([0, 2000, 5000]);
+  });
+
+  it('cannot outgrow its source, and only shrinks while the length is unknown', () => {
+    const track = audioTrack(asset, 0, 5000);
+    expect(resizeAudio(track, 'end', 99_000, 8000).durationMs).toBe(8000);
+    expect(resizeAudio(track, 'end', 1000, undefined)).toBe(track);
+    expect(resizeAudio(track, 'end', -1000, undefined).durationMs).toBe(4000);
+    expect(resizeAudio(track, 'end', -99_000, 8000).durationMs).toBe(MIN_CLIP_DURATION_MS);
+  });
+
+  it('stretches the timeline when a sound outlasts the visuals', () => {
+    const clips = [photo(6000)];
+    expect(timelineEndMs(clips, [])).toBe(6000);
+    expect(timelineEndMs(clips, [audioTrack(asset, 4000, 8000)])).toBe(12_000);
+    expect(timelineEndMs(clips, [audioTrack(asset, 0, 3000)])).toBe(6000);
+    expect(audioEndMs([])).toBe(0);
   });
 });

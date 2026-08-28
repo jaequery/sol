@@ -49,6 +49,7 @@ vi.mock('./lib/backend', () => ({
   },
   onExportProgress: async () => () => {},
   pickMediaFiles: vi.fn(),
+  pickAudioFiles: vi.fn(),
   pickExportPath: vi.fn(),
   revealPath: vi.fn(),
 }));
@@ -61,6 +62,7 @@ vi.mock('./lib/frames', () => ({
   renderKeyframeJpeg: async (_src: string, transform: { scale: number }) =>
     `data:image/jpeg;base64,frame-at-scale-${transform.scale}`,
   probeVideoDurationMs: async (_src: string, fallback: number) => fallback,
+  probeAudioDurationMs: async (_src: string, fallback: number) => fallback,
 }));
 
 function file(name: string, type: string): File {
@@ -84,6 +86,7 @@ beforeEach(() => {
     connectionMessage: null,
     assets: {},
     clips: [],
+    audioTracks: [],
     selection: { kind: 'none' },
     playheadMs: 0,
     playing: false,
@@ -101,7 +104,7 @@ beforeEach(() => {
 describe('acceptance', () => {
   it('1 — a photo and a video dropped on the single timeline both become clips', async () => {
     render(<App />);
-    expect(screen.getByText('Drop photos and videos here')).toBeInTheDocument();
+    expect(screen.getByText('Drop photos, videos and audio here')).toBeInTheDocument();
 
     await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('surf.mp4', 'video/mp4')]);
 
@@ -113,7 +116,7 @@ describe('acceptance', () => {
     // One track: the clips are laid end to end, not stacked on separate lanes.
     const clips = useEditor.getState().clips;
     expect(clips.map((c) => c.kind)).toEqual(['photo', 'video']);
-    expect(screen.queryByText('Drop photos and videos here')).not.toBeInTheDocument();
+    expect(screen.queryByText('Drop photos, videos and audio here')).not.toBeInTheDocument();
   });
 
   it('2 — two keyframes can be added to a photo clip', async () => {
@@ -424,7 +427,7 @@ describe('media bin', () => {
     await user.click(await screen.findByRole('button', { name: 'Remove sunset.jpg' }));
 
     expect(screen.getByText('No media yet')).toBeInTheDocument();
-    expect(screen.getByText('Drop photos and videos here')).toBeInTheDocument();
+    expect(screen.getByText('Drop photos, videos and audio here')).toBeInTheDocument();
     expect(useEditor.getState().playheadMs).toBe(0);
   });
 
@@ -548,6 +551,134 @@ describe('direct manipulation on the track', () => {
       ['sunset.jpg', 'photo', 7000],
     ]);
     expect(spec.clips[0]).toMatchObject({ trimStartMs: 1500 });
+  });
+});
+
+describe('audio tracks', () => {
+  /** One picker round through the mocked backend: the user chose `path`. */
+  function mockAudioPick(path: string, name: string) {
+    vi.mocked(backend.pickAudioFiles).mockResolvedValue([path]);
+    vi.mocked(backend.importPaths).mockResolvedValue({
+      imported: [{ path, name, kind: 'audio', sizeBytes: 2048 }],
+      rejected: [],
+    });
+  }
+
+  it('acceptance — "Add audio track" puts a new lane on the timeline, starting at the playhead', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    mockAudioPick('/media/theme.mp3', 'theme.mp3');
+    await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+
+    // The lane is on screen…
+    expect(await screen.findByRole('button', { name: 'theme.mp3 audio track' })).toBeInTheDocument();
+    expect(screen.getByTestId('audio-lanes')).toBeInTheDocument();
+    // …and it is real state, not just pixels.
+    const tracks = useEditor.getState().audioTracks;
+    expect(tracks).toHaveLength(1);
+    expect(tracks[0]).toMatchObject({ name: 'theme.mp3', startMs: 0, trimStartMs: 0, muted: false });
+    // The sound lands in the media bin like any other import.
+    expect(screen.getByRole('button', { name: 'Remove theme.mp3' })).toBeInTheDocument();
+  });
+
+  it('a second sound gets a second lane, placed at the playhead', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    mockAudioPick('/media/theme.mp3', 'theme.mp3');
+    await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+    await screen.findByRole('button', { name: 'theme.mp3 audio track' });
+
+    act(() => useEditor.setState({ playheadMs: 2000 }));
+    mockAudioPick('/media/beat.wav', 'beat.wav');
+    await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+
+    expect(await screen.findByRole('button', { name: 'beat.wav audio track' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'theme.mp3 audio track' })).toBeInTheDocument();
+    const tracks = useEditor.getState().audioTracks;
+    expect(tracks.map((t) => [t.name, t.startMs])).toEqual([
+      ['theme.mp3', 0],
+      ['beat.wav', 2000],
+    ]);
+  });
+
+  it('a sound dropped on the timeline gets a lane instead of a place in the clip order', async () => {
+    render(<App />);
+    await dropOnTimeline([file('theme.mp3', 'audio/mpeg')]);
+
+    expect(await screen.findByRole('button', { name: 'theme.mp3 audio track' })).toBeInTheDocument();
+    const state = useEditor.getState();
+    expect(state.audioTracks).toHaveLength(1);
+    expect(state.clips).toHaveLength(0);
+  });
+
+  it('acceptance — an unsupported file type is refused with a named reason, not a crash', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    vi.mocked(backend.pickAudioFiles).mockResolvedValue(['/media/riff.aiff']);
+    vi.mocked(backend.importPaths).mockResolvedValue({
+      imported: [],
+      rejected: [
+        {
+          path: '/media/riff.aiff',
+          name: 'riff.aiff',
+          reason: 'unsupported format. Supported: jpg, mp4, mp3, wav, ogg, flac, aac, m4a',
+        },
+      ],
+    });
+    await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText(/riff\.aiff/)).toBeInTheDocument();
+    expect(within(alert).getByText(/unsupported format/)).toBeInTheDocument();
+    expect(useEditor.getState().audioTracks).toHaveLength(0);
+    expect(screen.queryByTestId('audio-lanes')).not.toBeInTheDocument();
+  });
+
+  it('a selected lane is deleted from the timeline; its media stays in the bin', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    mockAudioPick('/media/theme.mp3', 'theme.mp3');
+    await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+
+    await user.click(await screen.findByRole('button', { name: 'theme.mp3 audio track' }));
+    await user.click(screen.getByRole('button', { name: 'Delete selection' }));
+
+    expect(useEditor.getState().audioTracks).toHaveLength(0);
+    expect(screen.queryByTestId('audio-lanes')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove theme.mp3' })).toBeInTheDocument();
+  });
+
+  it('removing the sound from the bin takes its lane with it', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    mockAudioPick('/media/theme.mp3', 'theme.mp3');
+    await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+    await screen.findByRole('button', { name: 'theme.mp3 audio track' });
+
+    await user.click(screen.getByRole('button', { name: 'Remove theme.mp3' }));
+
+    expect(useEditor.getState().audioTracks).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'theme.mp3 audio track' })).not.toBeInTheDocument();
+  });
+
+  it('the lane reaches the export spec — and a muted lane stays out of it', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    mockAudioPick('/media/theme.mp3', 'theme.mp3');
+    await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+    await screen.findByRole('button', { name: 'theme.mp3 audio track' });
+
+    let s = useEditor.getState();
+    expect(buildExportSpec(s.clips, s.assets, s.audioTracks).audio).toEqual([
+      { path: '/media/theme.mp3', startMs: 0, trimStartMs: 0, durationMs: 5000, volume: 1 },
+    ]);
+
+    await user.click(screen.getByRole('button', { name: 'Mute theme.mp3' }));
+    s = useEditor.getState();
+    expect(buildExportSpec(s.clips, s.assets, s.audioTracks).audio).toEqual([]);
   });
 });
 

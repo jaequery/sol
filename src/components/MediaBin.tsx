@@ -1,10 +1,13 @@
 import { useEditor } from '../state/store';
 import { truncateName } from '../lib/timeline';
 
+const KIND_GLYPH = { photo: '▣', video: '▶', audio: '♪' } as const;
+
 /** The imported media, its loading skeletons, and anything that failed to import. */
 export function MediaBin() {
   const assets = useEditor((s) => s.assets);
   const clips = useEditor((s) => s.clips);
+  const audioTracks = useEditor((s) => s.audioTracks);
   const importing = useEditor((s) => s.importing);
   const problems = useEditor((s) => s.importProblems);
   const dismiss = useEditor((s) => s.dismissImportProblems);
@@ -61,16 +64,22 @@ export function MediaBin() {
         )}
 
         {list.map((asset) => {
-          const onTimeline = clips.filter((c) => c.assetId === asset.id).length;
+          const onTimeline =
+            clips.filter((c) => c.assetId === asset.id).length +
+            audioTracks.filter((t) => t.assetId === asset.id).length;
           return (
             <div key={asset.id} className="bin__tile" title={asset.name}>
               {asset.kind === 'photo' ? (
                 <img src={asset.src} alt="" draggable={false} />
-              ) : (
+              ) : asset.kind === 'video' ? (
                 <video src={asset.src} muted preload="metadata" />
+              ) : (
+                <div className="bin__audio" aria-hidden="true">
+                  ♪
+                </div>
               )}
               <span className="kind" aria-hidden="true">
-                {asset.kind === 'photo' ? '▣' : '▶'}
+                {KIND_GLYPH[asset.kind]}
               </span>
               <button
                 type="button"

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { AudioMixer } from './components/AudioMixer';
 import { ExportDialog } from './components/ExportDialog';
 import { Inspector } from './components/Inspector';
 import { MediaBin } from './components/MediaBin';
@@ -31,6 +32,7 @@ export function App() {
         <Inspector />
       </div>
       <Timeline />
+      <AudioMixer />
       <SettingsDialog />
       <ExportDialog />
       <Toasts />

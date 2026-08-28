@@ -76,3 +76,18 @@ are the ways a user edits those two numbers by hand rather than by re-importing 
 | 36 | **Resizing** | Drag either edge handle | The clip's new length is previewed live and every clip after it slides along, so the track reads the way it will once released. A photo's keyframes travel with the head and are pinned inside the new range; a video's `trimStartMs` walks with its head | Release |
 | 37 | **Resize refused at a limit** | Dragging past a bound | The edge simply stops: a video cannot pass the first or last frame of its source (nor grow at all before its length is probed), a clip cannot go under 100 ms, and a photo cannot pass 10 minutes | Drag the other way |
 | 38 | **Trimming without a mouse** | Handle focused, ← / → | The same edit at 100 ms a press, or 1 s with Shift | Tab away |
+
+## 7. Audio lanes
+
+A sound is not a clip: it lives on its own lane below the track, starts wherever it was
+placed, and never reorders anything. Each lane holds one sound.
+
+| # | State | Trigger | What is shown | Way out |
+|---|---|---|---|---|
+| 39 | **Audio added** | ♪ Add audio in the toolbar, or an audio file dropped on the timeline | A new lane appears under the track with the sound on it — at the playhead for the toolbar, at the drop point for a drop; the sound is selected and the inspector shows its card | Drag, trim, or delete it |
+| 40 | **Unsupported audio file** | A file no lane can play (e.g. `.aiff`) | The same inline error row as state 5, naming the file and the accepted formats; nothing is added | Dismiss, or re-import |
+| 41 | **Moving a sound** | Press its body and travel ≥ 4 px | The sound rides with the cursor along its lane — position previews live; it cannot start before 0:00. Arrow keys nudge it without a mouse | Release |
+| 42 | **Trimming a sound** | Drag either edge | Like a video: the head walks the in-point so the sound stays on the samples it was on, the tail cannot pass the end of the source, and nothing grows before the length is probed | Release |
+| 43 | **Muted lane** | 🔇 on the lane or the inspector | The lane dims and struck through; it is silent in preview and left out of the export entirely | Unmute |
+| 44 | **Sound outlasts the visuals** | A lane's end passes the last clip | The ruler and playback extend to the end of the sound, so it is still heard; the *export* is the film's length, and the sound is cut there | Trim, or move it |
+| 45 | **Audio media offline** | Source file gone since import | The lane block turns red with "media offline"; export is blocked with a pointer to the file | Re-import, or remove |

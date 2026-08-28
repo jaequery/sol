@@ -68,6 +68,20 @@ export async function renderKeyframeJpeg(
  * the wrong length is far better than an import that hangs.
  */
 export function probeVideoDurationMs(src: string, fallbackMs: number, timeoutMs = 4000): Promise<number> {
+  return probeDurationMs('video', src, fallbackMs, timeoutMs);
+}
+
+/** The same for a sound file, read through an `<audio>` element. */
+export function probeAudioDurationMs(src: string, fallbackMs: number, timeoutMs = 4000): Promise<number> {
+  return probeDurationMs('audio', src, fallbackMs, timeoutMs);
+}
+
+function probeDurationMs(
+  tag: 'video' | 'audio',
+  src: string,
+  fallbackMs: number,
+  timeoutMs: number,
+): Promise<number> {
   return new Promise((resolve) => {
     let settled = false;
     const done = (ms: number) => {
@@ -79,14 +93,14 @@ export function probeVideoDurationMs(src: string, fallbackMs: number, timeoutMs 
     const timer = setTimeout(() => done(fallbackMs), timeoutMs);
 
     try {
-      const video = document.createElement('video');
-      video.preload = 'metadata';
-      video.onloadedmetadata = () => {
-        const seconds = video.duration;
+      const media = document.createElement(tag);
+      media.preload = 'metadata';
+      media.onloadedmetadata = () => {
+        const seconds = media.duration;
         done(Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : fallbackMs);
       };
-      video.onerror = () => done(fallbackMs);
-      video.src = src;
+      media.onerror = () => done(fallbackMs);
+      media.src = src;
     } catch {
       done(fallbackMs);
     }

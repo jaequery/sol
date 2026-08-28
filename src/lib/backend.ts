@@ -8,7 +8,7 @@
 
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { MediaKind } from '../types/project';
+import { AUDIO_EXTS, type MediaKind } from '../types/project';
 
 export interface SettingsView {
   configured: boolean;
@@ -178,6 +178,18 @@ export async function pickMediaFiles(): Promise<string[]> {
   const picked = await open({
     multiple: true,
     filters: [{ name: 'Photos and videos', extensions }],
+  });
+  if (!picked) return [];
+  return Array.isArray(picked) ? picked : [picked];
+}
+
+/** The "add audio track" picker: the same dialog, narrowed to sound files. */
+export async function pickAudioFiles(): Promise<string[]> {
+  requireDesktop();
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const picked = await open({
+    multiple: true,
+    filters: [{ name: 'Audio', extensions: AUDIO_EXTS }],
   });
   if (!picked) return [];
   return Array.isArray(picked) ? picked : [picked];
