@@ -1,5 +1,6 @@
 import { useEditor } from '../state/store';
 import {
+  DEFAULT_TRANSITION_PROMPT,
   MAX_SCALE,
   MIN_SCALE,
   type AudioTrack,
@@ -7,20 +8,40 @@ import {
   type Generation,
   type Transform2D,
 } from '../types/project';
-import { findSegment, formatDuration, formatTimecode, segmentsOf, sortKeyframes } from '../lib/timeline';
+import {
+  findSegment,
+  formatDuration,
+  formatTimecode,
+  photoCuts,
+  segmentsOf,
+  sortKeyframes,
+  transitionStaleness,
+} from '../lib/timeline';
 
 const PROMPT_SUGGESTIONS = ['dolly in', 'slow parallax', 'orbit left', 'handheld drift', 'zoom out'];
+const TRANSITION_SUGGESTIONS = ['crossfade morph', 'whip pan', 'zoom through', 'dreamy dissolve'];
 
 export function Inspector() {
   const selection = useEditor((s) => s.selection);
   const clips = useEditor((s) => s.clips);
   const audioTracks = useEditor((s) => s.audioTracks);
   const clip =
-    selection.kind === 'none' || selection.kind === 'audio'
+    selection.kind === 'none' || selection.kind === 'audio' || selection.kind === 'cut'
       ? undefined
       : clips.find((c) => c.id === selection.clipId);
   const track =
     selection.kind === 'audio' ? audioTracks.find((t) => t.id === selection.trackId) : undefined;
+
+  // A selected cut is only real while its pair still forms one — two photos, edges touching.
+  let cutPair: { a: Clip; b: Clip } | undefined;
+  if (selection.kind === 'cut') {
+    const stands = photoCuts(clips).some(
+      (c) => c.afterClipId === selection.afterClipId && c.beforeClipId === selection.beforeClipId,
+    );
+    const a = clips.find((c) => c.id === selection.afterClipId);
+    const b = clips.find((c) => c.id === selection.beforeClipId);
+    if (stands && a && b) cutPair = { a, b };
+  }
 
   return (
     <div className="col">
@@ -28,6 +49,8 @@ export function Inspector() {
       <div className="inspector">
         {track ? (
           <AudioCard track={track} />
+        ) : cutPair ? (
+          <CutCard a={cutPair.a} b={cutPair.b} />
         ) : !clip ? (
           <div className="empty-note">
             <div className="icon" aria-hidden="true">
@@ -121,7 +144,7 @@ function InspectorBody({ clip }: { clip: Clip }) {
               <b>{keyframes.length || 'none'}</b>
             </div>
           )}
-          {clip.ai && (
+          {clip.ai && !clip.transition && (
             <div className="kv">
               <span>Prompt</span>
               <b>{clip.ai.prompt}</b>
@@ -148,6 +171,8 @@ function InspectorBody({ clip }: { clip: Clip }) {
       {keyframe && <TransformCard clip={clip} keyframeId={keyframe.id} transform={keyframe.transform} />}
 
       {clip.kind === 'photo' && keyframes.length > 0 && <AiCard clip={clip} />}
+
+      {clip.transition && <TransitionCard clip={clip} />}
     </>
   );
 }
@@ -319,19 +344,21 @@ function AiCard({ clip }: { clip: Clip }) {
   }
 
   const index = segments.findIndex((s) => s.fromKeyframeId === active.fromKeyframeId);
+  const heading = `KF${index + 1} → KF${index + 2}`;
   const prompt = clip.prompts[active.fromKeyframeId] ?? '';
   const generation = Object.values(generations).find(
     (g) =>
-      g.clipId === clip.id &&
-      g.fromKeyframeId === active.fromKeyframeId &&
+      g.target.kind === 'segment' &&
+      g.target.clipId === clip.id &&
+      g.target.fromKeyframeId === active.fromKeyframeId &&
       g.status !== 'cancelled',
   );
 
   if (generation && (generation.status === 'queued' || generation.status === 'running')) {
-    return <RunningCard generation={generation} index={index} />;
+    return <RunningCard generation={generation} heading={heading} />;
   }
   if (generation?.status === 'failed') {
-    return <FailedCard generation={generation} index={index} />;
+    return <FailedCard generation={generation} heading={heading} />;
   }
 
   const connected = settings?.configured ?? false;
@@ -396,14 +423,14 @@ function AiCard({ clip }: { clip: Clip }) {
   );
 }
 
-function RunningCard({ generation, index }: { generation: Generation; index: number }) {
+function RunningCard({ generation, heading }: { generation: Generation; heading: string }) {
   const cancel = useEditor((s) => s.cancelGeneration);
   const running = generation.status === 'running';
 
   return (
     <div className="card card--ai">
       <div className="card__head">
-        ✨ {running ? 'Rendering' : 'Queued'} · KF{index + 1} → KF{index + 2}
+        ✨ {running ? 'Rendering' : 'Queued'} · {heading}
       </div>
       <div className="card__body">
         <div className="kv">
@@ -443,16 +470,14 @@ function RunningCard({ generation, index }: { generation: Generation; index: num
   );
 }
 
-function FailedCard({ generation, index }: { generation: Generation; index: number }) {
+function FailedCard({ generation, heading }: { generation: Generation; heading: string }) {
   const dismiss = useEditor((s) => s.dismissGeneration);
-  const retry = useEditor((s) => s.startGeneration);
+  const retry = useEditor((s) => s.retryGeneration);
   const error = generation.error;
 
   return (
     <div className="card card--error" role="alert">
-      <div className="card__head">
-        ✕ Generation failed · KF{index + 1} → KF{index + 2}
-      </div>
+      <div className="card__head">✕ Generation failed · {heading}</div>
       <div className="card__body">
         <div className="errbox">
           <b>{error?.title ?? 'Generation failed'}</b>
@@ -460,14 +485,7 @@ function FailedCard({ generation, index }: { generation: Generation; index: numb
         </div>
         <div className="btn-row">
           {error?.retryable !== false && (
-            <button
-              type="button"
-              className="primary"
-              onClick={() => {
-                dismiss(generation.id);
-                void retry();
-              }}
-            >
+            <button type="button" className="primary" onClick={() => retry(generation.id)}>
               Retry
             </button>
           )}
@@ -475,7 +493,208 @@ function FailedCard({ generation, index }: { generation: Generation; index: numb
             Dismiss
           </button>
         </div>
-        <p className="hint">Dismissing restores the plain photo segment. The prompt is kept.</p>
+        <p className="hint">Dismissing leaves the timeline exactly as it was. The prompt is kept.</p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A selected cut: the whole transition flow with zero required typing. The prompt box is
+ * optional (empty means the default), and only the big button spends anything.
+ */
+function CutCard({ a, b }: { a: Clip; b: Clip }) {
+  const settings = useEditor((s) => s.settings);
+  const assets = useEditor((s) => s.assets);
+  const generations = useEditor((s) => s.generations);
+  const cutPrompts = useEditor((s) => s.cutPrompts);
+  const setCutPrompt = useEditor((s) => s.setCutPrompt);
+  const startCutGeneration = useEditor((s) => s.startCutGeneration);
+  const openSettings = useEditor((s) => s.openSettings);
+
+  const heading = `${a.name} → ${b.name}`;
+  const generation = Object.values(generations).find(
+    (g) =>
+      g.target.kind === 'cut' &&
+      g.target.replacesClipId === undefined &&
+      g.target.afterClipId === a.id &&
+      g.target.beforeClipId === b.id &&
+      g.status !== 'cancelled' &&
+      g.status !== 'succeeded',
+  );
+
+  if (generation && (generation.status === 'queued' || generation.status === 'running')) {
+    return <RunningCard generation={generation} heading={heading} />;
+  }
+  if (generation?.status === 'failed') {
+    return <FailedCard generation={generation} heading={heading} />;
+  }
+
+  const prompt = cutPrompts[`${a.id}:${b.id}`] ?? '';
+  const connected = settings?.configured ?? false;
+  const assetA = assets[a.assetId];
+  const assetB = assets[b.assetId];
+  const offline = !assetA || !assetB || assetA.missing || assetB.missing;
+
+  return (
+    <div className="card card--ai">
+      <div className="card__head">✦ Transition · {heading}</div>
+      <div className="card__body">
+        <p className="hint" style={{ marginTop: 0 }}>
+          Higgsfield animates from the last frame of <b>{a.name}</b> to the first frame of{' '}
+          <b>{b.name}</b>.
+        </p>
+        <label className="visually-hidden" htmlFor="cut-prompt">
+          Describe the transition between the two photos
+        </label>
+        <textarea
+          id="cut-prompt"
+          className="prompt"
+          placeholder={`${DEFAULT_TRANSITION_PROMPT} (default) — or describe your own…`}
+          value={prompt}
+          onChange={(e) => setCutPrompt(e.target.value)}
+        />
+        <div className="chips">
+          {TRANSITION_SUGGESTIONS.map((s) => (
+            <button
+              key={s}
+              type="button"
+              className="chip"
+              onClick={() => setCutPrompt(prompt ? `${prompt.trim()}, ${s}` : s)}
+            >
+              + {s}
+            </button>
+          ))}
+        </div>
+
+        {!connected ? (
+          <div className="callout">
+            <b>Connect Higgsfield to generate</b>
+            No API key is stored yet. Nothing has been sent.
+            <button type="button" onClick={openSettings}>
+              Open settings →
+            </button>
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="block-btn"
+              disabled={offline}
+              onClick={() => startCutGeneration(a.id, b.id)}
+            >
+              ✦ Generate transition
+            </button>
+            <p className="hint">
+              {offline
+                ? 'A photo on this cut has no media — re-import it first.'
+                : 'No typing needed — leaving this empty uses the default prompt.'}
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A selected transition clip: what made it, an editable prompt, and one-tap Regenerate
+ * that reads whatever photos stand around it now. Staleness is worn, never acted on.
+ */
+function TransitionCard({ clip }: { clip: Clip }) {
+  const clips = useEditor((s) => s.clips);
+  const assets = useEditor((s) => s.assets);
+  const settings = useEditor((s) => s.settings);
+  const generations = useEditor((s) => s.generations);
+  const setTransitionPrompt = useEditor((s) => s.setTransitionPrompt);
+  const regenerateTransition = useEditor((s) => s.regenerateTransition);
+  const openSettings = useEditor((s) => s.openSettings);
+
+  const transition = clip.transition;
+  if (!transition) return null;
+
+  const staleness = transitionStaleness(clips, clip.id);
+  const fromName = assets[transition.from.assetId]?.name ?? 'missing photo';
+  const toName = assets[transition.to.assetId]?.name ?? 'missing photo';
+
+  const generation = Object.values(generations).find(
+    (g) =>
+      g.target.kind === 'cut' &&
+      g.target.replacesClipId === clip.id &&
+      g.status !== 'cancelled' &&
+      g.status !== 'succeeded',
+  );
+  if (generation && (generation.status === 'queued' || generation.status === 'running')) {
+    return <RunningCard generation={generation} heading="Regenerating transition" />;
+  }
+  if (generation?.status === 'failed') {
+    return <FailedCard generation={generation} heading="Transition" />;
+  }
+
+  const connected = settings?.configured ?? false;
+
+  return (
+    <div className="card card--ai">
+      <div className="card__head">✦ AI transition</div>
+      <div className="card__body">
+        <div className="kv">
+          <span>From</span>
+          <b>{fromName}</b>
+        </div>
+        <div className="kv">
+          <span>To</span>
+          <b>{toName}</b>
+        </div>
+        <label className="visually-hidden" htmlFor="transition-prompt">
+          Describe this transition
+        </label>
+        <textarea
+          id="transition-prompt"
+          className="prompt"
+          placeholder={`${DEFAULT_TRANSITION_PROMPT} (default) — or describe your own…`}
+          value={transition.prompt}
+          onChange={(e) => setTransitionPrompt(clip.id, e.target.value)}
+        />
+
+        {staleness === 'stale' && (
+          <div className="callout">
+            <b>Sources changed</b>
+            The photos around this transition were reframed, reordered or replaced since it was
+            rendered. It still plays — regenerate it when you want it to match.
+          </div>
+        )}
+        {staleness === 'orphaned' && (
+          <div className="callout">
+            <b>Source missing</b>
+            This transition no longer sits between two photos, so there is nothing to regenerate
+            it from. It still plays and exports.
+          </div>
+        )}
+
+        {!connected ? (
+          <div className="callout">
+            <b>Connect Higgsfield to regenerate</b>
+            No API key is stored yet. Nothing has been sent.
+            <button type="button" onClick={openSettings}>
+              Open settings →
+            </button>
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              className="block-btn"
+              disabled={staleness === 'orphaned'}
+              onClick={() => regenerateTransition(clip.id)}
+            >
+              ⟳ Regenerate transition
+            </button>
+            <p className="hint">
+              Regenerates from the photos around it as they are now. Trim, drag or delete this
+              clip like any video.
+            </p>
+          </>
+        )}
       </div>
     </div>
   );

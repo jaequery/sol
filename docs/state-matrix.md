@@ -98,3 +98,29 @@ Each lane holds one sound.
 | 43 | **Muted lane** | 🔇 on the lane or the inspector | The lane dims and struck through; it is silent in preview and left out of the export entirely | Unmute |
 | 44 | **Sound outlasts the visuals** | A lane's end passes the last clip | The ruler and playback extend to the end of the sound, so it is still heard; the *export* is the film's length, and the sound is cut there | Trim, or move it |
 | 45 | **Audio media offline** | Source file gone since import | The lane block turns red with "media offline"; export is blocked with a pointer to the file | Re-import, or remove |
+
+## 8. AI transitions
+
+A ✦ chip stands on every cut between two **photos** — a shared edge, since a gap is
+black film the user placed on purpose, not a cut. The chip only ever
+*selects* its cut — generation (a paid Higgsfield call) fires exclusively from the cut
+card's button, ✦ Animate all, Retry, or Regenerate, so a stray click can never spend
+credits and staleness never re-renders on its own.
+
+| # | State | Trigger | What is shown | Way out |
+|---|---|---|---|---|
+| 46 | **Idle chip** | Two photos sit edge to edge on the track | A small ✦ chip vertically centred on the boundary; the toolbar shows ✦ Animate all · n when at least one cut is fillable | Tap the chip, or Animate all |
+| 47 | **Chip disabled (media offline)** | A photo on the cut lost its source file | The chip dims with the reason in its tooltip; nothing can be sent for a frame that cannot be rendered | Re-import the photo |
+| 48 | **Cut selected** | Chip tapped | The chip takes the accent ring; the inspector shows the transition card naming both photos, an *optional* prompt (empty means the default `Smooth cinematic motion transition`), suggestion chips, and one ✦ Generate transition button | Generate, type first, or click elsewhere |
+| 49 | **No credential** | Cut selected with no key stored | The card's button is replaced by the "Connect Higgsfield to generate" callout; nothing is sent | Save the key in settings |
+| 50 | **Queued** | Generate pressed, job accepted | The chip widens into a dashed mono pill reading ◐ QUEUED — the cut has no width on the track, so the chip itself is the progress surface; the title bar counts the render | Cancel, or wait |
+| 51 | **Running** | Poll returns progress | The pill shows ◐ n% (or elapsed seconds when the API reports no percentage); **the rest of the app stays fully usable** | Cancel, or wait |
+| 52 | **Slow (> 90 s)** | Still running past the soft threshold | The pill takes an amber tint and the card adds the calm "taking longer than usual" advisory — no modal, no lock | Cancel, or wait |
+| 53 | **Failed** | API error / rate limit / transport | The pill turns rose reading ✕ FAILED; the card explains and offers Retry (same cut, kept prompt) and Dismiss (timeline exactly as it was) | Retry, or dismiss |
+| 54 | **Succeeded — inserted at the cut** | Render downloaded | The MP4 is inserted *at the cut* as a normal video clip with the ✦ AI badge, provisionally 5 s and probe-corrected to its real length; the reel grows, the chip disappears structurally (the boundary is no longer photo→photo), and both remaining cuts keep their chips | Play, edit, or fill the next cut |
+| 55 | **Transition selected** | Click the generated clip | The AI transition card: From/To photos, editable prompt, ⟳ Regenerate. Trim, drag and delete work exactly as for any video clip | Regenerate, edit, or leave it |
+| 56 | **Stale** | A source photo was reframed, replaced, or a different clip now stands beside the transition | The clip wears an amber `⟳ SOURCES CHANGED` tag and the card says why; it still plays and exports. Nothing regenerates — or costs — on its own | One-tap Regenerate (uses the *current* neighbours), or ignore |
+| 57 | **Orphaned** | A source photo was deleted, or a neighbour is no longer a photo | Amber `⟳ SOURCE MISSING` tag; Regenerate is disabled with the reason. The paid clip is kept — it renders and exports fine | Delete it for a hard cut, or leave it |
+| 58 | **Transition deleted** | 🗑 / Delete on the clip | No confirm (the app has none anywhere, and no undo): the clip goes, the photo→photo cut — and its ✦ chip — structurally reappear, and the MP4 asset stays in the bin and on disk. Re-inserting means regenerating (a re-spend) | Regenerate from the chip |
+| 59 | **Animate all** | ✦ Animate all · n in the toolbar | Every fillable cut queues; submissions go out strictly one at a time (a burst could trip the rate limit and strand half the batch), each chip showing its own state as its turn comes. A queued cut that went invalid is skipped, never stalled on | Wait, or keep editing |
+| 60 | **Timeline moved mid-render** | The pair was reordered/deleted while rendering | The finished clip is **not** inserted somewhere wrong: a toast explains ("Transition finished, but its photos moved"), the new cuts show fresh chips, and the MP4 stays in the cache | Tap the ✦ on the new cut |

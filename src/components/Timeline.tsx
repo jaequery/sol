@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useEditor } from '../state/store';
+import { animatableCuts, useEditor } from '../state/store';
 import type { AudioTrack, Clip, ClipEdge, Generation, MediaAsset, Selection } from '../types/project';
 import {
   formatDuration,
@@ -7,6 +7,7 @@ import {
   insertIndexAt,
   layout,
   moveAudio,
+  photoCuts,
   placeClip,
   resizeAudio,
   resizeClipInList,
@@ -16,7 +17,10 @@ import {
   sortKeyframes,
   startOfIndex,
   timelineEndMs,
+  transitionStaleness,
   truncateName,
+  type Cut,
+  type TransitionStaleness,
 } from '../lib/timeline';
 
 const MIN_CLIP_PX = 14;
@@ -84,6 +88,8 @@ export function Timeline() {
   const moveAudioTrack = useEditor((s) => s.moveAudioTrack);
   const resizeAudioTrack = useEditor((s) => s.resizeAudioTrack);
   const toggleAudioMute = useEditor((s) => s.toggleAudioMute);
+  const animateAll = useEditor((s) => s.animateAll);
+  const settings = useEditor((s) => s.settings);
 
   const trackRef = useRef<HTMLDivElement>(null);
   const clipsRef = useRef<HTMLDivElement>(null);
@@ -160,13 +166,37 @@ export function Timeline() {
   const width = Math.max(toPx(total), 320);
 
   const selectedClipId =
-    selection.kind === 'none' || selection.kind === 'audio' ? null : selection.clipId;
+    selection.kind === 'none' || selection.kind === 'audio' || selection.kind === 'cut'
+      ? null
+      : selection.clipId;
   const selectedClip = clips.find((c) => c.id === selectedClipId);
   const canKeyframe = selectedClip?.kind === 'photo';
 
   const activeGenerations = Object.values(generations).filter(
     (g) => g.status === 'queued' || g.status === 'running' || g.status === 'failed',
   );
+
+  // Chips live on the preview list so they ride along with a drag or resize in progress.
+  const cuts = useMemo(() => photoCuts(previewClips), [previewClips]);
+
+  // The generation a chip should wear: a live one first, else the failed one awaiting a retry.
+  const generationByCut = useMemo(() => {
+    const map = new Map<string, Generation>();
+    for (const g of Object.values(generations)) {
+      if (g.target.kind !== 'cut' || g.target.replacesClipId !== undefined) continue;
+      if (g.status === 'succeeded' || g.status === 'cancelled') continue;
+      const key = `${g.target.afterClipId}:${g.target.beforeClipId}`;
+      const prev = map.get(key);
+      if (!prev || prev.status === 'failed') map.set(key, g);
+    }
+    return map;
+  }, [generations]);
+
+  const animatable = useMemo(
+    () => animatableCuts({ clips, assets, generations }),
+    [clips, assets, generations],
+  );
+  const configured = settings?.configured ?? false;
 
   function ratioFromEvent(clientX: number): number {
     const rect = trackRef.current?.getBoundingClientRect();
@@ -418,6 +448,22 @@ export function Timeline() {
         >
           ♪ Add audio
         </button>
+        {animatable.length > 0 && (
+          <button
+            type="button"
+            className="tool tool--wide tool--on"
+            aria-label="Animate all cuts"
+            title={
+              configured
+                ? 'Generate a Higgsfield transition for every photo-to-photo cut'
+                : 'Connect Higgsfield first'
+            }
+            disabled={!configured}
+            onClick={animateAll}
+          >
+            ✦ Animate all · {animatable.length}
+          </button>
+        )}
         <button
           type="button"
           className="tool"
@@ -493,6 +539,7 @@ export function Timeline() {
                     clip={clip}
                     startMs={startMs}
                     asset={assets[clip.assetId]}
+                    staleness={clip.transition ? transitionStaleness(previewClips, clip.id) : undefined}
                     toPx={toPx}
                     pxPerSecond={pxPerSecond}
                     selection={selection}
@@ -504,6 +551,37 @@ export function Timeline() {
                     onResizeKey={onResizeKey}
                   />
                 ))}
+
+                {cuts.map((cut) => {
+                  const a = previewClips.find((c) => c.id === cut.afterClipId);
+                  const b = previewClips.find((c) => c.id === cut.beforeClipId);
+                  if (!a || !b) return null;
+                  const assetA = assets[a.assetId];
+                  const assetB = assets[b.assetId];
+                  return (
+                    <CutChip
+                      key={`${cut.afterClipId}:${cut.beforeClipId}`}
+                      cut={cut}
+                      nameA={a.name}
+                      nameB={b.name}
+                      generation={generationByCut.get(`${cut.afterClipId}:${cut.beforeClipId}`)}
+                      selected={
+                        selection.kind === 'cut' &&
+                        selection.afterClipId === cut.afterClipId &&
+                        selection.beforeClipId === cut.beforeClipId
+                      }
+                      offline={Boolean(!assetA || !assetB || assetA.missing || assetB.missing)}
+                      toPx={toPx}
+                      onSelect={() =>
+                        select({
+                          kind: 'cut',
+                          afterClipId: cut.afterClipId,
+                          beforeClipId: cut.beforeClipId,
+                        })
+                      }
+                    />
+                  );
+                })}
 
                 {activeGenerations.map((generation) => (
                   <GenerationOverlay
@@ -695,6 +773,7 @@ function TimelineClip({
   clip,
   startMs,
   asset,
+  staleness,
   toPx,
   pxPerSecond,
   selection,
@@ -708,6 +787,8 @@ function TimelineClip({
   clip: Clip;
   startMs: number;
   asset?: MediaAsset;
+  /** Only for transition clips: whether their sources still match. */
+  staleness?: TransitionStaleness;
   toPx: (ms: number) => number;
   pxPerSecond: number;
   selection: Selection;
@@ -721,7 +802,10 @@ function TimelineClip({
 }) {
   const width = Math.max(toPx(clip.durationMs), MIN_CLIP_PX);
   const selected =
-    selection.kind !== 'none' && selection.kind !== 'audio' && selection.clipId === clip.id;
+    selection.kind !== 'none' &&
+    selection.kind !== 'audio' &&
+    selection.kind !== 'cut' &&
+    selection.clipId === clip.id;
   const offline = !asset;
   const keyframes = sortKeyframes(clip.keyframes);
   const segments = segmentsOf(clip);
@@ -787,6 +871,11 @@ function TimelineClip({
         {roomy && <span className="clip__name">{truncateName(clip.name, 24)}</span>}
         {roomy && !clip.ai && <span className="clip__dur">{formatDuration(clip.durationMs)}</span>}
         {roomy && clip.ai && <span className="clip__ai-tag">✦ AI</span>}
+        {roomy && staleness && staleness !== 'fresh' && (
+          <span className="clip__stale-tag">
+            ⟳ {staleness === 'stale' ? 'SOURCES CHANGED' : 'SOURCE MISSING'}
+          </span>
+        )}
       </button>
 
       {resizable &&
@@ -870,6 +959,79 @@ function TimelineClip({
   );
 }
 
+/**
+ * The ✦ button standing on a photo→photo cut. Clicking only ever selects the cut —
+ * spending money takes the big button in the inspector — and while that cut's job runs,
+ * the chip itself is the progress surface (the cut has no width for an overlay to fill).
+ */
+function CutChip({
+  cut,
+  nameA,
+  nameB,
+  generation,
+  selected,
+  offline,
+  toPx,
+  onSelect,
+}: {
+  cut: Cut;
+  nameA: string;
+  nameB: string;
+  /** The live or failed generation for this cut, if any. */
+  generation?: Generation;
+  selected: boolean;
+  offline: boolean;
+  toPx: (ms: number) => number;
+  onSelect: () => void;
+}) {
+  const busy = generation?.status === 'queued' || generation?.status === 'running';
+  const failed = generation?.status === 'failed';
+
+  const classes = [
+    'cutchip',
+    selected && 'cutchip--selected',
+    busy && 'cutchip--run',
+    busy && generation?.slow && 'cutchip--slow',
+    failed && 'cutchip--fail',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  let label = '✦';
+  if (busy && generation) {
+    label =
+      generation.status === 'queued'
+        ? '◐ QUEUED'
+        : generation.progress > 0
+          ? `◐ ${Math.round(generation.progress * 100)}%`
+          : `◐ ${Math.round(generation.elapsedSecs)}s`;
+  } else if (failed) {
+    label = '✕ FAILED';
+  }
+
+  return (
+    <button
+      type="button"
+      className={classes}
+      style={{ left: toPx(cut.timeMs) }}
+      aria-label={`Select the cut between ${nameA} and ${nameB}`}
+      title={
+        offline
+          ? 'A photo on this cut has no media — re-import it first'
+          : `Generate an AI transition between ${nameA} and ${nameB}`
+      }
+      disabled={offline}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect();
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 /** The hatched placeholder that holds a segment's place while Higgsfield renders it. */
 function GenerationOverlay({
   generation,
@@ -880,12 +1042,14 @@ function GenerationOverlay({
   clips: Clip[];
   toPx: (ms: number) => number;
 }) {
-  const placed = layout(clips).find((p) => p.clip.id === generation.clipId);
+  // A cut generation's progress lives on its chip; only segments get a track overlay.
+  const target = generation.target;
+  if (target.kind !== 'segment') return null;
+
+  const placed = layout(clips).find((p) => p.clip.id === target.clipId);
   if (!placed) return null;
 
-  const segment = segmentsOf(placed.clip).find(
-    (s) => s.fromKeyframeId === generation.fromKeyframeId,
-  );
+  const segment = segmentsOf(placed.clip).find((s) => s.fromKeyframeId === target.fromKeyframeId);
   if (!segment) return null;
 
   const failed = generation.status === 'failed';

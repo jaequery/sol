@@ -1055,6 +1055,82 @@ input {
   opacity: 0.8;
 }
 
+/* ---- cut chips */
+
+/* The ✦ button on a photo→photo boundary. Sized so the edge handles beside it keep a
+   clear stretch of grab height above and below; clicking it only ever selects the cut. */
+.cutchip {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 99px;
+  background: var(--accent-wash);
+  border: 1px solid var(--accent-line);
+  color: var(--accent-2);
+  display: grid;
+  place-items: center;
+  font-size: var(--fs);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55);
+}
+.cutchip:hover:not(:disabled) {
+  border-color: var(--accent-2);
+  color: #dcd3ff;
+}
+.cutchip:disabled {
+  opacity: 0.45;
+}
+.cutchip--selected {
+  background: var(--accent-dim);
+  border-color: var(--accent-2);
+  color: #dcd3ff;
+  box-shadow: 0 0 0 1.5px var(--accent-2), 0 0 16px rgba(124, 92, 255, 0.55);
+}
+/* While its job runs the chip widens into the progress surface — the cut has no width on
+   the track for an overlay, so the dashed .genclip look moves onto the chip itself. */
+.cutchip--run,
+.cutchip--fail {
+  width: auto;
+  height: 22px;
+  padding: 0 8px;
+  border: 1.5px dashed #6f5bd6;
+  background: #1b1738;
+  color: #cbbcff;
+  font: 600 9px/1 var(--mono);
+  white-space: nowrap;
+}
+.cutchip--slow {
+  border-color: #8a6a1c;
+  color: #ffe0a3;
+}
+.cutchip--fail {
+  border-color: #a13a55;
+  background: #241019;
+  color: #ffb3c2;
+}
+/* Mid-drag the boundaries are in motion; the chips step aside until the clip is let go. */
+.track--dragging .cutchip {
+  visibility: hidden;
+}
+
+/* A finished transition whose neighbours changed wears the fact, and nothing more. */
+.clip__stale-tag {
+  position: absolute;
+  right: 7px;
+  top: 5px;
+  font: 700 8px/1 var(--mono);
+  letter-spacing: 0.06em;
+  background: rgba(36, 28, 6, 0.92);
+  border: 1px solid #5a4212;
+  color: var(--warn);
+  padding: 3px 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
 .playhead {
   position: absolute;
   top: 0;

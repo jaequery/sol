@@ -23,6 +23,7 @@ import {
   type PlacedClip,
   type Segment,
   type Transform2D,
+  type TransitionSource,
 } from '../types/project';
 
 let idCounter = 0;
@@ -674,6 +675,169 @@ function pickPrompts(clip: Clip, keep: (k: Keyframe) => boolean): Record<string,
     if (keep(k) && clip.prompts[k.id]) out[k.id] = clip.prompts[k.id];
   }
   return out;
+}
+
+// ---------------------------------------------------------------- cuts & transitions
+
+/** A photo→photo cut: two photos whose edges touch — the place a transition can fill. */
+export interface Cut {
+  /** The photo on the left; the transition lands right after it. */
+  afterClipId: string;
+  /** The photo on the right. */
+  beforeClipId: string;
+  /** Where the shared edge sits on the timeline. */
+  timeMs: number;
+}
+
+/**
+ * Every cut between two photos: consecutive in time order AND touching — a gap is black
+ * film the user placed on purpose, not a cut. Only photos: a generated transition needs a
+ * still on each side, so boundaries touching video (including a landed transition, which
+ * breaks its own pair into photo|video and video|photo) simply are not offered.
+ */
+export function photoCuts(clips: Clip[]): Cut[] {
+  const placed = layout(clips);
+  const cuts: Cut[] = [];
+  for (let i = 0; i < placed.length - 1; i += 1) {
+    const a = placed[i];
+    const b = placed[i + 1];
+    if (a.clip.kind === 'photo' && b.clip.kind === 'photo' && a.endMs === b.startMs) {
+      cuts.push({ afterClipId: a.clip.id, beforeClipId: b.clip.id, timeMs: a.endMs });
+    }
+  }
+  return cuts;
+}
+
+/** What lands on the timeline when a transition render finishes. */
+export interface GeneratedTransition {
+  assetId: string;
+  name: string;
+  prompt: string;
+  durationMs: number;
+  from: TransitionSource;
+  to: TransitionSource;
+}
+
+function transitionClip(id: string, startMs: number, generated: GeneratedTransition): Clip {
+  return {
+    id,
+    assetId: generated.assetId,
+    kind: 'video',
+    name: generated.name,
+    startMs,
+    durationMs: Math.max(MIN_CLIP_DURATION_MS, Math.round(generated.durationMs)),
+    trimStartMs: 0,
+    keyframes: [],
+    prompts: {},
+    ai: { prompt: generated.prompt, sourceAssetId: generated.from.assetId },
+    transition: { prompt: generated.prompt, from: generated.from, to: generated.to },
+  };
+}
+
+/**
+ * Put a finished transition into its cut. The pair must still form a cut — the timeline
+ * may have been edited while Higgsfield rendered — otherwise this is an identity no-op and
+ * the caller explains rather than inserting the clip somewhere wrong. Everything from the
+ * boundary onwards ripples right to make room, exactly as an import does, so gaps further
+ * along keep their shape.
+ */
+export function insertTransitionClip(
+  clips: Clip[],
+  afterClipId: string,
+  beforeClipId: string,
+  generated: GeneratedTransition,
+): Clip[] {
+  const cut = photoCuts(clips).find(
+    (c) => c.afterClipId === afterClipId && c.beforeClipId === beforeClipId,
+  );
+  if (!cut) return clips;
+  const clip = transitionClip(makeId('clip'), cut.timeMs, generated);
+  return sortClips([
+    ...clips.map((c) => (c.startMs >= cut.timeMs ? { ...c, startMs: c.startMs + clip.durationMs } : c)),
+    clip,
+  ]);
+}
+
+/**
+ * A regeneration swaps the finished render over the existing transition clip, keeping its
+ * id (so the selection stays on it) and its start; a change of length ripples everything
+ * after its old end by the difference, so what follows keeps its spacing. Identity no-op
+ * when the clip is gone or is not a transition.
+ */
+export function replaceTransitionClip(
+  clips: Clip[],
+  transitionClipId: string,
+  generated: GeneratedTransition,
+): Clip[] {
+  const old = clips.find((c) => c.id === transitionClipId);
+  if (!old?.transition) return clips;
+  const next = transitionClip(old.id, old.startMs, generated);
+  const delta = next.durationMs - old.durationMs;
+  const oldEnd = old.startMs + old.durationMs;
+  return sortClips(
+    clips.map((c) => {
+      if (c.id === old.id) return next;
+      return delta !== 0 && c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
+    }),
+  );
+}
+
+/**
+ * Correct a transition's provisional length once the real file has been probed, rippling
+ * everything after its old end by the difference so the reel stays exactly as arranged.
+ */
+export function setTransitionDuration(clips: Clip[], clipId: string, durationMs: number): Clip[] {
+  const clip = clips.find((c) => c.id === clipId);
+  if (!clip?.transition) return clips;
+  const next = Math.max(MIN_CLIP_DURATION_MS, Math.round(durationMs));
+  const delta = next - clip.durationMs;
+  if (delta === 0) return clips;
+  const oldEnd = clip.startMs + clip.durationMs;
+  return sortClips(
+    clips.map((c) => {
+      if (c.id === clipId) return { ...c, durationMs: next };
+      return c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
+    }),
+  );
+}
+
+export type TransitionStaleness = 'fresh' | 'stale' | 'orphaned';
+
+/** Below this, a framing difference is slider noise, not a reason to flag a re-render. */
+const STALENESS_EPSILON = 0.001;
+
+function framingDrifted(a: Transform2D, b: Transform2D): boolean {
+  return (
+    Math.abs(a.scale - b.scale) > STALENESS_EPSILON ||
+    Math.abs(a.x - b.x) > STALENESS_EPSILON ||
+    Math.abs(a.y - b.y) > STALENESS_EPSILON ||
+    Math.abs(a.rotation - b.rotation) > STALENESS_EPSILON ||
+    Math.abs(a.opacity - b.opacity) > STALENESS_EPSILON
+  );
+}
+
+/**
+ * Whether a finished transition still matches what stands around it. `stale` means both
+ * neighbours are photos but not the ones (or not the framings) it was rendered from, so a
+ * one-tap regenerate can fix it; `orphaned` means a neighbour is missing or not a photo,
+ * so there is nothing to regenerate between. Never acts — the user decides what to spend.
+ */
+export function transitionStaleness(clips: Clip[], transitionClipId: string): TransitionStaleness {
+  const placed = layout(clips);
+  const at = placed.findIndex((p) => p.clip.id === transitionClipId);
+  const clip = at === -1 ? undefined : placed[at].clip;
+  if (!clip?.transition) return 'orphaned';
+
+  const left = placed[at - 1]?.clip;
+  const right = placed[at + 1]?.clip;
+  if (!left || !right || left.kind !== 'photo' || right.kind !== 'photo') return 'orphaned';
+
+  const { from, to } = clip.transition;
+  if (left.id !== from.clipId || left.assetId !== from.assetId) return 'stale';
+  if (right.id !== to.clipId || right.assetId !== to.assetId) return 'stale';
+  if (framingDrifted(transformAt(left, left.durationMs), from.transform)) return 'stale';
+  if (framingDrifted(transformAt(right, 0), to.transform)) return 'stale';
+  return 'fresh';
 }
 
 export function formatTimecode(ms: number): string {
