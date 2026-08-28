@@ -126,7 +126,7 @@ export interface EditorState {
   openSettings: () => void;
   closeSettings: () => void;
   saveSettings: (input: backend.SettingsInput) => Promise<void>;
-  testConnection: () => Promise<void>;
+  testConnection: (input: backend.SettingsInput) => Promise<void>;
   runExport: () => Promise<void>;
   setExportProgress: (stage: string, fraction: number) => void;
   pushToast: (toast: Omit<Toast, 'id'>) => void;
@@ -554,9 +554,9 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
   },
 
-  async testConnection() {
+  async testConnection(input) {
     try {
-      set({ connectionMessage: { ok: true, text: await backend.testConnection() } });
+      set({ connectionMessage: { ok: true, text: await backend.testConnection(input) } });
     } catch (error) {
       set({ connectionMessage: { ok: false, text: message(error) } });
     }

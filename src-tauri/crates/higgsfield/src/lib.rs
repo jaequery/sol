@@ -5,6 +5,10 @@
 //!
 //! Everything here follows the published API at <https://docs.higgsfield.ai>:
 //!
+//! 0. Every call carries `Authorization: Key {key_id}:{key_secret}`
+//!    (<https://docs.higgsfield.ai/docs/authentication>) — the credential is one thing in
+//!    two halves, and [`Config::credential`] accepts it either as two fields or as the
+//!    single `key_id:key_secret` string Higgsfield's own SDKs take.
 //! 1. [`Client::upload_image`] puts each rendered keyframe behind a public HTTPS URL,
 //!    because every model parameter that takes an image takes a URL and nothing else.
 //! 2. [`Client::submit`] posts a flat JSON body to a model endpoint and gets back a
@@ -33,6 +37,12 @@ pub const DEFAULT_BASE_URL: &str = "https://api.higgsfield.ai";
 pub const DEFAULT_ENDPOINT: &str = "/higgsfield-ai/dop/standard";
 /// Where a presigned upload URL is minted. See the "File uploads" guide.
 pub const UPLOAD_URL_PATH: &str = "/files/generate-upload-url";
+
+/// The documented authentication scheme. `Authorization: Key {key_id}:{key_secret}` — not
+/// a bearer token, and not the legacy `hf-api-key`/`hf-secret` pair, which the API still
+/// accepts but the docs steer new integrations away from.
+/// <https://docs.higgsfield.ai/docs/authentication>
+pub const AUTH_SCHEME: &str = "Key";
 
 /// Connection settings. Held by the desktop app, never handed to the webview.
 ///
@@ -72,10 +82,55 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The two halves of the credential as they will be sent, or `None` when what is held
+    /// is not a whole one.
+    ///
+    /// Higgsfield issues *one* credential in two parts, and its own SDKs pass the pair
+    /// around as a single `key_id:key_secret` string — that is what `HF_KEY` and
+    /// `HF_CREDENTIALS` hold. Someone who pastes that whole string into the key-id box has
+    /// a perfectly good credential, so split it on the first colon rather than sending
+    /// `Key id:secret:` and telling them their key is invalid. The secret itself may
+    /// contain colons, so only the first one separates.
+    pub fn credential(&self) -> Option<(String, String)> {
+        let id = self.api_key_id.trim();
+        let secret = self.api_key_secret.trim();
+
+        if !secret.is_empty() {
+            return (!id.is_empty()).then(|| (id.to_string(), secret.to_string()));
+        }
+
+        let (id, secret) = id.split_once(':')?;
+        let (id, secret) = (id.trim(), secret.trim());
+        (!id.is_empty() && !secret.is_empty()).then(|| (id.to_string(), secret.to_string()))
+    }
+
     /// Both halves of the credential are needed: the API authenticates on
     /// `Key {id}:{secret}` and rejects a header missing either one.
     pub fn is_configured(&self) -> bool {
-        !self.api_key_id.trim().is_empty() && !self.api_key_secret.trim().is_empty()
+        self.credential().is_some()
+    }
+
+    /// The same settings with a pasted credential split into its two halves and stray
+    /// whitespace gone.
+    ///
+    /// Applied before anything is stored or displayed, so the settings file and the masked
+    /// hint the dialog shows both describe the credential that actually goes on the wire —
+    /// a combined string left in the key-id field would otherwise mask the tail of the
+    /// *secret* and show it as the key id.
+    pub fn normalized(mut self) -> Self {
+        match self.credential() {
+            Some((id, secret)) => {
+                self.api_key_id = id;
+                self.api_key_secret = secret;
+            }
+            None => {
+                self.api_key_id = self.api_key_id.trim().to_string();
+                self.api_key_secret = self.api_key_secret.trim().to_string();
+            }
+        }
+        self.base_url = self.base_url.trim().to_string();
+        self.endpoint = self.endpoint.trim().to_string();
+        self
     }
 
     fn url(&self, path: &str) -> String {
@@ -204,6 +259,9 @@ fn endpoint_takes_a_seed(endpoint: &str) -> bool {
 pub struct Client {
     http: reqwest::Client,
     config: Config,
+    /// `Key {id}:{secret}`, built and validated once at construction and flagged sensitive
+    /// so reqwest keeps it out of its own diagnostics.
+    auth: reqwest::header::HeaderValue,
 }
 
 /// Hand-written so a stray `{:?}` in a log line cannot print the credential.
@@ -219,13 +277,28 @@ impl std::fmt::Debug for Client {
 
 impl Client {
     pub fn new(config: Config) -> Result<Self> {
-        if !config.is_configured() {
-            return Err(HiggsfieldError::NotConfigured);
-        }
+        let config = config.normalized();
+        let (key_id, key_secret) = config.credential().ok_or(HiggsfieldError::NotConfigured)?;
+
+        // A credential copied out of a dashboard can arrive with a line break or a
+        // non-ASCII character in it. reqwest would defer that to `send()` and report it as
+        // an opaque "builder error" transport failure, which reads like the network is
+        // down; catch it here and say what is actually wrong.
+        let mut auth =
+            reqwest::header::HeaderValue::from_str(&format!("{AUTH_SCHEME} {key_id}:{key_secret}"))
+                .map_err(|_| {
+                    HiggsfieldError::BadCredential(
+                        "the key id or secret contains a character that cannot go in an HTTP \
+                         header — re-copy the credential from cloud.higgsfield.ai"
+                            .into(),
+                    )
+                })?;
+        auth.set_sensitive(true);
+
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .build()?;
-        Ok(Self { http, config })
+        Ok(Self { http, config, auth })
     }
 
     pub fn config(&self) -> &Config {
@@ -234,14 +307,7 @@ impl Client {
 
     /// `Authorization: Key {key_id}:{key_secret}`, the documented scheme.
     fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        req.header(
-            reqwest::header::AUTHORIZATION,
-            format!(
-                "Key {}:{}",
-                self.config.api_key_id.trim(),
-                self.config.api_key_secret.trim()
-            ),
-        )
+        req.header(reqwest::header::AUTHORIZATION, self.auth.clone())
     }
 
     /// Put an image behind a public HTTPS URL: mint a presigned upload, PUT the bytes with
@@ -507,10 +573,113 @@ mod tests {
     }
 
     #[test]
+    fn a_credential_pasted_whole_is_split_on_its_first_colon() {
+        // The form Higgsfield's own SDKs take, in `HF_KEY` / `HF_CREDENTIALS`.
+        let pasted = Config {
+            api_key_id: "key-id:key-secret".into(),
+            ..Config::default()
+        };
+        assert!(pasted.is_configured(), "a whole credential, in one box");
+        assert_eq!(
+            pasted.credential(),
+            Some(("key-id".into(), "key-secret".into()))
+        );
+
+        let split = pasted.normalized();
+        assert_eq!(split.api_key_id, "key-id");
+        assert_eq!(split.api_key_secret, "key-secret");
+    }
+
+    #[test]
+    fn a_secret_with_colons_in_it_survives_the_split() {
+        let pasted = Config {
+            api_key_id: "key-id:sec:ret".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            pasted.credential(),
+            Some(("key-id".into(), "sec:ret".into())),
+            "only the first colon separates the two halves"
+        );
+    }
+
+    #[test]
+    fn two_filled_boxes_are_never_re_split() {
+        let typed = Config {
+            api_key_id: "key:id".into(),
+            api_key_secret: "secret".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            typed.credential(),
+            Some(("key:id".into(), "secret".into())),
+            "a colon in a key id the user typed in full is part of the key id"
+        );
+    }
+
+    #[test]
+    fn whitespace_around_a_pasted_credential_is_ignored() {
+        let messy = Config {
+            api_key_id: "  key-id\n".into(),
+            api_key_secret: "\tkey-secret ".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            messy.credential(),
+            Some(("key-id".into(), "key-secret".into()))
+        );
+
+        let pasted = Config {
+            api_key_id: " key-id : key-secret \n".into(),
+            ..Config::default()
+        };
+        assert_eq!(
+            pasted.credential(),
+            Some(("key-id".into(), "key-secret".into()))
+        );
+    }
+
+    #[test]
+    fn half_a_pasted_credential_is_still_not_a_credential() {
+        for id in ["key-id:", ":key-secret", ":", "key-id"] {
+            let config = Config {
+                api_key_id: id.into(),
+                ..Config::default()
+            };
+            assert!(!config.is_configured(), "{id:?} is not a whole credential");
+        }
+    }
+
+    #[test]
+    fn a_credential_that_cannot_form_a_header_says_so_instead_of_failing_as_a_network_error() {
+        // An interior line break survives a paste and cannot go in a header value.
+        // reqwest would defer this to `send()` and report "builder error".
+        let broken = Config {
+            api_key_id: "key-id".into(),
+            api_key_secret: "sec\nret".into(),
+            ..Config::default()
+        };
+        let err = Client::new(broken).unwrap_err();
+        let HiggsfieldError::BadCredential(detail) = &err else {
+            panic!("expected a credential error, got {err:?}");
+        };
+        assert!(detail.contains("cloud.higgsfield.ai"), "{detail}");
+        assert_eq!(err.title(), "Authentication failed");
+        assert!(
+            !err.is_retryable(),
+            "retrying the same bad paste cannot help"
+        );
+    }
+
+    #[test]
     fn the_defaults_are_the_documented_api() {
         let c = Config::default();
         assert_eq!(c.base_url, "https://api.higgsfield.ai");
         assert_eq!(c.endpoint, "/higgsfield-ai/dop/standard");
+        assert_eq!(
+            AUTH_SCHEME, "Key",
+            "the documented scheme is `Key id:secret`, not a bearer token"
+        );
     }
 
     #[test]
@@ -536,6 +705,14 @@ mod tests {
         assert_eq!(config.api_key_id, "old-id");
         assert_eq!(config.api_key_secret, "old-secret");
         assert!(config.is_configured());
+
+        // An earlier build stored whatever was pasted, combined form included.
+        let combined = r#"{"api_key":"old-id:old-secret"}"#;
+        let config: Config = serde_json::from_str::<Config>(combined)
+            .expect("legacy settings")
+            .normalized();
+        assert_eq!(config.api_key_id, "old-id");
+        assert_eq!(config.api_key_secret, "old-secret");
     }
 
     #[test]

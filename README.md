@@ -48,19 +48,28 @@ sudo apt install pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
 
 Create a credential at [cloud.higgsfield.ai](https://cloud.higgsfield.ai) — it comes as a
 **key ID and a secret**, and both are needed. Open **✦ Connect Higgsfield** in the title
-bar and paste them in. They are stored by the Rust backend in an owner-only file under the
-app config directory and never reach the webview.
+bar and paste them in; pasting the whole `key_id:key_secret` string into the ID box works
+too, because that is the single-string form Higgsfield's own SDKs take (`HF_KEY`,
+`HF_CREDENTIALS`) and it is split back apart before anything is stored. **Test connection**
+authenticates with whatever is in the dialog's fields, so a key can be proved before it is
+saved. Credentials are stored by the Rust backend in an owner-only file under the app
+config directory and never reach the webview.
 
-The integration follows the public API at [docs.higgsfield.ai](https://docs.higgsfield.ai):
+The integration follows the public API at [docs.higgsfield.ai](https://docs.higgsfield.ai)
+and its [OpenAPI document](https://docs.higgsfield.ai/docs/openapi.json):
 
 | | |
 |---|---|
 | Base URL | `https://api.higgsfield.ai` |
-| Auth | `Authorization: Key {key_id}:{key_secret}` |
-| Keyframe upload | `POST /files/generate-upload-url`, then a presigned `PUT` |
+| Auth | `Authorization: Key {key_id}:{key_secret}` — the documented `authKey` scheme, never a bearer token |
+| Credential check | `POST /files/generate-upload-url`, which authenticates without generating or charging anything |
+| Keyframe upload | the same call, then a presigned `PUT` that never sees the credential |
 | Submit | `POST /higgsfield-ai/dop/standard` with `{prompt, image_url, end_image_url}` |
 | Poll | the `status_url` from the submit response, backing off 2s → 10s |
 | Result | `video.url` on a `completed` request |
+
+The API also still accepts the legacy `hf-api-key` / `hf-secret` header pair, but the docs
+point new integrations at `Authorization`, which is what this client sends.
 
 The base URL and the model endpoint are editable in the same dialog, so another documented
 model — or an API revision — can be pointed at without shipping a new build. The dialog
@@ -77,6 +86,17 @@ cargo test -p solcut-higgsfield -p solcut-render      # API client + ffmpeg expo
 cargo clippy -p solcut-higgsfield -p solcut-render --all-targets -- -D warnings
 cargo fmt --all --check
 ```
+
+Everything above runs offline against a local stub of the API. To prove a real credential
+against the real thing — one presigned upload URL, nothing generated and nothing charged:
+
+```bash
+HF_API_KEY_ID=… HF_API_KEY_SECRET=… cargo test -p solcut-higgsfield --test live -- --nocapture
+HF_KEY="key-id:key-secret" cargo test -p solcut-higgsfield --test live -- --nocapture
+```
+
+With no credential in the environment it says so and passes, so it is safe in a plain
+`cargo test` run.
 
 ## Layout
 

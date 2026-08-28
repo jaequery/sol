@@ -455,3 +455,83 @@ async fn the_connection_check_proves_the_credential_without_generating_anything(
         "{err:?}"
     );
 }
+
+/// A credential pasted whole — the single `key_id:key_secret` string Higgsfield's own
+/// SDKs take — authenticates with exactly the header the docs specify.
+///
+/// <https://docs.higgsfield.ai/docs/authentication>
+#[tokio::test]
+async fn a_credential_pasted_whole_still_sends_the_documented_header() {
+    let server = MockServer::start(|_, _| {
+        Response::json(
+            200,
+            r#"{"public_url":"https://cdn.test/a.jpeg","upload_url":"https://storage.test/put"}"#,
+        )
+    });
+
+    let pasted = Config {
+        // Nothing in the secret box: the whole credential arrived in one paste.
+        api_key_id: "  test-id:test-secret\n".into(),
+        base_url: server.base_url(),
+        ..Config::default()
+    };
+    Client::new(pasted)
+        .expect("a whole credential, however it was pasted")
+        .check_credentials()
+        .await
+        .expect("authenticated");
+
+    server.with_first("/files/generate-upload-url", |req| {
+        assert_eq!(
+            req.header("authorization"),
+            Some("Key test-id:test-secret"),
+            "the scheme is `Key id:secret` — never a bearer token, and never a trailing colon"
+        );
+        assert!(
+            req.header("hf-api-key").is_none() && req.header("hf-secret").is_none(),
+            "the legacy header pair is not what a new integration sends"
+        );
+    });
+}
+
+/// The `Authorization` header is the only place the credential goes: no query string, no
+/// second header, and nothing at all on the presigned storage host.
+#[tokio::test]
+async fn the_credential_travels_only_in_the_authorization_header() {
+    let base = shared_base();
+    let seen = Arc::clone(&base);
+    let server = MockServer::start(move |req, _| match req.path.as_str() {
+        "/files/generate-upload-url" => {
+            let here = seen.get().cloned().unwrap_or_default();
+            Response::json(
+                200,
+                &format!(
+                    r#"{{"public_url":"https://cdn.test/a.jpeg","upload_url":"{here}/storage/put",
+                        "upload_headers":{{"Content-Type":"image/jpeg"}}}}"#
+                ),
+            )
+        }
+        _ => Response::json(200, "{}"),
+    });
+    base.set(server.base_url()).unwrap();
+
+    Client::new(config(&server))
+        .unwrap()
+        .upload_image(START_JPEG.to_vec(), "image/jpeg")
+        .await
+        .expect("uploaded");
+
+    server.with_first("/files/generate-upload-url", |req| {
+        assert!(
+            !req.path.contains("key") && !req.path.contains('?'),
+            "the credential is never put in a URL: {}",
+            req.path
+        );
+    });
+    server.with_first("/storage/put", |req| {
+        assert!(
+            req.header("authorization").is_none(),
+            "the presigned storage host must never see the API credential"
+        );
+    });
+}
