@@ -23,16 +23,37 @@ import {
   type GenerationTarget,
   type MediaAsset,
   type MediaKind,
+  type FilmGeneration,
+  type GenerationError,
   type Selection,
   type Transform2D,
   type TransitionSource,
+  IDENTITY_TRANSFORM,
 } from '../types/project';
+import {
+  applyGenerationToFilm,
+  assembleFilm,
+  cancelFilmSegments,
+  createFilm,
+  defaultFilmPrompt,
+  filmProgress,
+  FILM_SEGMENT_DURATION_MS,
+  inFlightFilmGenerationIds,
+  isFilmAssembled,
+  markFilmAssembled,
+  markFilmSegmentFailed,
+  markFilmSegmentQueued,
+  patchFilmSegment,
+  setFilmPrompt,
+  type Film,
+} from '../lib/film';
 import {
   addKeyframe,
   audioTrack,
   clipAt,
   findSegment,
   insertClips,
+  insertIndexAtTime,
   insertTransitionClip,
   makeId,
   moveAudio,
@@ -50,6 +71,7 @@ import {
   setTransitionDuration,
   sortClips,
   timelineEndMs,
+  trackEndMs,
   transformAt,
   updateKeyframe,
   videoClip,
@@ -77,7 +99,19 @@ export interface ExportState {
   error?: string;
 }
 
-const PHOTO_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'avif'];
+/**
+ * One photo the film wizard is holding, before anything has been imported.
+ *
+ * Either half can be the real one: a desktop pick and an OS drop carry a `path` the Rust
+ * side can read, a plain browser drop only ever has the `File`.
+ */
+export interface FilmPhotoSource {
+  name: string;
+  file?: File;
+  path?: string;
+}
+
+export const PHOTO_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'avif'];
 const VIDEO_EXTS = ['mp4', 'mov', 'webm', 'm4v', 'mkv', 'avi'];
 
 export function kindOf(name: string, mime = ''): MediaKind | null {
@@ -104,6 +138,10 @@ export interface EditorState {
   snapping: boolean;
 
   generations: Record<string, Generation>;
+  /** The three-photo film currently being made, if there is one. */
+  film: Film | null;
+  /** The wizard panel. It outlives the film it starts, and the film outlives it. */
+  filmWizardOpen: boolean;
   /** Prompts typed for cuts that have not generated yet, keyed `${afterClipId}:${beforeClipId}`. */
   cutPrompts: Record<string, string>;
   /** Cuts still waiting their turn in an "Animate all" run. `null` when no run is active. */
@@ -165,6 +203,17 @@ export interface EditorState {
   cancelGeneration: (id: string) => Promise<void>;
   dismissGeneration: (id: string) => void;
 
+  // ---- film (three photos, two AI transitions)
+  openFilmWizard: () => void;
+  closeFilmWizard: () => void;
+  addFilmPhotos: (sources: FilmPhotoSource[]) => Promise<string[]>;
+  startFilm: (assetIds: string[], prompts?: string[]) => Promise<void>;
+  setFilmSegmentPrompt: (index: number, prompt: string) => void;
+  retryFilmSegment: (index: number) => Promise<void>;
+  cancelFilm: () => Promise<void>;
+  placeFilmOnTimeline: () => void;
+  dismissFilm: () => void;
+
   // ---- settings, export, chrome
   loadSettings: () => Promise<void>;
   openSettings: () => void;
@@ -188,6 +237,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   snapping: true,
 
   generations: {},
+  film: null,
+  filmWizardOpen: false,
   cutPrompts: {},
   animateQueue: null,
   animateSubmittingId: null,
@@ -302,12 +353,15 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     // A generation is doomed when any clip it works for is: the segment's clip, either
     // side of the cut, or the transition clip it would replace.
+    // Film legs animate between photos, not clips, so no clip on the track speaks for them.
     const generationDoomed = (g: Generation) =>
       g.target.kind === 'segment'
         ? doomed.has(g.target.clipId)
-        : doomed.has(g.target.afterClipId) ||
-          doomed.has(g.target.beforeClipId) ||
-          (g.target.replacesClipId !== undefined && doomed.has(g.target.replacesClipId));
+        : g.target.kind === 'film'
+          ? false
+          : doomed.has(g.target.afterClipId) ||
+            doomed.has(g.target.beforeClipId) ||
+            (g.target.replacesClipId !== undefined && doomed.has(g.target.replacesClipId));
 
     const kept = Object.fromEntries(
       Object.entries(generations).filter(([, g]) => !generationDoomed(g)),
@@ -678,6 +732,9 @@ export const useEditor = create<EditorState>((set, get) => ({
     const target = generation.target;
     if (target.kind === 'segment') {
       startSegmentGeneration(set, get, target.clipId, target.fromKeyframeId, target.toKeyframeId);
+    } else if (target.kind === 'film') {
+      // A film leg is retried from the film panel, which is where its state is shown.
+      void get().retryFilmSegment(target.filmSegmentIndex);
     } else if (target.replacesClipId !== undefined) {
       get().regenerateTransition(target.replacesClipId);
     } else {
@@ -738,11 +795,18 @@ export const useEditor = create<EditorState>((set, get) => ({
       outputPath: update.outputPath ?? existing.outputPath,
       error: update.status === 'failed' ? update.error : undefined,
     };
-    set((s) => ({ generations: { ...s.generations, [update.generationId]: next } }));
+    writeGeneration(set, next);
 
     if (update.status === 'succeeded' && update.outputPath) {
       if (next.target.kind === 'segment') {
         landSegmentResult(set, get, next, next.target, update.outputPath);
+      } else if (next.target.kind === 'film') {
+        // A film leg is parked, not placed. The film goes onto the track in one piece once
+        // every leg is in, so a leg landing early cannot leave half a film in the project —
+        // and it goes on by itself, the moment the last leg's file has been measured.
+        void probeFilmSegmentDuration(set, next.target.filmSegmentIndex, update.outputPath).then(
+          () => assembleFilmOnTimeline(set, get),
+        );
       } else {
         landCutResult(set, get, next, next.target, update.outputPath);
       }
@@ -753,11 +817,8 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   async cancelGeneration(id) {
     await backend.cancelGeneration(id);
-    set((s) => {
-      const existing = s.generations[id];
-      if (!existing) return s;
-      return { generations: { ...s.generations, [id]: { ...existing, status: 'cancelled' } } };
-    });
+    const existing = get().generations[id];
+    if (existing) writeGeneration(set, { ...existing, status: 'cancelled' });
     maybeAdvanceAnimateQueue(set, get, id);
   },
 
@@ -767,6 +828,183 @@ export const useEditor = create<EditorState>((set, get) => ({
       delete generations[id];
       return { generations };
     });
+  },
+
+  // ------------------------------------------------------------------ film
+
+  openFilmWizard: () => set({ filmWizardOpen: true }),
+
+  /**
+   * Put the panel away. Deliberately only the panel: a film that is already running keeps
+   * running, because stopping a paid render is what the explicit Cancel is for.
+   */
+  closeFilmWizard: () => set({ filmWizardOpen: false }),
+
+  /**
+   * The wizard's photos into the media bin — assets only, nothing on the track.
+   *
+   * A film is nothing but the transitions between these three photos, so the photos are
+   * inputs rather than shots: laying them on the timeline would put stills into a film that
+   * is meant to be pure motion. Resolves to the new asset ids in the order given, and
+   * throws — naming the files — if the backend would not take one.
+   */
+  async addFilmPhotos(sources) {
+    const paths = [...new Set(sources.flatMap((s) => (s.path ? [s.path] : [])))];
+    const imported = new Map<string, backend.ImportedMedia>();
+    if (paths.length > 0) {
+      const result = await backend.importPaths(paths);
+      for (const item of result.imported) imported.set(item.path, item);
+      if (result.rejected.length > 0) {
+        throw new Error(result.rejected.map((r) => `${r.name} — ${r.reason}`).join('; '));
+      }
+    }
+
+    const added: MediaAsset[] = [];
+    const ids: string[] = [];
+    // The same photo in two slots is the user's choice; one asset answers for both slots.
+    const seen = new Map<string | File, string>();
+
+    for (const source of sources) {
+      const key = source.path ?? source.file;
+      if (key === undefined) throw new Error(`${source.name} has neither a file nor a path`);
+
+      const already = seen.get(key);
+      if (already !== undefined) {
+        ids.push(already);
+        continue;
+      }
+
+      const item = source.path ? imported.get(source.path) : undefined;
+      if (source.path && !item) throw new Error(`${source.name} could not be imported`);
+
+      const asset: MediaAsset =
+        item !== undefined
+          ? {
+              id: makeId('asset'),
+              name: item.name,
+              kind: item.kind,
+              path: item.path,
+              src: backend.assetSrc(item.path),
+              sizeBytes: item.sizeBytes,
+            }
+          : {
+              id: makeId('asset'),
+              name: source.name,
+              kind: 'photo',
+              // A browser drop has no filesystem path; export says so when it matters.
+              path: '',
+              src: safeObjectUrl(source.file as File),
+              sizeBytes: (source.file as File).size,
+            };
+
+      added.push(asset);
+      seen.set(key, asset.id);
+      ids.push(asset.id);
+    }
+
+    set((s) => {
+      const assets = { ...s.assets };
+      for (const asset of added) assets[asset.id] = asset;
+      return { assets };
+    });
+    return ids;
+  },
+
+  /**
+   * Three photos in, one film out: two Higgsfield transitions run side by side.
+   *
+   * Nothing is sent — and no film is created — without a credential. There is no local
+   * renderer to fall back to, so a film with no Higgsfield behind it is refused where the
+   * user asked for it rather than two legs later.
+   */
+  async startFilm(assetIds, prompts) {
+    const { assets, settings, pushToast } = get();
+
+    if (!settings?.configured) {
+      pushToast({
+        tone: 'error',
+        title: 'Connect Higgsfield first',
+        detail: 'A film is made of Higgsfield transitions — there is nothing to render it with yet.',
+      });
+      return;
+    }
+
+    const missing = assetIds.filter((id) => !assets[id]);
+    if (missing.length > 0) {
+      pushToast({
+        tone: 'error',
+        title: 'Film could not start',
+        detail: `${missing.length} of the chosen photos are no longer in the media bin.`,
+      });
+      return;
+    }
+
+    let film: Film;
+    try {
+      film = createFilm(assetIds, prompts);
+    } catch (error) {
+      pushToast({ tone: 'error', title: 'Film could not start', detail: message(error) });
+      return;
+    }
+
+    set({ film });
+    // Both legs at once: they are independent, and a film is only as slow as its slowest.
+    for (const segment of film.segments) launchFilmSegment(set, get, segment.index);
+  },
+
+  setFilmSegmentPrompt(index, prompt) {
+    set((s) => (s.film ? { film: setFilmPrompt(s.film, index, prompt) } : s));
+  },
+
+  /** Run one leg again. Whatever already rendered stays rendered — and stays paid for. */
+  async retryFilmSegment(index) {
+    const segment = get().film?.segments.find((s) => s.index === index);
+    if (!segment || segment.status === 'queued' || segment.status === 'running') return;
+    launchFilmSegment(set, get, index);
+  },
+
+  /**
+   * Stop the legs still in flight. Same deal as a single cancel: polling stops, the request
+   * already with the API is not recalled.
+   */
+  async cancelFilm() {
+    const film = get().film;
+    if (!film) return;
+    const ids = inFlightFilmGenerationIds(film);
+
+    set((s) => {
+      const generations = { ...s.generations };
+      for (const id of ids) {
+        const existing = generations[id];
+        if (existing) generations[id] = { ...existing, status: 'cancelled' };
+      }
+      return { generations, film: s.film ? cancelFilmSegments(s.film) : s.film };
+    });
+
+    await Promise.all(ids.map((id) => backend.cancelGeneration(id).catch(() => {})));
+  },
+
+  /**
+   * The finished film onto the track, asked for by hand.
+   *
+   * A whole film lays itself down the moment its last leg is in, so this is the explicit
+   * way in rather than the usual one — and it is where an unfinished film gets told so.
+   */
+  placeFilmOnTimeline() {
+    const film = get().film;
+    if (!film || isFilmAssembled(film)) return;
+    if (assembleFilmOnTimeline(set, get)) return;
+
+    get().pushToast({
+      tone: 'error',
+      title: 'The film is not finished',
+      detail: `${filmProgress(film).label} — every transition has to land before the film can go on the timeline.`,
+    });
+  },
+
+  /** Put the film away. Cancel it first if its legs are still running — this only forgets it. */
+  dismissFilm() {
+    set({ film: null });
   },
 
   // ------------------------------------------------------------------ settings & export
@@ -1028,6 +1266,122 @@ function prunedAfterEdit(
 }
 
 /**
+ * The one place a generation is written.
+ *
+ * A film leg's state lives in two places — the generation board and the film — and this
+ * keeps them from drifting: update the generation and the leg follows, always.
+ */
+function writeGeneration(set: Setter, generation: Generation): void {
+  set((s) => ({
+    generations: { ...s.generations, [generation.id]: generation },
+    film:
+      generation.target.kind === 'film' && s.film
+        ? applyGenerationToFilm(s.film, generation as FilmGeneration)
+        : s.film,
+  }));
+}
+
+/**
+ * Send one leg of the film out: photo A, then photo B, each drawn straight — the photos are
+ * the keyframes here, so there is no framing to bake in beyond the cover-crop every still
+ * already gets.
+ */
+function launchFilmSegment(set: Setter, get: () => EditorState, index: number): void {
+  const segment = get().film?.segments.find((s) => s.index === index);
+  if (!segment) return;
+
+  const { assets } = get();
+  const start = assets[segment.startAssetId];
+  const end = assets[segment.endAssetId];
+  if (!start || !end) {
+    const gone: GenerationError = {
+      title: 'Photo missing',
+      message: 'One of the two photos for this transition is no longer in the media bin.',
+      retryable: false,
+    };
+    set((s) => (s.film ? { film: markFilmSegmentFailed(s.film, index, gone) } : s));
+    get().pushToast({ tone: 'error', title: gone.title, detail: gone.message });
+    return;
+  }
+
+  launchGeneration(
+    set,
+    get,
+    {
+      kind: 'film',
+      startAssetId: segment.startAssetId,
+      endAssetId: segment.endAssetId,
+      filmSegmentIndex: index,
+    },
+    segment.prompt.trim() || defaultFilmPrompt(index),
+    {
+      fromSrc: start.src,
+      fromTransform: IDENTITY_TRANSFORM,
+      toSrc: end.src,
+      toTransform: IDENTITY_TRANSFORM,
+    },
+    // The leg claims the id before anything is sent, so a straggling update from the run
+    // this one replaces is recognisably stale.
+    (id) => set((s) => (s.film ? { film: markFilmSegmentQueued(s.film, index, id) } : s)),
+  );
+}
+
+/**
+ * The film onto the track: one clip per leg, in segment order, appended after the last clip.
+ *
+ * The one place a film is assembled, and it happens **once**. Two things make that matter:
+ * the position is resolved here rather than when the film was started — the editor stays
+ * usable through a multi-minute render, so any position captured earlier is already stale —
+ * and a leg can still be retried after the film has landed, which must not lay down a
+ * second copy. `false` means there was nothing whole to place, or it is already placed.
+ */
+function assembleFilmOnTimeline(set: Setter, get: () => EditorState): boolean {
+  const film = get().film;
+  if (!film || isFilmAssembled(film)) return false;
+
+  const assembled = assembleFilm(film, backend.assetSrc);
+  if (!assembled) return false;
+
+  set((s) => {
+    const assets = { ...s.assets };
+    for (const asset of assembled.assets) assets[asset.id] = asset;
+    const first = assembled.clips[0];
+    return {
+      assets,
+      // Laid end to end after whatever is on the track, gaps in front of them kept.
+      clips: insertClips(s.clips, insertIndexAtTime(s.clips, trackEndMs(s.clips)), assembled.clips),
+      selection: first ? { kind: 'clip', clipId: first.id } : s.selection,
+      film: s.film ? markFilmAssembled(s.film, assembled.clips.map((c) => c.id)) : s.film,
+    };
+  });
+  get().pushToast({
+    tone: 'ok',
+    title: 'Film on the timeline',
+    detail: `${assembled.clips.length} transitions — ready to export`,
+  });
+  return true;
+}
+
+/** A leg's real length, read off the file Higgsfield actually returned. */
+async function probeFilmSegmentDuration(
+  set: Setter,
+  index: number,
+  outputPath: string,
+): Promise<void> {
+  const durationMs = await probeVideoDurationMs(
+    backend.assetSrc(outputPath),
+    FILM_SEGMENT_DURATION_MS,
+  );
+  set((s) => {
+    // Retried while the probe was in flight: that run's file owns the leg's length now.
+    if (!s.film || s.film.segments.find((x) => x.index === index)?.outputPath !== outputPath) {
+      return s;
+    }
+    return { film: patchFilmSegment(s.film, index, { durationMs }) };
+  });
+}
+
+/**
  * Record a generation and submit it: render both frames, hand them to the backend. The
  * record lands synchronously (so callers get an id to track); the submission runs behind
  * it, and a failure to even start — which emits no backend event — marks the record failed
@@ -1039,8 +1393,14 @@ function launchGeneration(
   target: GenerationTarget,
   prompt: string,
   frames: { fromSrc: string; fromTransform: Transform2D; toSrc: string; toTransform: Transform2D },
+  /**
+   * Runs before the record is written, with the id it is about to get. A film leg uses it
+   * to claim the id, so the leg recognises this run's updates and not the one it replaced.
+   */
+  claim?: (generationId: string) => void,
 ): string {
   const generationId = makeId('gen');
+  claim?.(generationId);
   const generation: Generation = {
     id: generationId,
     target,
@@ -1050,7 +1410,7 @@ function launchGeneration(
     elapsedSecs: 0,
     slow: false,
   };
-  set((s) => ({ generations: { ...s.generations, [generationId]: generation } }));
+  writeGeneration(set, generation);
 
   void (async () => {
     try {
@@ -1058,20 +1418,14 @@ function launchGeneration(
       const endFrame = await renderKeyframeJpeg(frames.toSrc, frames.toTransform);
       await backend.generateAnimation({ generationId, prompt, startFrame, endFrame });
     } catch (error) {
-      set((s) => {
-        const existing = s.generations[generationId];
-        if (!existing) return s;
-        return {
-          generations: {
-            ...s.generations,
-            [generationId]: {
-              ...existing,
-              status: 'failed',
-              error: { title: 'Could not start', message: message(error), retryable: true },
-            },
-          },
-        };
-      });
+      const existing = get().generations[generationId];
+      if (existing) {
+        writeGeneration(set, {
+          ...existing,
+          status: 'failed',
+          error: { title: 'Could not start', message: message(error), retryable: true },
+        });
+      }
       get().pushToast({ tone: 'error', title: 'Generation could not start', detail: message(error) });
       maybeAdvanceAnimateQueue(set, get, generationId);
     }

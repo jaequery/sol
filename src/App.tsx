@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { AudioMixer } from './components/AudioMixer';
 import { ExportDialog } from './components/ExportDialog';
+import { FilmWizard } from './components/FilmWizard';
 import { Inspector } from './components/Inspector';
 import { MediaBin } from './components/MediaBin';
 import { Preview } from './components/Preview';
@@ -33,6 +34,7 @@ export function App() {
       </div>
       <Timeline />
       <AudioMixer />
+      <FilmWizard />
       <SettingsDialog />
       <ExportDialog />
       <Toasts />
@@ -102,6 +104,7 @@ function useKeyboardShortcuts() {
         store.deleteSelection();
       } else if (e.key === 'Escape') {
         store.closeSettings();
+        store.closeFilmWizard();
       }
     };
     window.addEventListener('keydown', onKeyDown);

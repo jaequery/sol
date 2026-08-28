@@ -89,6 +89,7 @@ export function Timeline() {
   const resizeAudioTrack = useEditor((s) => s.resizeAudioTrack);
   const toggleAudioMute = useEditor((s) => s.toggleAudioMute);
   const animateAll = useEditor((s) => s.animateAll);
+  const openFilmWizard = useEditor((s) => s.openFilmWizard);
   const settings = useEditor((s) => s.settings);
 
   const trackRef = useRef<HTMLDivElement>(null);
@@ -528,6 +529,10 @@ export function Timeline() {
                   <div>
                     <b>Drop photos, videos and audio here</b>
                     One timeline — visuals land on the track, sounds get their own lanes
+                    {/* The other way in: three photos and no editing at all. */}
+                    <button type="button" className="dropzone__cta" onClick={openFilmWizard}>
+                      ✦ New film from 3 photos
+                    </button>
                   </div>
                 )}
               </div>
