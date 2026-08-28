@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { buildExportSpec, useEditor } from './state/store';
 import { layout } from './lib/timeline';
+import { defaultFilmPrompt } from './lib/film';
 import * as backend from './lib/backend';
 import type { GenerateInput, GenerationUpdate } from './lib/backend';
 
@@ -54,8 +55,8 @@ vi.mock('./lib/backend', () => ({
 vi.mock('./lib/frames', () => ({
   FRAME_WIDTH: 1280,
   FRAME_HEIGHT: 720,
-  renderKeyframeJpeg: async (_src: string, transform: { scale: number }) =>
-    `data:image/jpeg;base64,frame-at-scale-${transform.scale}`,
+  renderKeyframeJpeg: async (src: string, transform: { scale: number }) =>
+    `data:image/jpeg;base64,frame-of-${src}-at-scale-${transform.scale}`,
   probeVideoDurationMs: async (_src: string, fallback: number) => fallback,
 }));
 
@@ -81,6 +82,8 @@ beforeEach(() => {
     playheadMs: 0,
     playing: false,
     generations: {},
+    film: null,
+    filmWizardOpen: false,
     importProblems: [],
     importing: 0,
     toasts: [],
@@ -489,6 +492,237 @@ async function dragFromTo(target: Element, fromX: number, toX: number) {
   await act(async () => fireEvent.pointerMove(window, { clientX: toX }));
   await act(async () => fireEvent.pointerUp(window, { clientX: toX }));
 }
+
+describe('the 3-photo film wizard', () => {
+  const NO_KEY = {
+    configured: false,
+    apiKeyIdHint: '',
+    hasSecret: false,
+    baseUrl: 'https://api.higgsfield.ai',
+    endpoint: '/higgsfield-ai/dop/standard',
+  };
+
+  /** Both ways in carry the same label: the title bar's, then the empty timeline's. */
+  const entryPoints = () => screen.getAllByRole('button', { name: '✦ New film from 3 photos' });
+
+  /** Open the panel and wait for the settings load to have landed. */
+  async function openWizard(user: ReturnType<typeof userEvent.setup>, from = 0) {
+    render(<App />);
+    await waitFor(() => expect(useEditor.getState().settings).not.toBeNull());
+    await user.click(entryPoints()[from]);
+    return screen.getByRole('dialog', { name: 'New film from 3 photos' });
+  }
+
+  async function dropOnWizard(files: File[]) {
+    const zone = screen.getByTestId('film-wizard-dropzone');
+    const dataTransfer = { files, items: files.map(() => ({})), types: ['Files'] };
+    await act(async () => {
+      fireEvent.dragOver(zone, { dataTransfer });
+      fireEvent.drop(zone, { dataTransfer });
+    });
+  }
+
+  const generateFilm = () => screen.getByRole('button', { name: 'Generate film' });
+
+  /** The still the frame stub makes of one photo, found by the name it was imported under. */
+  function stillOf(name: string): string {
+    const asset = Object.values(useEditor.getState().assets).find((a) => a.name === name);
+    expect(asset, `${name} is in the media bin`).toBeTruthy();
+    return `frame-of-${asset?.src}-at-`;
+  }
+
+  /** The request that answers for one leg — never arrival order, which is a race. */
+  function payloadForLeg(index: number): GenerateInput {
+    const id = useEditor.getState().film?.segments[index].generationId;
+    const call = generateAnimation.mock.calls.find(([input]) => input.generationId === id);
+    expect(call, `leg ${index} was sent`).toBeTruthy();
+    return (call as [GenerateInput])[0];
+  }
+
+  it('opens from the title bar and from the empty timeline alike', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(useEditor.getState().settings).not.toBeNull());
+    expect(entryPoints()).toHaveLength(2);
+
+    // The empty-timeline CTA, which is the one a first run actually sees.
+    await user.click(entryPoints()[1]);
+    expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).toBeInTheDocument();
+
+    // Closing only hides the panel — it is a way out, not a cancel.
+    await user.click(screen.getByRole('button', { name: 'Close the film panel' }));
+    expect(screen.queryByRole('dialog', { name: 'New film from 3 photos' })).not.toBeInTheDocument();
+  });
+
+  it('two photos are not a film, and it says how many are still missing', async () => {
+    const user = userEvent.setup();
+    await openWizard(user);
+
+    await dropOnWizard([file('one.jpg', 'image/jpeg'), file('two.jpg', 'image/jpeg')]);
+
+    expect(screen.getByText('2 of 3 photos chosen — add 1 more.')).toBeInTheDocument();
+    expect(generateFilm()).toBeDisabled();
+    expect(generateAnimation).not.toHaveBeenCalled();
+  });
+
+  it('a fourth photo is left out, and named with the reason', async () => {
+    const user = userEvent.setup();
+    await openWizard(user);
+
+    await dropOnWizard([
+      file('one.jpg', 'image/jpeg'),
+      file('two.jpg', 'image/jpeg'),
+      file('three.jpg', 'image/jpeg'),
+      file('four.jpg', 'image/jpeg'),
+    ]);
+
+    expect(
+      screen.getByText('four.jpg — a film takes exactly 3 photos, and three are already chosen'),
+    ).toBeInTheDocument();
+    // The three that fit are still a film.
+    expect(generateFilm()).toBeEnabled();
+  });
+
+  it('a video cannot be one of the three keyframes, and is told so', async () => {
+    const user = userEvent.setup();
+    await openWizard(user);
+
+    await dropOnWizard([
+      file('one.jpg', 'image/jpeg'),
+      file('surf.mp4', 'video/mp4'),
+      file('two.jpg', 'image/jpeg'),
+    ]);
+
+    expect(
+      screen.getByText(
+        "surf.mp4 — a film's three keyframes are photos — a video cannot be one of them",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('2 of 3 photos chosen — add 1 more.')).toBeInTheDocument();
+    expect(generateFilm()).toBeDisabled();
+  });
+
+  it('both prompts arrive filled in from the default, and take an edit', async () => {
+    const user = userEvent.setup();
+    await openWizard(user);
+    await dropOnWizard([
+      file('one.jpg', 'image/jpeg'),
+      file('two.jpg', 'image/jpeg'),
+      file('three.jpg', 'image/jpeg'),
+    ]);
+
+    const first = screen.getByLabelText('Transition 1 · photo 1 → photo 2');
+    const second = screen.getByLabelText('Transition 2 · photo 2 → photo 3');
+    expect(first).toHaveValue(defaultFilmPrompt(0));
+    expect(second).toHaveValue(defaultFilmPrompt(1));
+
+    await user.clear(first);
+    await user.type(first, 'a slow push through the doorway');
+    expect(first).toHaveValue('a slow push through the doorway');
+    // Editing one leg leaves the other on its default.
+    expect(second).toHaveValue(defaultFilmPrompt(1));
+  });
+
+  it('with no credential it refuses, points at settings, and sends nothing', async () => {
+    const user = userEvent.setup();
+    await openWizard(user);
+    act(() => useEditor.setState({ settings: NO_KEY }));
+
+    await dropOnWizard([
+      file('one.jpg', 'image/jpeg'),
+      file('two.jpg', 'image/jpeg'),
+      file('three.jpg', 'image/jpeg'),
+    ]);
+
+    expect(screen.getByText('Connect Higgsfield to generate')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open settings →' })).toBeInTheDocument();
+    expect(generateFilm()).toBeDisabled();
+
+    await user.click(generateFilm());
+    expect(generateAnimation).not.toHaveBeenCalled();
+    expect(useEditor.getState().film).toBeNull();
+  });
+
+  it('generate starts two transitions pairing the photos in the chosen order', async () => {
+    const user = userEvent.setup();
+    await openWizard(user);
+    await dropOnWizard([
+      file('one.jpg', 'image/jpeg'),
+      file('two.jpg', 'image/jpeg'),
+      file('three.jpg', 'image/jpeg'),
+    ]);
+
+    // The order is the user's: three.jpg is promoted into the middle before generating.
+    await user.click(screen.getByRole('button', { name: 'Move three.jpg earlier' }));
+    await user.click(generateFilm());
+
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(2));
+
+    const first = payloadForLeg(0);
+    const second = payloadForLeg(1);
+    expect(first.startFrame).toContain(stillOf('one.jpg'));
+    expect(first.endFrame).toContain(stillOf('three.jpg'));
+    expect(second.startFrame).toContain(stillOf('three.jpg'));
+    expect(second.endFrame).toContain(stillOf('two.jpg'));
+    expect(first.prompt).toBe(defaultFilmPrompt(0));
+    expect(second.prompt).toBe(defaultFilmPrompt(1));
+
+    // The photos are inputs, not shots: the track stays empty until the film lands.
+    expect(useEditor.getState().clips).toHaveLength(0);
+    expect(Object.values(useEditor.getState().assets)).toHaveLength(3);
+  });
+
+  it('a leg that fails explains itself and offers a retry, and the app stays usable', async () => {
+    const user = userEvent.setup();
+    await openWizard(user);
+    await dropOnWizard([
+      file('one.jpg', 'image/jpeg'),
+      file('two.jpg', 'image/jpeg'),
+      file('three.jpg', 'image/jpeg'),
+    ]);
+    await user.click(generateFilm());
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(2));
+
+    expect(await screen.findAllByText('Queued')).toHaveLength(2);
+
+    const legs = useEditor.getState().film?.segments ?? [];
+    act(() => {
+      emitGenerationUpdate({
+        generationId: legs[0].generationId as string,
+        status: 'running',
+        progress: 0.4,
+        elapsedSecs: 9,
+        slow: false,
+      });
+      emitGenerationUpdate({
+        generationId: legs[1].generationId as string,
+        status: 'failed',
+        progress: 0,
+        elapsedSecs: 9,
+        slow: false,
+        error: { title: 'Rate limited', message: 'Too many requests — try again shortly.', retryable: true },
+      });
+    });
+
+    expect(await screen.findByText('Rendering 40%')).toBeInTheDocument();
+    expect(screen.getByText('Rate limited')).toBeInTheDocument();
+    expect(screen.getByText('Too many requests — try again shortly.')).toBeInTheDocument();
+    expect(screen.getByText('0 of 2 succeeded')).toBeInTheDocument();
+
+    // Non-modal: the editor behind the panel is still live.
+    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
+    expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).not.toHaveAttribute(
+      'aria-modal',
+    );
+
+    generateAnimation.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Retry transition 2' }));
+
+    // Only the failed leg goes out again.
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    expect(payloadForLeg(1).startFrame).toContain(stillOf('two.jpg'));
+  });
+});
 
 async function setUpTwoKeyframes(user: ReturnType<typeof userEvent.setup>) {
   await dropOnTimeline([file('sunset.jpg', 'image/jpeg')]);

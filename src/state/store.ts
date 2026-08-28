@@ -80,7 +80,19 @@ export interface ExportState {
   error?: string;
 }
 
-const PHOTO_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'avif'];
+/**
+ * One photo the film wizard is holding, before anything has been imported.
+ *
+ * Either half can be the real one: a desktop pick and an OS drop carry a `path` the Rust
+ * side can read, a plain browser drop only ever has the `File`.
+ */
+export interface FilmPhotoSource {
+  name: string;
+  file?: File;
+  path?: string;
+}
+
+export const PHOTO_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'avif'];
 const VIDEO_EXTS = ['mp4', 'mov', 'webm', 'm4v', 'mkv', 'avi'];
 
 export function kindOf(name: string, mime = ''): MediaKind | null {
@@ -103,6 +115,8 @@ export interface EditorState {
   generations: Record<string, Generation>;
   /** The three-photo film currently being made, if there is one. */
   film: Film | null;
+  /** The wizard panel. It outlives the film it starts, and the film outlives it. */
+  filmWizardOpen: boolean;
   importing: number;
   importProblems: ImportProblem[];
 
@@ -144,6 +158,9 @@ export interface EditorState {
   dismissGeneration: (id: string) => void;
 
   // ---- film (three photos, two AI transitions)
+  openFilmWizard: () => void;
+  closeFilmWizard: () => void;
+  addFilmPhotos: (sources: FilmPhotoSource[]) => Promise<string[]>;
   startFilm: (assetIds: string[], prompts?: string[]) => Promise<void>;
   setFilmSegmentPrompt: (index: number, prompt: string) => void;
   retryFilmSegment: (index: number) => Promise<void>;
@@ -173,6 +190,7 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   generations: {},
   film: null,
+  filmWizardOpen: false,
   importing: 0,
   importProblems: [],
 
@@ -544,6 +562,84 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   // ------------------------------------------------------------------ film
+
+  openFilmWizard: () => set({ filmWizardOpen: true }),
+
+  /**
+   * Put the panel away. Deliberately only the panel: a film that is already running keeps
+   * running, because stopping a paid render is what the explicit Cancel is for.
+   */
+  closeFilmWizard: () => set({ filmWizardOpen: false }),
+
+  /**
+   * The wizard's photos into the media bin — assets only, nothing on the track.
+   *
+   * A film is nothing but the transitions between these three photos, so the photos are
+   * inputs rather than shots: laying them on the timeline would put stills into a film that
+   * is meant to be pure motion. Resolves to the new asset ids in the order given, and
+   * throws — naming the files — if the backend would not take one.
+   */
+  async addFilmPhotos(sources) {
+    const paths = [...new Set(sources.flatMap((s) => (s.path ? [s.path] : [])))];
+    const imported = new Map<string, backend.ImportedMedia>();
+    if (paths.length > 0) {
+      const result = await backend.importPaths(paths);
+      for (const item of result.imported) imported.set(item.path, item);
+      if (result.rejected.length > 0) {
+        throw new Error(result.rejected.map((r) => `${r.name} — ${r.reason}`).join('; '));
+      }
+    }
+
+    const added: MediaAsset[] = [];
+    const ids: string[] = [];
+    // The same photo in two slots is the user's choice; one asset answers for both slots.
+    const seen = new Map<string | File, string>();
+
+    for (const source of sources) {
+      const key = source.path ?? source.file;
+      if (key === undefined) throw new Error(`${source.name} has neither a file nor a path`);
+
+      const already = seen.get(key);
+      if (already !== undefined) {
+        ids.push(already);
+        continue;
+      }
+
+      const item = source.path ? imported.get(source.path) : undefined;
+      if (source.path && !item) throw new Error(`${source.name} could not be imported`);
+
+      const asset: MediaAsset =
+        item !== undefined
+          ? {
+              id: makeId('asset'),
+              name: item.name,
+              kind: item.kind,
+              path: item.path,
+              src: backend.assetSrc(item.path),
+              sizeBytes: item.sizeBytes,
+            }
+          : {
+              id: makeId('asset'),
+              name: source.name,
+              kind: 'photo',
+              // A browser drop has no filesystem path; export says so when it matters.
+              path: '',
+              src: safeObjectUrl(source.file as File),
+              sizeBytes: (source.file as File).size,
+            };
+
+      added.push(asset);
+      seen.set(key, asset.id);
+      ids.push(asset.id);
+    }
+
+    set((s) => {
+      const assets = { ...s.assets };
+      for (const asset of added) assets[asset.id] = asset;
+      return { assets };
+    });
+    return ids;
+  },
 
   /**
    * Three photos in, one film out: two Higgsfield transitions run side by side.

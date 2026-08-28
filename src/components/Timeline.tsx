@@ -58,6 +58,7 @@ export function Timeline() {
   const splitAtPlayhead = useEditor((s) => s.splitAtPlayhead);
   const deleteSelection = useEditor((s) => s.deleteSelection);
   const moveClip = useEditor((s) => s.moveClip);
+  const openFilmWizard = useEditor((s) => s.openFilmWizard);
   const resize = useEditor((s) => s.resizeClip);
 
   const trackRef = useRef<HTMLDivElement>(null);
@@ -308,6 +309,10 @@ export function Timeline() {
                   <div>
                     <b>Drop photos and videos here</b>
                     One timeline — they land side by side in drop order
+                    {/* The other way in: three photos and no editing at all. */}
+                    <button type="button" className="dropzone__cta" onClick={openFilmWizard}>
+                      ✦ New film from 3 photos
+                    </button>
                   </div>
                 )}
               </div>
