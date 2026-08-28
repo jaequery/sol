@@ -3,47 +3,58 @@
 //! Deliberately free of Tauri, GUI and platform dependencies so it compiles and tests on
 //! any machine — the desktop shell in `src-tauri/` is a thin wrapper over this.
 //!
-//! The flow is: [`Client::submit`] a prompt plus the two rendered keyframes, poll
-//! [`Client::poll`] until it reports [`JobState::Succeeded`], then [`Client::download`]
-//! the result next to the project.
+//! Everything here follows the published API at <https://docs.higgsfield.ai>:
+//!
+//! 1. [`Client::upload_image`] puts each rendered keyframe behind a public HTTPS URL,
+//!    because every model parameter that takes an image takes a URL and nothing else.
+//! 2. [`Client::submit`] posts a flat JSON body to a model endpoint and gets back a
+//!    `request_id` with a `status_url`.
+//! 3. [`Client::poll`] reads that `status_url` until it reports a terminal state, and
+//!    [`Client::download`] fetches the finished MP4 next to the project.
+//! 4. [`Client::cancel`] stops a request that has not started processing yet.
 
 mod error;
 mod parse;
 
 pub use error::{HiggsfieldError, JobState, Result};
-pub use parse::{find_video_url, parse_state, parse_submit};
+pub use parse::{find_video_url, parse_state, parse_submit, Accepted};
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-pub const DEFAULT_BASE_URL: &str = "https://platform.higgsfield.ai";
-pub const DEFAULT_MODEL: &str = "dop";
-pub const DEFAULT_ENDPOINT: &str = "/v1/image2video";
+pub const DEFAULT_BASE_URL: &str = "https://api.higgsfield.ai";
+/// The Higgsfield "DoP" video model. It is the one documented endpoint that takes both a
+/// first *and* a last frame under `image_url`/`end_image_url`, which is exactly what a
+/// SolCut segment is.
+pub const DEFAULT_ENDPOINT: &str = "/higgsfield-ai/dop/standard";
+/// Where a presigned upload URL is minted. See the "File uploads" guide.
+pub const UPLOAD_URL_PATH: &str = "/files/generate-upload-url";
 
 /// Connection settings. Held by the desktop app, never handed to the webview.
+///
+/// A credential is a key *id* and a *secret*; both are required, and they travel together
+/// in one `Authorization` header. The `api_key`/`api_secret` aliases keep settings files
+/// written by earlier builds readable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub api_key: String,
-    #[serde(default)]
-    pub api_secret: String,
+    #[serde(alias = "api_key")]
+    pub api_key_id: String,
+    #[serde(default, alias = "api_secret")]
+    pub api_key_secret: String,
     #[serde(default = "default_base_url")]
     pub base_url: String,
-    #[serde(default = "default_model")]
-    pub model: String,
-    /// Path appended to `base_url` for submissions. Exposed so a new API revision can be
-    /// pointed at from Settings without shipping a new build.
+    /// The model endpoint appended to `base_url`. Exposed so another documented model can
+    /// be pointed at from Settings without shipping a new build.
     #[serde(default = "default_endpoint")]
     pub endpoint: String,
 }
 
 fn default_base_url() -> String {
     DEFAULT_BASE_URL.into()
-}
-fn default_model() -> String {
-    DEFAULT_MODEL.into()
 }
 fn default_endpoint() -> String {
     DEFAULT_ENDPOINT.into()
@@ -52,29 +63,29 @@ fn default_endpoint() -> String {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            api_key: String::new(),
-            api_secret: String::new(),
+            api_key_id: String::new(),
+            api_key_secret: String::new(),
             base_url: default_base_url(),
-            model: default_model(),
             endpoint: default_endpoint(),
         }
     }
 }
 
 impl Config {
+    /// Both halves of the credential are needed: the API authenticates on
+    /// `Key {id}:{secret}` and rejects a header missing either one.
     pub fn is_configured(&self) -> bool {
-        !self.api_key.trim().is_empty()
+        !self.api_key_id.trim().is_empty() && !self.api_key_secret.trim().is_empty()
     }
 
-    fn submit_url(&self) -> String {
+    fn url(&self, path: &str) -> String {
         let base = self.base_url.trim_end_matches('/');
-        let path = self.endpoint.trim_start_matches('/');
+        let path = path.trim_start_matches('/');
         format!("{base}/{path}")
     }
 
-    fn poll_url(&self, job_set_id: &str) -> String {
-        let base = self.base_url.trim_end_matches('/');
-        format!("{base}/v1/job-sets/{job_set_id}")
+    fn submit_url(&self) -> String {
+        self.url(&self.endpoint)
     }
 }
 
@@ -82,9 +93,10 @@ impl Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Frame {
-    /// `data:image/jpeg;base64,…` — how the editor sends locally rendered keyframes.
+    /// `data:image/jpeg;base64,…` — how the editor hands over a locally rendered
+    /// keyframe. It is uploaded before submission, because the API only takes URLs.
     DataUrl(String),
-    /// An already-hosted image.
+    /// An already-hosted image, passed straight through.
     Url(String),
 }
 
@@ -94,68 +106,99 @@ impl Frame {
         let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
         Self::DataUrl(format!("data:image/jpeg;base64,{b64}"))
     }
+}
 
-    fn as_str(&self) -> &str {
-        match self {
-            Self::DataUrl(s) | Self::Url(s) => s,
-        }
+/// The image content types the upload endpoint accepts.
+const SUPPORTED_IMAGE_TYPES: &[&str] = &[
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+];
+
+/// Split `data:image/jpeg;base64,…` into its content type and bytes.
+fn decode_data_url(url: &str) -> Result<(String, Vec<u8>)> {
+    let rest = url
+        .strip_prefix("data:")
+        .ok_or_else(|| HiggsfieldError::Malformed("a frame is not a data URL".into()))?;
+    let (meta, payload) = rest
+        .split_once(',')
+        .ok_or_else(|| HiggsfieldError::Malformed("a frame data URL has no payload".into()))?;
+
+    let content_type = meta.split(';').next().unwrap_or("").to_ascii_lowercase();
+    if !SUPPORTED_IMAGE_TYPES.contains(&content_type.as_str()) {
+        return Err(HiggsfieldError::Malformed(format!(
+            "{content_type:?} is not an image type the API accepts"
+        )));
     }
+    if !meta.contains("base64") {
+        return Err(HiggsfieldError::Malformed(
+            "a frame data URL must be base64-encoded".into(),
+        ));
+    }
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|e| HiggsfieldError::Malformed(format!("undecodable frame data URL: {e}")))?;
+    Ok((content_type, bytes))
 }
 
 /// One "animate the gap between these two keyframes" request.
+///
+/// There is deliberately no duration here: no documented endpoint takes a free-form
+/// length. The models publish fixed choices (dop has none at all), and the editor fits
+/// whatever comes back into the segment it replaces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateRequest {
     pub prompt: String,
     /// The photo framed as the first keyframe describes it.
     pub start_frame: Frame,
-    /// The photo framed as the second keyframe describes it. Omitted for a
-    /// single-image animation; supplied, it pins where the motion ends.
+    /// The same for the second keyframe. Omitted for a single-image animation;
+    /// supplied, it pins where the motion ends.
     pub end_frame: Option<Frame>,
-    pub duration_seconds: f32,
     pub seed: Option<u64>,
 }
 
-impl GenerateRequest {
-    /// The JSON body sent to Higgsfield.
-    ///
-    /// Kept as its own function so the wire format is unit-testable without a network.
-    pub fn to_body(&self, model: &str) -> Value {
-        let mut images = vec![json!({
-            "type": "image_url",
-            "image_url": self.start_frame.as_str(),
-            "role": "start",
-        })];
-        if let Some(end) = &self.end_frame {
-            images.push(json!({
-                "type": "image_url",
-                "image_url": end.as_str(),
-                "role": "end",
-            }));
-        }
+/// The JSON body for a model endpoint, from already-uploaded image URLs.
+///
+/// Every documented image-to-video model takes a flat `{prompt, image_url, …}` object —
+/// there is no `params` envelope and no `model` field, the model *is* the path. Two
+/// details vary by endpoint and are the only thing this branches on:
+///
+/// * the veo `first-last-frame-to-video` operations name their images
+///   `first_frame_url`/`last_frame_url` rather than `image_url`/`end_image_url`;
+/// * only the `dop` and `wan-25-preview` schemas declare a `seed`, and an undeclared
+///   field is a `422`.
+///
+/// Kept as its own function so the wire format is unit-testable without a network.
+pub fn build_body(
+    endpoint: &str,
+    prompt: &str,
+    start_url: &str,
+    end_url: Option<&str>,
+    seed: Option<u64>,
+) -> Value {
+    let (start_key, end_key) = if endpoint.contains("first-last-frame-to-video") {
+        ("first_frame_url", "last_frame_url")
+    } else {
+        ("image_url", "end_image_url")
+    };
 
-        let mut params = json!({
-            "model": model,
-            "prompt": self.prompt,
-            "input_images": images,
-            "duration": round2(self.duration_seconds),
-        });
-        if let Some(seed) = self.seed {
-            params["seed"] = json!(seed);
-        }
-        json!({ "params": params })
+    let mut body = Map::new();
+    body.insert("prompt".into(), json!(prompt));
+    body.insert(start_key.into(), json!(start_url));
+    if let Some(end) = end_url {
+        body.insert(end_key.into(), json!(end));
     }
+    if let Some(seed) = seed.filter(|_| endpoint_takes_a_seed(endpoint)) {
+        body.insert("seed".into(), json!(seed));
+    }
+    Value::Object(body)
 }
 
-/// Round to two decimals *in f64*. Serialising an f32 straight to JSON turns 3.2 into
-/// 3.200000047683716, which some validators reject and all of them log badly.
-fn round2(v: f32) -> f64 {
-    ((v as f64) * 100.0).round() / 100.0
-}
-
-/// The id of an accepted job set, used for polling.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct JobHandle {
-    pub job_set_id: String,
+fn endpoint_takes_a_seed(endpoint: &str) -> bool {
+    endpoint.contains("/dop/") || endpoint.contains("wan-25-preview")
 }
 
 pub struct Client {
@@ -163,12 +206,12 @@ pub struct Client {
     config: Config,
 }
 
-/// Hand-written so a stray `{:?}` in a log line cannot print the API key.
+/// Hand-written so a stray `{:?}` in a log line cannot print the credential.
 impl std::fmt::Debug for Client {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Client")
             .field("base_url", &self.config.base_url)
-            .field("model", &self.config.model)
+            .field("endpoint", &self.config.endpoint)
             .field("configured", &self.config.is_configured())
             .finish()
     }
@@ -189,61 +232,126 @@ impl Client {
         &self.config
     }
 
+    /// `Authorization: Key {key_id}:{key_secret}`, the documented scheme.
     fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        let req = req
-            .header("hf-api-key", &self.config.api_key)
-            .header("Authorization", format!("Key {}", self.config.api_key));
-        if self.config.api_secret.trim().is_empty() {
-            req
-        } else {
-            req.header("hf-secret", &self.config.api_secret)
+        req.header(
+            reqwest::header::AUTHORIZATION,
+            format!(
+                "Key {}:{}",
+                self.config.api_key_id.trim(),
+                self.config.api_key_secret.trim()
+            ),
+        )
+    }
+
+    /// Put an image behind a public HTTPS URL: mint a presigned upload, PUT the bytes with
+    /// every header the API returned, and hand back the `public_url` to pass as a model
+    /// parameter.
+    pub async fn upload_image(&self, bytes: Vec<u8>, content_type: &str) -> Result<String> {
+        let minted = self
+            .auth(self.http.post(self.config.url(UPLOAD_URL_PATH)))
+            .json(&json!({ "content_type": content_type }))
+            .send()
+            .await?;
+        let minted = read_json(minted).await?;
+
+        let upload_url = minted
+            .get("upload_url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                HiggsfieldError::Malformed("the upload response carried no upload_url".into())
+            })?;
+        let public_url = minted
+            .get("public_url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                HiggsfieldError::Malformed("the upload response carried no public_url".into())
+            })?
+            .to_string();
+
+        // The presigned URL is storage, not Higgsfield: it wants the headers it was signed
+        // with and must never see the API credential.
+        let mut put = self.http.put(upload_url);
+        for (name, value) in upload_headers(&minted, content_type) {
+            put = put.header(name, value);
+        }
+        let stored = put.body(bytes).send().await?;
+        if !stored.status().is_success() {
+            return Err(HiggsfieldError::Http {
+                status: stored.status().as_u16(),
+                body: preview(&stored.text().await.unwrap_or_default()),
+            });
+        }
+
+        Ok(public_url)
+    }
+
+    /// A [`Frame`] as a URL the API can fetch, uploading it first when it is inline data.
+    async fn frame_url(&self, frame: &Frame) -> Result<String> {
+        match frame {
+            Frame::Url(url) => Ok(url.clone()),
+            Frame::DataUrl(url) => {
+                let (content_type, bytes) = decode_data_url(url)?;
+                self.upload_image(bytes, &content_type).await
+            }
         }
     }
 
-    /// Send a generation request. Returns as soon as the API has accepted the job.
-    pub async fn submit(&self, req: &GenerateRequest) -> Result<JobHandle> {
-        let body = req.to_body(&self.config.model);
+    /// Send a generation request. Returns as soon as the API has accepted it, with the
+    /// `status_url` to poll.
+    pub async fn submit(&self, req: &GenerateRequest) -> Result<Accepted> {
+        let start_url = self.frame_url(&req.start_frame).await?;
+        let end_url = match &req.end_frame {
+            Some(frame) => Some(self.frame_url(frame).await?),
+            None => None,
+        };
+
+        let body = build_body(
+            &self.config.endpoint,
+            &req.prompt,
+            &start_url,
+            end_url.as_deref(),
+            req.seed,
+        );
         let response = self
             .auth(self.http.post(self.config.submit_url()))
             .json(&body)
             .send()
             .await?;
 
-        let value = read_json(response).await?;
-        Ok(JobHandle {
-            job_set_id: parse_submit(&value)?,
-        })
+        parse_submit(&read_json(response).await?, &self.config.base_url)
     }
 
-    /// Ask where a job set has got to.
-    pub async fn poll(&self, job_set_id: &str) -> Result<JobState> {
-        let response = self
-            .auth(self.http.get(self.config.poll_url(job_set_id)))
-            .send()
-            .await?;
-
-        let value = read_json(response).await?;
-        Ok(parse_state(&value))
+    /// Ask where a request has got to. `status_url` comes from the submit response, which
+    /// the docs ask callers to use rather than build a URL themselves.
+    pub async fn poll(&self, status_url: &str) -> Result<JobState> {
+        let response = self.auth(self.http.get(status_url)).send().await?;
+        parse_state(&read_json(response).await?)
     }
 
-    /// Cheap credential check for the Settings dialog: a poll of a known-absent job set.
-    /// Anything other than an auth rejection means the key was accepted.
+    /// Cancel a request that has not started processing.
+    ///
+    /// `202` means it is cancelled; `400` means generation had already begun and the
+    /// request will run to completion, which is a normal race rather than an error.
+    pub async fn cancel(&self, cancel_url: &str) -> Result<bool> {
+        let response = self.auth(self.http.post(cancel_url)).send().await?;
+        match response.status().as_u16() {
+            200..=299 => Ok(true),
+            400 => Ok(false),
+            _ => Err(read_json(response).await.unwrap_err()),
+        }
+    }
+
+    /// Credential check for the Settings dialog. Minting a presigned upload URL is free
+    /// and generates nothing, and a `200` proves the base URL, the key id, the secret and
+    /// the account are all good — which a 404-shaped probe cannot.
     pub async fn check_credentials(&self) -> Result<()> {
         let response = self
-            .auth(self.http.get(self.config.poll_url("connection-check")))
+            .auth(self.http.post(self.config.url(UPLOAD_URL_PATH)))
+            .json(&json!({ "content_type": "image/jpeg" }))
             .send()
             .await?;
-
-        match response.status().as_u16() {
-            401 | 403 => Err(HiggsfieldError::Unauthorized {
-                status: response.status().as_u16(),
-            }),
-            status if status >= 500 => Err(HiggsfieldError::Http {
-                status,
-                body: response.text().await.unwrap_or_default(),
-            }),
-            _ => Ok(()),
-        }
+        read_json(response).await.map(|_| ())
     }
 
     /// Stream the finished video to `dest`, returning the bytes written.
@@ -295,7 +403,26 @@ impl Client {
     }
 }
 
+/// The headers a presigned PUT has to carry. The docs say to send every entry of
+/// `upload_headers`; `Content-Type` is spelled out because the upload has to match the
+/// type the URL was signed for.
+fn upload_headers(minted: &Value, content_type: &str) -> BTreeMap<String, String> {
+    let mut headers = BTreeMap::new();
+    headers.insert("Content-Type".to_string(), content_type.to_string());
+    if let Some(map) = minted.get("upload_headers").and_then(Value::as_object) {
+        for (name, value) in map {
+            if let Some(value) = value.as_str() {
+                headers.insert(name.clone(), value.to_string());
+            }
+        }
+    }
+    headers
+}
+
 /// Turn a response into JSON, mapping the status codes the UI has distinct states for.
+///
+/// Errors use the FastAPI envelope `{"detail": …}`, so the detail is lifted out and shown
+/// instead of the raw body wherever there is one.
 async fn read_json(response: reqwest::Response) -> Result<Value> {
     let status = response.status();
     let retry_after = response
@@ -310,16 +437,34 @@ async fn read_json(response: reqwest::Response) -> Result<Value> {
         200..=299 => serde_json::from_str(&body).map_err(|e| {
             HiggsfieldError::Malformed(format!("{e} (body started with: {})", preview(&body)))
         }),
-        401 | 403 => Err(HiggsfieldError::Unauthorized {
-            status: status.as_u16(),
+        401 => Err(HiggsfieldError::Unauthorized {
+            status: 401,
+            detail: detail_of(&body),
+        }),
+        403 => Err(HiggsfieldError::InsufficientCredits {
+            detail: detail_of(&body),
         }),
         429 => Err(HiggsfieldError::RateLimited {
             retry_after_secs: retry_after,
         }),
         other => Err(HiggsfieldError::Http {
             status: other,
-            body: preview(&body),
+            body: detail_of(&body),
         }),
+    }
+}
+
+/// The human part of an error body: `detail` when it parses as the documented envelope,
+/// the truncated body otherwise (an HTML gateway page, say).
+fn detail_of(body: &str) -> String {
+    match serde_json::from_str::<Value>(body) {
+        Ok(value) => match value.get("detail") {
+            Some(Value::String(s)) => s.clone(),
+            // Validation errors put a list of problems in `detail`.
+            Some(other) => preview(&other.to_string()),
+            None => preview(body),
+        },
+        Err(_) => preview(body),
     }
 }
 
@@ -338,15 +483,34 @@ mod tests {
 
     fn cfg() -> Config {
         Config {
-            api_key: "k".into(),
+            api_key_id: "id".into(),
+            api_key_secret: "secret".into(),
             ..Default::default()
         }
     }
 
     #[test]
-    fn refuses_to_build_a_client_without_a_key() {
+    fn refuses_to_build_a_client_without_both_halves_of_the_credential() {
         let err = Client::new(Config::default()).unwrap_err();
         assert!(matches!(err, HiggsfieldError::NotConfigured));
+
+        // A key id on its own cannot form a `Key id:secret` header.
+        let id_only = Config {
+            api_key_id: "id".into(),
+            ..Config::default()
+        };
+        assert!(!id_only.is_configured());
+        assert!(matches!(
+            Client::new(id_only).unwrap_err(),
+            HiggsfieldError::NotConfigured
+        ));
+    }
+
+    #[test]
+    fn the_defaults_are_the_documented_api() {
+        let c = Config::default();
+        assert_eq!(c.base_url, "https://api.higgsfield.ai");
+        assert_eq!(c.endpoint, "/higgsfield-ai/dop/standard");
     }
 
     #[test]
@@ -355,76 +519,161 @@ mod tests {
             base_url: "https://api.test/".into(),
             ..cfg()
         };
-        assert_eq!(c.submit_url(), "https://api.test/v1/image2video");
-        assert_eq!(c.poll_url("js_1"), "https://api.test/v1/job-sets/js_1");
+        assert_eq!(
+            c.submit_url(),
+            "https://api.test/higgsfield-ai/dop/standard"
+        );
+        assert_eq!(
+            c.url(UPLOAD_URL_PATH),
+            "https://api.test/files/generate-upload-url"
+        );
     }
 
     #[test]
-    fn body_carries_both_keyframes_in_order() {
-        let req = GenerateRequest {
-            prompt: "slow dolly-in".into(),
-            start_frame: Frame::Url("https://x.test/a.jpg".into()),
-            end_frame: Some(Frame::Url("https://x.test/b.jpg".into())),
-            duration_seconds: 3.2,
-            seed: Some(7),
-        };
-        let body = req.to_body("dop");
-        let images = body["params"]["input_images"].as_array().unwrap();
-
-        assert_eq!(images.len(), 2);
-        assert_eq!(images[0]["role"], "start");
-        assert_eq!(images[0]["image_url"], "https://x.test/a.jpg");
-        assert_eq!(images[1]["role"], "end");
-        assert_eq!(body["params"]["prompt"], "slow dolly-in");
-        assert_eq!(body["params"]["model"], "dop");
-        assert_eq!(body["params"]["duration"], 3.2);
-        assert_eq!(body["params"]["seed"], 7);
+    fn a_settings_file_from_an_earlier_build_still_reads() {
+        let stored = r#"{"api_key":"old-id","api_secret":"old-secret","model":"dop"}"#;
+        let config: Config = serde_json::from_str(stored).expect("legacy settings");
+        assert_eq!(config.api_key_id, "old-id");
+        assert_eq!(config.api_key_secret, "old-secret");
+        assert!(config.is_configured());
     }
 
     #[test]
-    fn a_single_keyframe_sends_one_image_and_no_seed() {
-        let req = GenerateRequest {
-            prompt: "drift".into(),
-            start_frame: Frame::Url("https://x.test/a.jpg".into()),
-            end_frame: None,
-            duration_seconds: 2.0,
-            seed: None,
-        };
-        let body = req.to_body("dop");
-        assert_eq!(body["params"]["input_images"].as_array().unwrap().len(), 1);
-        assert!(body["params"].get("seed").is_none());
+    fn the_body_is_flat_and_names_both_frames() {
+        let body = build_body(
+            "/higgsfield-ai/dop/standard",
+            "slow dolly-in",
+            "https://cdn.test/a.jpg",
+            Some("https://cdn.test/b.jpg"),
+            Some(7),
+        );
+        assert_eq!(body["prompt"], "slow dolly-in");
+        assert_eq!(body["image_url"], "https://cdn.test/a.jpg");
+        assert_eq!(body["end_image_url"], "https://cdn.test/b.jpg");
+        assert_eq!(body["seed"], 7);
+        assert!(
+            body.get("params").is_none() && body.get("model").is_none(),
+            "no envelope and no model field: the model is the endpoint"
+        );
     }
 
     #[test]
-    fn jpeg_bytes_become_a_data_url() {
+    fn a_single_keyframe_sends_one_image() {
+        let body = build_body(
+            "/higgsfield-ai/dop/standard",
+            "drift",
+            "https://cdn.test/a.jpg",
+            None,
+            None,
+        );
+        assert!(body.get("end_image_url").is_none());
+        assert!(body.get("seed").is_none());
+    }
+
+    #[test]
+    fn the_veo_first_last_endpoint_uses_its_own_parameter_names() {
+        let body = build_body(
+            "/veo3.1/first-last-frame-to-video",
+            "pan",
+            "https://cdn.test/a.jpg",
+            Some("https://cdn.test/b.jpg"),
+            Some(7),
+        );
+        assert_eq!(body["first_frame_url"], "https://cdn.test/a.jpg");
+        assert_eq!(body["last_frame_url"], "https://cdn.test/b.jpg");
+        assert!(
+            body.get("seed").is_none(),
+            "veo declares no seed, and an undeclared field is a 422"
+        );
+    }
+
+    #[test]
+    fn jpeg_bytes_round_trip_through_a_data_url() {
         let Frame::DataUrl(url) = Frame::from_jpeg_bytes(&[0xff, 0xd8, 0xff]) else {
             panic!("expected a data url");
         };
         assert!(url.starts_with("data:image/jpeg;base64,"));
+
+        let (content_type, bytes) = decode_data_url(&url).expect("decode");
+        assert_eq!(content_type, "image/jpeg");
+        assert_eq!(bytes, vec![0xff, 0xd8, 0xff]);
+    }
+
+    #[test]
+    fn an_unsupported_frame_type_is_refused_before_it_is_uploaded() {
+        let err = decode_data_url("data:image/tiff;base64,AAAA").unwrap_err();
+        assert!(matches!(err, HiggsfieldError::Malformed(_)), "{err:?}");
+    }
+
+    #[test]
+    fn presigned_uploads_carry_every_header_the_api_returned() {
+        let minted = json!({
+            "upload_headers": {"Content-Type": "image/jpeg", "x-amz-tagging": "retention=temporary"}
+        });
+        let headers = upload_headers(&minted, "image/jpeg");
+        assert_eq!(
+            headers.get("x-amz-tagging").map(String::as_str),
+            Some("retention=temporary")
+        );
+        assert_eq!(
+            headers.get("Content-Type").map(String::as_str),
+            Some("image/jpeg")
+        );
+        assert!(
+            !headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("authorization")),
+            "the API credential never reaches the storage host"
+        );
+    }
+
+    #[test]
+    fn error_bodies_are_reduced_to_their_detail() {
+        assert_eq!(
+            detail_of(r#"{"detail":"Invalid credentials"}"#),
+            "Invalid credentials"
+        );
+        assert!(detail_of(r#"{"detail":[{"loc":["body","image_url"]}]}"#).contains("image_url"));
+        assert_eq!(
+            detail_of("<html>bad gateway</html>"),
+            "<html>bad gateway</html>"
+        );
     }
 
     #[test]
     fn error_titles_are_distinct_per_state() {
         assert_eq!(HiggsfieldError::NotConfigured.title(), "Not connected");
         assert_eq!(
-            HiggsfieldError::RateLimited {
-                retry_after_secs: Some(30)
+            HiggsfieldError::InsufficientCredits {
+                detail: String::new()
             }
             .title(),
-            "Rate limited"
+            "Out of credits"
         );
         assert!(HiggsfieldError::RateLimited {
             retry_after_secs: None
         }
         .is_retryable());
-        assert!(!HiggsfieldError::Unauthorized { status: 401 }.is_retryable());
+        assert!(!HiggsfieldError::Unauthorized {
+            status: 401,
+            detail: String::new()
+        }
+        .is_retryable());
         assert!(HiggsfieldError::Http {
             status: 503,
             body: String::new()
         }
         .is_retryable());
+        assert!(
+            HiggsfieldError::Http {
+                status: 423,
+                body: String::new()
+            }
+            .is_retryable(),
+            "423 is a temporarily blocked model, which is worth another go"
+        );
         assert!(!HiggsfieldError::Http {
-            status: 400,
+            status: 422,
             body: String::new()
         }
         .is_retryable());

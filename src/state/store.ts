@@ -451,13 +451,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         to?.transform ?? transformAt(clip, segment.endMs),
       );
 
-      await backend.generateAnimation({
-        generationId,
-        prompt,
-        startFrame,
-        endFrame,
-        durationSeconds: segment.durationMs / 1000,
-      });
+      await backend.generateAnimation({ generationId, prompt, startFrame, endFrame });
     } catch (error) {
       set((s) => ({
         generations: {

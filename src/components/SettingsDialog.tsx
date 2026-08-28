@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { DEFAULT_BASE_URL, DEFAULT_ENDPOINT, KNOWN_ENDPOINTS } from '../lib/backend';
 import { useEditor } from '../state/store';
 
 export function SettingsDialog() {
@@ -9,11 +10,10 @@ export function SettingsDialog() {
   const save = useEditor((s) => s.saveSettings);
   const test = useEditor((s) => s.testConnection);
 
-  const [apiKey, setApiKey] = useState('');
-  const [apiSecret, setApiSecret] = useState('');
-  const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? '');
-  const [model, setModel] = useState(settings?.model ?? '');
-  const [endpoint, setEndpoint] = useState(settings?.endpoint ?? '');
+  const [apiKeyId, setApiKeyId] = useState('');
+  const [apiKeySecret, setApiKeySecret] = useState('');
+  const [baseUrl, setBaseUrl] = useState(settings?.baseUrl ?? DEFAULT_BASE_URL);
+  const [endpoint, setEndpoint] = useState(settings?.endpoint ?? DEFAULT_ENDPOINT);
 
   if (!open) return null;
 
@@ -23,25 +23,25 @@ export function SettingsDialog() {
         <div className="modal__head">✦ Higgsfield connection</div>
         <div className="modal__body">
           <div className="field">
-            <label htmlFor="api-key">API key</label>
+            <label htmlFor="api-key-id">API key ID</label>
             <input
-              id="api-key"
+              id="api-key-id"
               type="password"
               autoComplete="off"
-              value={apiKey}
-              placeholder={settings?.apiKeyHint || 'hf_…'}
-              onChange={(e) => setApiKey(e.target.value)}
+              value={apiKeyId}
+              placeholder={settings?.apiKeyIdHint || 'from cloud.higgsfield.ai'}
+              onChange={(e) => setApiKeyId(e.target.value)}
             />
           </div>
           <div className="field">
-            <label htmlFor="api-secret">API secret (optional)</label>
+            <label htmlFor="api-key-secret">API key secret</label>
             <input
-              id="api-secret"
+              id="api-key-secret"
               type="password"
               autoComplete="off"
-              value={apiSecret}
-              placeholder={settings?.hasSecret ? '•••• stored' : 'leave blank if unused'}
-              onChange={(e) => setApiSecret(e.target.value)}
+              value={apiKeySecret}
+              placeholder={settings?.hasSecret ? '•••• stored' : 'the other half of the key'}
+              onChange={(e) => setApiKeySecret(e.target.value)}
             />
           </div>
           <div className="field">
@@ -49,12 +49,18 @@ export function SettingsDialog() {
             <input id="base-url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
           </div>
           <div className="field">
-            <label htmlFor="endpoint">Endpoint path</label>
-            <input id="endpoint" value={endpoint} onChange={(e) => setEndpoint(e.target.value)} />
-          </div>
-          <div className="field">
-            <label htmlFor="model">Model</label>
-            <input id="model" value={model} onChange={(e) => setModel(e.target.value)} />
+            <label htmlFor="endpoint">Model endpoint</label>
+            <input
+              id="endpoint"
+              list="higgsfield-endpoints"
+              value={endpoint}
+              onChange={(e) => setEndpoint(e.target.value)}
+            />
+            <datalist id="higgsfield-endpoints">
+              {KNOWN_ENDPOINTS.map((path) => (
+                <option key={path} value={path} />
+              ))}
+            </datalist>
           </div>
 
           {message && (
@@ -65,9 +71,10 @@ export function SettingsDialog() {
           )}
 
           <p className="hint" style={{ marginTop: 0 }}>
-            The key is stored by the desktop backend in an owner-only file and never reaches this
-            window. Endpoint and model are editable so a change to the API can be pointed at without
-            a new build.
+            A Higgsfield credential is an ID and a secret; both are needed, and both are stored by
+            the desktop backend in an owner-only file that never reaches this window. The model
+            endpoint picks which model renders the segment — it is the path from the API reference,
+            so a new model can be pointed at without a new build.
           </p>
         </div>
         <div className="modal__foot">
@@ -80,7 +87,7 @@ export function SettingsDialog() {
           <button
             type="button"
             className="btn btn--primary"
-            onClick={() => void save({ apiKey, apiSecret, baseUrl, model, endpoint })}
+            onClick={() => void save({ apiKeyId, apiKeySecret, baseUrl, endpoint })}
           >
             Save
           </button>

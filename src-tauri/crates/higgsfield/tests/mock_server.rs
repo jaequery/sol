@@ -9,7 +9,8 @@ pub struct Request {
     pub method: String,
     pub path: String,
     pub headers: Vec<(String, String)>,
-    pub body: String,
+    /// Kept as bytes so a binary upload can be asserted on exactly.
+    pub body: Vec<u8>,
 }
 
 impl Request {
@@ -18,6 +19,10 @@ impl Request {
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(name))
             .map(|(_, v)| v.as_str())
+    }
+
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.body).expect("a JSON request body")
     }
 }
 
@@ -96,9 +101,23 @@ impl MockServer {
         self.seen.lock().unwrap().len()
     }
 
-    pub fn with_request<T>(&self, index: usize, f: impl FnOnce(&Request) -> T) -> T {
+    /// The first request that hit `path`, for asserting on one leg of a multi-step flow.
+    pub fn with_first<T>(&self, path: &str, f: impl FnOnce(&Request) -> T) -> T {
         let guard = self.seen.lock().unwrap();
-        f(&guard[index])
+        let found = guard
+            .iter()
+            .find(|r| r.path == path)
+            .unwrap_or_else(|| panic!("no request to {path}"));
+        f(found)
+    }
+
+    pub fn paths(&self) -> Vec<String> {
+        self.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| format!("{} {}", r.method, r.path))
+            .collect()
     }
 }
 
@@ -140,7 +159,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<Request> {
         method,
         path,
         headers,
-        body: String::from_utf8_lossy(&body).into_owned(),
+        body,
     })
 }
 
