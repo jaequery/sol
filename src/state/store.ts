@@ -93,6 +93,7 @@ export interface EditorState {
   addFiles: (files: File[], index?: number) => Promise<void>;
   addPaths: (paths: string[], index?: number) => Promise<void>;
   importViaDialog: () => Promise<void>;
+  removeAsset: (assetId: string) => void;
   dismissImportProblems: () => void;
 
   // ---- selection & editing
@@ -209,6 +210,44 @@ export const useEditor = create<EditorState>((set, get) => ({
     } catch (error) {
       get().pushToast({ tone: 'error', title: 'Could not open the file picker', detail: message(error) });
     }
+  },
+
+  /**
+   * Take an imported asset back out of the bin. Its clips go with it — a clip whose media
+   * is gone would only render as "media offline" and block export.
+   */
+  removeAsset(assetId) {
+    const { assets, clips, selection, generations, playheadMs, playing } = get();
+    const asset = assets[assetId];
+    if (!asset) return;
+
+    const doomed = new Set(clips.filter((c) => c.assetId === assetId).map((c) => c.id));
+    const nextAssets = { ...assets };
+    delete nextAssets[assetId];
+    const nextClips = clips.filter((c) => !doomed.has(c.id));
+    const total = totalDurationMs(nextClips);
+
+    set({
+      assets: nextAssets,
+      clips: nextClips,
+      generations: Object.fromEntries(
+        Object.entries(generations).filter(([, g]) => !doomed.has(g.clipId)),
+      ),
+      selection:
+        selection.kind !== 'none' && doomed.has(selection.clipId) ? { kind: 'none' } : selection,
+      playheadMs: Math.min(playheadMs, total),
+      playing: total === 0 ? false : playing,
+    });
+
+    // Nothing is left to put the result on, so stop paying for the render.
+    for (const generation of Object.values(generations)) {
+      if (!doomed.has(generation.clipId)) continue;
+      if (generation.status !== 'queued' && generation.status !== 'running') continue;
+      void backend.cancelGeneration(generation.id).catch(() => {});
+    }
+
+    // A browser drop owns an object URL, and this was the last reference to it.
+    if (asset.src.startsWith('blob:')) URL.revokeObjectURL(asset.src);
   },
 
   dismissImportProblems: () => set({ importProblems: [] }),
