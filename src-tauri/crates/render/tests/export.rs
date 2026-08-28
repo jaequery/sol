@@ -291,3 +291,100 @@ async fn a_missing_source_file_is_named_in_the_error() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// One AI transition, as Higgsfield hands it back: silent, its own size, its own frame rate.
+fn make_transition(dir: &Path, name: &str, pattern: &str) -> PathBuf {
+    let out = dir.join(name);
+    let status = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            pattern,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+        ])
+        .arg(&out)
+        .status()
+        .expect("make transition");
+    assert!(status.success());
+    out
+}
+
+/// The end of the three-photo pipeline: two AI transitions, one playable film.
+///
+/// This is the spec the editor hardcodes — `buildExportSpec` in `state/store.ts` — over the
+/// clips a finished film assembles, so what is asserted here is what a user actually gets
+/// when they press **Export film**: H.264, 1920 × 1080, 30 fps, the two legs back to back
+/// and in order, out of silent sources that were never the same size or rate as the output.
+#[tokio::test]
+async fn exports_an_assembled_three_photo_film() {
+    if !ffmpeg_present() {
+        eprintln!("skipping: ffmpeg is not installed");
+        return;
+    }
+
+    let dir = workdir("film");
+    let first = make_transition(
+        &dir,
+        "film-1.mp4",
+        "testsrc=size=1024x576:duration=5:rate=24",
+    );
+    let second = make_transition(
+        &dir,
+        "film-2.mp4",
+        "smptebars=size=854x480:duration=5:rate=25",
+    );
+    let out = dir.join("my-film.mp4");
+
+    let spec = ExportSpec {
+        width: 1920,
+        height: 1080,
+        fps: 30,
+        clips: vec![
+            ExportClip {
+                name: "film-1.mp4".into(),
+                duration_ms: 5000,
+                source: Source::Video {
+                    path: first,
+                    trim_start_ms: 0,
+                },
+            },
+            ExportClip {
+                name: "film-2.mp4".into(),
+                duration_ms: 5000,
+                source: Source::Video {
+                    path: second,
+                    trim_start_ms: 0,
+                },
+            },
+        ],
+    };
+
+    let produced = Renderer::default()
+        .export(&spec, &dir.join("work"), &out, |_| {})
+        .await
+        .expect("a whole film exports");
+
+    assert_eq!(probe(&produced, "stream=width,height"), "1920\n1080");
+    assert_eq!(probe(&produced, "stream=codec_name"), "h264");
+    assert_eq!(probe(&produced, "stream=r_frame_rate"), "30/1");
+
+    let duration: f32 = probe_format(&produced, "format=duration")
+        .parse()
+        .unwrap_or(0.0);
+    assert!(
+        (duration - 10.0).abs() < 0.35,
+        "two 5s transitions should make a ~10s film, got {duration}s"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

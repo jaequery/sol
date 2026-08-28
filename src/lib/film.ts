@@ -63,6 +63,14 @@ export interface Film {
   assetIds: string[];
   /** Always `FILM_SEGMENT_COUNT` long, always in index order. */
   segments: FilmSegment[];
+  /**
+   * The clips this film put on the track, once it has gone on.
+   *
+   * A film assembles exactly once. Set here rather than inferred from the timeline because
+   * the user is free to move, trim or delete those clips afterwards — that is an edit, not
+   * an invitation to lay the film down a second time.
+   */
+  assembledClipIds?: string[];
 }
 
 export type FilmStatus = 'idle' | 'running' | 'succeeded' | 'failed' | 'cancelled';
@@ -269,4 +277,19 @@ export function assembleFilm(
   }
 
   return { assets, clips };
+}
+
+/** Has this film already gone onto the track? */
+export function isFilmAssembled(film: Film): boolean {
+  return (film.assembledClipIds?.length ?? 0) > 0;
+}
+
+/**
+ * Remember that the film is on the track, and which clips are it.
+ *
+ * The one guard against a second copy: a leg can be retried after the film has landed, and
+ * a completed film that completes *again* must not lay itself down twice.
+ */
+export function markFilmAssembled(film: Film, clipIds: string[]): Film {
+  return isFilmAssembled(film) ? film : { ...film, assembledClipIds: [...clipIds] };
 }

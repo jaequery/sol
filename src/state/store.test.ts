@@ -225,7 +225,64 @@ describe('a finished leg', () => {
   });
 });
 
-describe('putting the film on the timeline', () => {
+describe('the finished film onto the timeline', () => {
+  /** Both legs home, out of order on purpose. Resolves once the film has landed. */
+  async function finishFilm(paths: [string, string] = ['/cache/first.mp4', '/cache/second.mp4']) {
+    const [firstId, secondId] = [segmentGenerationId(0), segmentGenerationId(1)];
+    emit({ generationId: secondId, status: 'succeeded', progress: 1, elapsedSecs: 40, slow: false, outputPath: paths[1] });
+    emit({ generationId: firstId, status: 'succeeded', progress: 1, elapsedSecs: 70, slow: false, outputPath: paths[0] });
+    await vi.waitFor(() => expect(useEditor.getState().film?.assembledClipIds).toHaveLength(2));
+  }
+
+  it('lands by itself the moment the last leg has been measured', async () => {
+    await useEditor.getState().startFilm(PHOTO_IDS, ['drift out to sea', 'rise over the cliff']);
+    await finishFilm();
+
+    const { clips, assets, selection, film, toasts } = useEditor.getState();
+    // In segment order, whichever leg came back first, and nothing asked of the user.
+    expect(clips.map((c) => assets[c.assetId].path)).toEqual(['/cache/first.mp4', '/cache/second.mp4']);
+    expect(clips.map((c) => c.ai?.prompt)).toEqual(['drift out to sea', 'rise over the cliff']);
+    expect(clips.every((c) => c.kind === 'video')).toBe(true);
+    expect(film?.assembledClipIds).toEqual(clips.map((c) => c.id));
+    expect(selection).toEqual({ kind: 'clip', clipId: clips[0].id });
+    expect(toasts.at(-1)).toMatchObject({ tone: 'ok', title: 'Film on the timeline' });
+  });
+
+  it('appends at the end of whatever the user edited onto the track while it rendered', async () => {
+    await useEditor.getState().startFilm(PHOTO_IDS);
+    // The panel is not modal: this drop happens *during* the multi-minute render, so the
+    // position the film lands at cannot have been decided when it was started.
+    await useEditor.getState().addFiles([new File(['binary'], 'sunset.jpg', { type: 'image/jpeg' })]);
+
+    await finishFilm();
+
+    const { clips, assets } = useEditor.getState();
+    expect(clips).toHaveLength(3);
+    // The user's clip keeps the head of the track; the film goes after it, still in order.
+    expect(clips[0].name).toBe('sunset.jpg');
+    expect(clips.map((c) => assets[c.assetId].path)).toEqual([
+      '',
+      '/cache/first.mp4',
+      '/cache/second.mp4',
+    ]);
+  });
+
+  it('assembles once — a leg that completes again does not lay down a second copy', async () => {
+    await useEditor.getState().startFilm(PHOTO_IDS);
+    await finishFilm();
+    const placed = useEditor.getState().clips;
+
+    // Both the automatic path and the explicit one, on an already-assembled film.
+    emit({ generationId: segmentGenerationId(0), status: 'succeeded', progress: 1, elapsedSecs: 70, slow: false, outputPath: '/cache/first.mp4' });
+    useEditor.getState().placeFilmOnTimeline();
+    await vi.waitFor(() => expect(useEditor.getState().clips).toEqual(placed));
+
+    expect(useEditor.getState().toasts.filter((t) => t.title === 'Film on the timeline')).toHaveLength(1);
+    expect(useEditor.getState().toasts.some((t) => t.tone === 'error')).toBe(false);
+  });
+});
+
+describe('putting the film on the timeline by hand', () => {
   it('places both clips in segment order even when leg 2 finished first', async () => {
     await useEditor.getState().startFilm(PHOTO_IDS, ['drift out to sea', 'rise over the cliff']);
 

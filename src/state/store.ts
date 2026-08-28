@@ -34,6 +34,8 @@ import {
   filmProgress,
   FILM_SEGMENT_DURATION_MS,
   inFlightFilmGenerationIds,
+  isFilmAssembled,
+  markFilmAssembled,
   markFilmSegmentFailed,
   markFilmSegmentQueued,
   patchFilmSegment,
@@ -510,9 +512,12 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (update.status !== 'succeeded' || !update.outputPath) return;
 
     // A film leg is parked, not placed. The film goes onto the track in one piece once every
-    // leg is in, so a leg landing early cannot leave half a film in the project.
+    // leg is in, so a leg landing early cannot leave half a film in the project — and it
+    // goes on by itself, the moment the last leg's file has been measured.
     if (next.kind === 'film') {
-      void probeFilmSegmentDuration(set, next.filmSegmentIndex, update.outputPath);
+      void probeFilmSegmentDuration(set, next.filmSegmentIndex, update.outputPath).then(() =>
+        assembleFilmOnTimeline(set, get),
+      );
       return;
     }
 
@@ -716,34 +721,21 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   /**
-   * The finished film onto the track, in one piece and in segment order — whichever leg
-   * happened to come back first.
+   * The finished film onto the track, asked for by hand.
+   *
+   * A whole film lays itself down the moment its last leg is in, so this is the explicit
+   * way in rather than the usual one — and it is where an unfinished film gets told so.
    */
   placeFilmOnTimeline(index) {
     const film = get().film;
-    if (!film) return;
+    if (!film || isFilmAssembled(film)) return;
+    if (assembleFilmOnTimeline(set, get, index)) return;
 
-    const assembled = assembleFilm(film, backend.assetSrc);
-    if (!assembled) {
-      get().pushToast({
-        tone: 'error',
-        title: 'The film is not finished',
-        detail: `${filmProgress(film).label} — every transition has to land before the film can go on the timeline.`,
-      });
-      return;
-    }
-
-    set((s) => {
-      const assets = { ...s.assets };
-      for (const asset of assembled.assets) assets[asset.id] = asset;
-      const first = assembled.clips[0];
-      return {
-        assets,
-        clips: insertClips(s.clips, index ?? s.clips.length, assembled.clips),
-        selection: first ? { kind: 'clip', clipId: first.id } : s.selection,
-      };
+    get().pushToast({
+      tone: 'error',
+      title: 'The film is not finished',
+      detail: `${filmProgress(film).label} — every transition has to land before the film can go on the timeline.`,
     });
-    get().pushToast({ tone: 'ok', title: 'Film on the timeline', detail: `${assembled.clips.length} transitions` });
   },
 
   /** Put the film away. Cancel it first if its legs are still running — this only forgets it. */
@@ -942,6 +934,41 @@ async function launchFilmSegment(set: Setter, get: () => EditorState, index: num
     startFrame: await renderKeyframeJpeg(start.src, IDENTITY_TRANSFORM),
     endFrame: await renderKeyframeJpeg(end.src, IDENTITY_TRANSFORM),
   }));
+}
+
+/**
+ * The film onto the track: one clip per leg, in segment order, appended at the end.
+ *
+ * The one place a film is assembled, and it happens **once**. Two things make that matter:
+ * the position is resolved here rather than when the film was started — the editor stays
+ * usable through a multi-minute render, so any index captured earlier is already stale —
+ * and a leg can still be retried after the film has landed, which must not lay down a
+ * second copy. `false` means there was nothing whole to place, or it is already placed.
+ */
+function assembleFilmOnTimeline(set: Setter, get: () => EditorState, index?: number): boolean {
+  const film = get().film;
+  if (!film || isFilmAssembled(film)) return false;
+
+  const assembled = assembleFilm(film, backend.assetSrc);
+  if (!assembled) return false;
+
+  set((s) => {
+    const assets = { ...s.assets };
+    for (const asset of assembled.assets) assets[asset.id] = asset;
+    const first = assembled.clips[0];
+    return {
+      assets,
+      clips: insertClips(s.clips, index ?? s.clips.length, assembled.clips),
+      selection: first ? { kind: 'clip', clipId: first.id } : s.selection,
+      film: s.film ? markFilmAssembled(s.film, assembled.clips.map((c) => c.id)) : s.film,
+    };
+  });
+  get().pushToast({
+    tone: 'ok',
+    title: 'Film on the timeline',
+    detail: `${assembled.clips.length} transitions — ready to export`,
+  });
+  return true;
 }
 
 /** A leg's real length, read off the file Higgsfield actually returned. */
