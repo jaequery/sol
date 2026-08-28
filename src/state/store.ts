@@ -31,15 +31,16 @@ import {
   insertClips,
   makeId,
   moveAudio,
-  moveClip as moveClipInList,
   moveKeyframe,
   photoClip,
+  placeClip,
   removeKeyframe,
   replaceSegment,
   resizeAudio,
-  resizeClip as resizeClipEdge,
+  resizeClipInList,
   segmentsOf,
   setPrompt,
+  sortClips,
   timelineEndMs,
   transformAt,
   updateKeyframe,
@@ -89,6 +90,8 @@ export interface EditorState {
   playheadMs: number;
   playing: boolean;
   pxPerSecond: number;
+  /** The snapping aid on the track: drags still land anywhere, they just like edges. */
+  snapping: boolean;
 
   generations: Record<string, Generation>;
   importing: number;
@@ -124,8 +127,9 @@ export interface EditorState {
   deleteSelection: () => void;
   setSegmentPrompt: (prompt: string) => void;
   splitAtPlayhead: () => void;
-  moveClip: (clipId: string, toIndex: number) => void;
+  moveClipTo: (clipId: string, startMs: number) => void;
   resizeClip: (clipId: string, edge: ClipEdge, deltaMs: number) => void;
+  toggleSnapping: () => void;
 
   // ---- playback
   setPlayhead: (ms: number) => void;
@@ -158,6 +162,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   playheadMs: 0,
   playing: false,
   pxPerSecond: 46,
+  snapping: true,
 
   generations: {},
   importing: 0,
@@ -425,6 +430,8 @@ export const useEditor = create<EditorState>((set, get) => ({
     const tail: Clip = {
       ...clip,
       id: makeId('clip'),
+      // The two halves fill exactly the span the clip held, so nothing else moves.
+      startMs: clip.startMs + hit.localMs,
       durationMs: clip.durationMs - hit.localMs,
       trimStartMs: clip.trimStartMs + (clip.kind === 'video' ? hit.localMs : 0),
       keyframes: clip.keyframes
@@ -438,10 +445,10 @@ export const useEditor = create<EditorState>((set, get) => ({
     });
   },
 
-  /** Drag along the track: `toIndex` counts positions among the clips it leaves behind. */
-  moveClip(clipId, toIndex) {
+  /** Drag along the track: `startMs` is where the clip should begin, gaps and all. */
+  moveClipTo(clipId, startMs) {
     const { clips } = get();
-    const next = moveClipInList(clips, clipId, toIndex);
+    const next = placeClip(clips, clipId, startMs);
     if (next === clips) return;
     set({ clips: next, selection: { kind: 'clip', clipId } });
   },
@@ -452,16 +459,17 @@ export const useEditor = create<EditorState>((set, get) => ({
     const clip = clips.find((c) => c.id === clipId);
     if (!clip) return;
 
-    const resized = resizeClipEdge(clip, edge, deltaMs, assets[clip.assetId]?.durationMs);
-    if (resized === clip) return;
+    const next = resizeClipInList(clips, clipId, edge, deltaMs, assets[clip.assetId]?.durationMs);
+    if (next === clips) return;
 
-    const next = clips.map((c) => (c.id === clipId ? resized : c));
     set({
       clips: next,
       // The track just got shorter under the playhead, or it did not — either way it stays on it.
       playheadMs: Math.min(playheadMs, timelineEndMs(next, audioTracks)),
     });
   },
+
+  toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
 
   // ------------------------------------------------------------------ playback
 
@@ -796,12 +804,7 @@ function selectedClipId(selection: Selection): string | null {
 }
 
 function startOf(clips: Clip[], clipId: string): number {
-  let cursor = 0;
-  for (const clip of clips) {
-    if (clip.id === clipId) return cursor;
-    cursor += clip.durationMs;
-  }
-  return 0;
+  return clips.find((c) => c.id === clipId)?.startMs ?? 0;
 }
 
 function message(error: unknown): string {
@@ -829,9 +832,9 @@ export function buildExportSpec(
         durationMs: t.durationMs,
         volume: t.volume,
       })),
-    clips: clips.map((clip) => {
+    clips: sortClips(clips).map((clip) => {
       const asset = assets[clip.assetId];
-      const common = { name: clip.name, durationMs: clip.durationMs };
+      const common = { name: clip.name, startMs: clip.startMs, durationMs: clip.durationMs };
       if (clip.kind === 'photo') {
         return {
           ...common,

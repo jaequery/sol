@@ -11,7 +11,7 @@ hi-fi walkthrough artifact.
 | 1 | **Empty (first run)** | App opened, no media | Timeline shows a dashed drop zone with "Drop photos and videos here"; bin shows an import CTA; inspector shows "Nothing selected" | Drop a file, or click Import |
 | 2 | **Drag-over** | OS file drag enters the window | Timeline drop zone lights up in accent; a vertical insertion marker shows where the clip will land; a count badge shows how many files are being dropped | Drop, or drag out |
 | 3 | **Importing (loading)** | Files dropped / picked | Skeleton tiles animate in the media bin; the timeline shows a ghost clip at the insertion point; the rest of the UI stays interactive | Resolves to 4, or to 5 |
-| 4 | **Imported (success)** | Probe succeeded | Clips appear on the single timeline in drop order; first new clip is selected | — |
+| 4 | **Imported (success)** | Probe succeeded | Clips appear on the single timeline in drop order, laid end to end from the drop boundary — anything already at or after it ripples along; first new clip is selected | — |
 | 5 | **Unsupported / unreadable file** | Probe failed or MIME not in the allowlist | Inline error row in the bin naming the file and the reason; other files in the same drop still import | Dismiss, or re-import |
 | 6 | **Media offline** | Source file moved/deleted after import | Clip renders hatched with a "media offline" badge; preview shows the reason; export is blocked with a pointer to the clip | Relink, or remove clip |
 | 6a | **Bin has media** | One or more imports succeeded | The bin head keeps a **+ Import** button whatever the bin holds, so a second import never depends on the empty state's CTA | Click + Import |
@@ -58,29 +58,36 @@ hi-fi walkthrough artifact.
 |---|---|---|---|---|
 | 27 | **Long timeline** | More clips than fit | Timeline scrolls horizontally; the ruler and playhead stay in sync; zoom control rescales | Zoom out |
 | 28 | **Long file name** | Name wider than the clip | Name truncates with an ellipsis in the middle and keeps the extension; full name in the tooltip and the bin | — |
-| 29 | **Very short clip** | Clip narrower than its label | Label and duration are dropped in favour of the thumbnail; the clip stays grabbable at a 12 px minimum, and under 32 px the two resize handles step aside so there is still something to grab for a reorder | Zoom in |
+| 29 | **Very short clip** | Clip narrower than its label | Label and duration are dropped in favour of the thumbnail; the clip stays grabbable at a 12 px minimum, and under 32 px the two resize handles step aside so there is still something to grab for a move | Zoom in |
 | 30 | **Dense keyframes** | Many keyframes in a small span | Diamonds keep a minimum spacing and collapse into a "+n" cluster chip that expands on zoom | Zoom in |
 | 31 | **Long prompt** | Prompt longer than the textarea | Textarea scrolls at a fixed height (never pushes the Generate button off-panel); the timeline segment chip truncates to one line | — |
 | 32 | **Many generations** | Several jobs at once | Each placeholder shows its own progress; the title bar shows an aggregate "n rendering" chip | — |
 
 ## 6. Direct manipulation on the track
 
-Position is still implied by a clip's index and length by `durationMs`/`trimStartMs` — these states
-are the ways a user edits those two numbers by hand rather than by re-importing or splitting.
+A clip carries the time it starts at (`startMs`) and its length (`durationMs`/`trimStartMs`) — these
+states are the ways a user edits those numbers by hand rather than by re-importing or splitting.
+Placement is free: a clip goes wherever it is dropped, and the track may have holes in it. The one
+thing a single track cannot do is show two clips at once, so an edit that would overlap slides the
+other clip along instead of stacking on it.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
 | 33 | **Idle clip** | Pointer over a clip | The body takes a grab cursor; a bar appears at each edge with a resize cursor. On a clip under 32 px wide the bars are omitted — they would cover the whole thing | Press, or move away |
-| 34 | **Reordering** | Press a clip body and travel ≥ 4 px | The clip lifts and rides with the cursor; the rest of the track holds still and an insertion marker shows the boundary it would land on | Release to drop; dropping it back where it started is a no-op |
+| 34 | **Moving** | Press a clip body and travel ≥ 4 px | The clip is drawn at the spot it would land on, lifted off the track, so the drop is previewed exactly — including the gap it leaves behind. It cannot start before 0:00 | Release to drop; dropping it back where it started is a no-op |
+| 34a | **Dropped on another clip** | Released overlapping a clip | The dropped clip keeps the spot and the clip under it walks right just far enough to clear it, cascading if that pushes into a third. Gaps elsewhere are left alone | Drag either clip again |
+| 34b | **Snapping aid** | **⇥ Snap** on (the default), drop within 8 px of an edge | The drop lines up exactly with that edge — another clip's start or end, a sound's, the playhead, or 0:00. Switched off, a drop lands precisely where it was released | Toggle ⇥ Snap |
+| 34c | **Gap on the track** | Any drop or trim that leaves empty track | The track simply shows the panel behind it; the preview reads that stretch as black with a "GAP" label, playback runs through it, and the export renders it as black, silent film | Move a clip into it |
 | 35 | **Press without travel** | Press and release under the threshold | Nothing moves; the press is a plain selection, exactly as before | — |
-| 36 | **Resizing** | Drag either edge handle | The clip's new length is previewed live and every clip after it slides along, so the track reads the way it will once released. A photo's keyframes travel with the head and are pinned inside the new range; a video's `trimStartMs` walks with its head | Release |
-| 37 | **Resize refused at a limit** | Dragging past a bound | The edge simply stops: a video cannot pass the first or last frame of its source (nor grow at all before its length is probed), a clip cannot go under 100 ms, and a photo cannot pass 10 minutes | Drag the other way |
-| 38 | **Trimming without a mouse** | Handle focused, ← / → | The same edit at 100 ms a press, or 1 s with Shift | Tab away |
+| 36 | **Resizing** | Drag either edge handle | The clip's new length is previewed live. A tail growing into the next clip pushes it along; a shrinking tail leaves a gap rather than dragging anything back. A photo's keyframes travel with the head and are pinned inside the new range; a video's `trimStartMs` walks with its head, and the head moves the clip's own start so its tail stays on the frame it was on | Release |
+| 37 | **Resize refused at a limit** | Dragging past a bound | The edge simply stops: a video cannot pass the first or last frame of its source (nor grow at all before its length is probed), a clip cannot go under 100 ms, a photo cannot pass 10 minutes, and a head cannot be pulled back past 0:00 or past the clip in front of it | Drag the other way |
+| 38 | **Moving or trimming without a mouse** | Clip or handle focused, ← / → | The same edit at 100 ms a press, or 1 s with Shift — the body slides the clip, a handle moves that edge | Tab away |
 
 ## 7. Audio lanes
 
-A sound is not a clip: it lives on its own lane below the track, starts wherever it was
-placed, and never reorders anything. Each lane holds one sound.
+A sound is not a clip: it lives on its own lane below the track and never moves anything on it.
+Placement works the same way as a clip's — dropped where it was released, snapping aid included.
+Each lane holds one sound.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|

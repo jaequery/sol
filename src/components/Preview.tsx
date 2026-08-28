@@ -7,7 +7,8 @@ import { clipAt, cssTransform, formatTimecode, transformAt } from '../lib/timeli
  *
  * For a photo it applies the interpolated keyframe transform, so scrubbing shows the exact
  * motion the export will render. For a video it drives an element's `currentTime` off the
- * playhead, so the single track plays as one continuous piece.
+ * playhead, so the single track plays as one continuous piece. A gap between two clips is
+ * black here, exactly as the exporter renders it.
  */
 export function Preview() {
   const clips = useEditor((s) => s.clips);
@@ -33,14 +34,30 @@ export function Preview() {
   }, [clip, localMs, playing]);
 
   if (!clip) {
+    if (clips.length === 0) {
+      return (
+        <div className="stage">
+          <div className="stage__empty">
+            <div className="icon" aria-hidden="true">
+              🎞
+            </div>
+            <b>Nothing on the timeline</b>
+            Drop a photo or a video below to start. Photos can be animated with keyframes.
+          </div>
+        </div>
+      );
+    }
+
+    // The playhead is in a gap — before the first clip, or between two of them.
     return (
       <div className="stage">
-        <div className="stage__empty">
-          <div className="icon" aria-hidden="true">
-            🎞
+        <div className="canvas" data-testid="preview-canvas">
+          <div className="canvas__gap" data-testid="preview-gap">
+            GAP
           </div>
-          <b>Nothing on the timeline</b>
-          Drop a photo or a video below to start. Photos can be animated with keyframes.
+          <div className="canvas__hud">
+            <span aria-hidden="true">◆</span> {formatTimecode(playheadMs)}
+          </div>
         </div>
       </div>
     );

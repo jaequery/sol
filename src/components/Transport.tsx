@@ -1,5 +1,5 @@
 import { useEditor } from '../state/store';
-import { formatTimecode, totalDurationMs } from '../lib/timeline';
+import { formatTimecode, trackEndMs } from '../lib/timeline';
 
 export function Transport() {
   const clips = useEditor((s) => s.clips);
@@ -8,7 +8,7 @@ export function Transport() {
   const togglePlay = useEditor((s) => s.togglePlay);
   const setPlayhead = useEditor((s) => s.setPlayhead);
 
-  const total = totalDurationMs(clips);
+  const total = trackEndMs(clips);
 
   return (
     <div className="transport">

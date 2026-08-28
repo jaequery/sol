@@ -96,6 +96,7 @@ beforeEach(() => {
     toasts: [],
     exportState: null,
     settingsOpen: false,
+    snapping: true,
     // 100 px per second makes every drag below exactly 10 ms to the pixel.
     pxPerSecond: 100,
   });
@@ -464,7 +465,52 @@ describe('media bin', () => {
 });
 
 describe('direct manipulation on the track', () => {
-  it('a clip dragged along the track changes places with its neighbour', async () => {
+  it('a clip is dropped anywhere on the track, leaving a gap behind it', async () => {
+    render(<App />);
+    await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('surf.mp4', 'video/mp4')]);
+    const surf = await screen.findByRole('button', { name: 'surf.mp4 video clip' });
+
+    // Grabbed at 8 s and let go 3 s further along, where there is nothing at all.
+    await dragFromTo(surf, 800, 1100);
+
+    const state = useEditor.getState();
+    // It landed exactly where it was released, not against the photo's edge.
+    expect(state.clips.map((c) => [c.name, c.startMs])).toEqual([
+      ['sunset.jpg', 0],
+      ['surf.mp4', 8000],
+    ]);
+    // Nothing else moved and nothing was stretched: the 3 s between them is empty track.
+    expect(state.clips.map((c) => c.durationMs)).toEqual([5000, 5000]);
+    expect(state.selection).toEqual({ kind: 'clip', clipId: state.clips[1].id });
+
+    // And the preview reads that hole as black rather than as an empty timeline.
+    act(() => useEditor.getState().setPlayhead(6500));
+    expect(await screen.findByTestId('preview-gap')).toBeInTheDocument();
+  });
+
+  it('the snapping aid nudges a drop onto a nearby edge, and can be switched off', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('surf.mp4', 'video/mp4')]);
+    act(() => useEditor.getState().setPlayhead(8000));
+
+    const surf = await screen.findByRole('button', { name: 'surf.mp4 video clip' });
+    // Let go 40 ms past the playhead: near enough that the aid lines it up exactly.
+    await dragFromTo(surf, 800, 1104);
+    expect(surfClip().startMs).toBe(8000);
+
+    await user.click(screen.getByRole('button', { name: 'Snap to edges' }));
+
+    // The very same 40 ms nudge, with the aid off, lands where it was let go.
+    await dragFromTo(
+      await screen.findByRole('button', { name: 'surf.mp4 video clip' }),
+      800,
+      804,
+    );
+    expect(surfClip().startMs).toBe(8040);
+  });
+
+  it('a clip dropped on top of another pushes it aside rather than stacking', async () => {
     render(<App />);
     await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('surf.mp4', 'video/mp4')]);
     const surf = await screen.findByRole('button', { name: 'surf.mp4 video clip' });
@@ -473,8 +519,12 @@ describe('direct manipulation on the track', () => {
     await dragFromTo(surf, 700, 100);
 
     const state = useEditor.getState();
-    expect(state.clips.map((c) => c.name)).toEqual(['surf.mp4', 'sunset.jpg']);
-    // Reordering does not change how long anything is, only where it sits.
+    // One track cannot show two clips at once, so the photo slid clear of the drop.
+    expect(state.clips.map((c) => [c.name, c.startMs])).toEqual([
+      ['surf.mp4', 0],
+      ['sunset.jpg', 5000],
+    ]);
+    // Nothing changed how long anything is, only where it sits.
     expect(state.clips.map((c) => c.durationMs)).toEqual([5000, 5000]);
     expect(state.selection).toEqual({ kind: 'clip', clipId: state.clips[0].id });
   });
@@ -545,10 +595,11 @@ describe('direct manipulation on the track', () => {
     const { clips, assets } = useEditor.getState();
     const spec = buildExportSpec(clips, assets);
 
-    // Reordered, and both length edits are in the spec ffmpeg is driven from.
-    expect(spec.clips.map((c) => [c.name, c.kind, c.durationMs])).toEqual([
-      ['surf.mp4', 'video', 3500],
-      ['sunset.jpg', 'photo', 7000],
+    // Moved, and both length edits are in the spec ffmpeg is driven from — as is the
+    // 1.5 s of empty track the move left in front of the film.
+    expect(spec.clips.map((c) => [c.name, c.kind, c.startMs, c.durationMs])).toEqual([
+      ['surf.mp4', 'video', 1500, 3500],
+      ['sunset.jpg', 'photo', 5000, 7000],
     ]);
     expect(spec.clips[0]).toMatchObject({ trimStartMs: 1500 });
   });
@@ -688,6 +739,13 @@ describe('audio tracks', () => {
  * A pointer drag. The clip drag listens on the window so it survives the cursor leaving the
  * clip, which is exactly how the events are delivered here.
  */
+/** The video clip on the track, whichever place it has been dragged to. */
+function surfClip() {
+  const clip = useEditor.getState().clips.find((c) => c.name === 'surf.mp4');
+  if (!clip) throw new Error('surf.mp4 is not on the timeline');
+  return clip;
+}
+
 async function dragFromTo(target: Element, fromX: number, toX: number) {
   await act(async () => fireEvent.pointerDown(target, { button: 0, clientX: fromX }));
   await act(async () => fireEvent.pointerMove(window, { clientX: toX }));

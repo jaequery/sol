@@ -2,15 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditor } from '../state/store';
 import type { AudioTrack, Clip, ClipEdge, Generation, MediaAsset, Selection } from '../types/project';
 import {
-  dropIndexFor,
   formatDuration,
   formatTimecode,
   insertIndexAt,
   layout,
   moveAudio,
+  placeClip,
   resizeAudio,
-  resizeClip,
+  resizeClipInList,
   segmentsOf,
+  snapStartMs,
+  snapTargets,
   sortKeyframes,
   startOfIndex,
   timelineEndMs,
@@ -27,27 +29,26 @@ const MIN_HANDLE_CLIP_PX = 32;
 const MIN_KEYFRAME_GAP_PX = 14;
 /** Under this much movement a press is still a click, so selecting a clip stays easy. */
 const DRAG_THRESHOLD_PX = 4;
-/** Arrow-key steps on an edge handle, for trimming without a mouse. */
+/** Arrow-key steps on a clip or an edge handle, for editing without a mouse. */
 const NUDGE_MS = 100;
 const COARSE_NUDGE_MS = 1000;
+/** How near an edge has to be before the snapping aid pulls a drag onto it. */
+const SNAP_PX = 8;
 
 /** A drag in progress: either the whole clip along the track, or one of its edges. */
 type ClipDrag = {
   kind: 'move' | 'resize';
   clipId: string;
   edge: ClipEdge;
-  /** Where on the timeline the pointer went down, so the drop point needs no rect later. */
-  startTimeMs: number;
+  /** The clip's `startMs` when the pointer went down — the base the drag adds to. */
+  origStartMs: number;
   startX: number;
   dx: number;
   /** Stays false until the threshold is crossed — an untravelled press is a click. */
   moved: boolean;
 };
 
-/**
- * The same for a sound on its lane. A separate state machine because the semantics differ:
- * moving audio changes where it starts, not its place in an order.
- */
+/** The same for a sound on its lane. Same semantics now: both are placed by time. */
 type AudioDrag = {
   kind: 'move' | 'resize';
   trackId: string;
@@ -68,6 +69,7 @@ export function Timeline() {
   const generations = useEditor((s) => s.generations);
   const playheadMs = useEditor((s) => s.playheadMs);
   const pxPerSecond = useEditor((s) => s.pxPerSecond);
+  const snapping = useEditor((s) => s.snapping);
   const select = useEditor((s) => s.select);
   const setPlayhead = useEditor((s) => s.setPlayhead);
   const addFiles = useEditor((s) => s.addFiles);
@@ -76,8 +78,9 @@ export function Timeline() {
   const addKeyframeAtPlayhead = useEditor((s) => s.addKeyframeAtPlayhead);
   const splitAtPlayhead = useEditor((s) => s.splitAtPlayhead);
   const deleteSelection = useEditor((s) => s.deleteSelection);
-  const moveClip = useEditor((s) => s.moveClip);
+  const moveClipTo = useEditor((s) => s.moveClipTo);
   const resize = useEditor((s) => s.resizeClip);
+  const toggleSnapping = useEditor((s) => s.toggleSnapping);
   const moveAudioTrack = useEditor((s) => s.moveAudioTrack);
   const resizeAudioTrack = useEditor((s) => s.resizeAudioTrack);
   const toggleAudioMute = useEditor((s) => s.toggleAudioMute);
@@ -107,16 +110,39 @@ export function Timeline() {
     setAudioDrag(next);
   }, []);
 
-  // What the track looks like mid-drag: a resize is previewed on the real clip list, so the
-  // clips after it slide along as you pull, exactly as they will once you let go.
+  /**
+   * Where a drag wants to put a block, with the snapping aid applied. Placement is free —
+   * the aid only pulls the last few pixels onto an edge, and only while it is switched on.
+   */
+  const dropStartMs = useCallback(
+    (startMs: number, durationMs: number, id: string) => {
+      if (!snapping) return Math.max(0, Math.round(startMs));
+      const targets = snapTargets(clips, audioTracks, id, playheadMs);
+      return Math.max(0, Math.round(snapStartMs(startMs, durationMs, targets, SNAP_PX * msPerPx)));
+    },
+    [snapping, clips, audioTracks, playheadMs, msPerPx],
+  );
+
+  // What the track looks like mid-drag. Both kinds preview on the real clip list, so a clip
+  // sits where it will land — gap and all — and a resize slides its neighbours as you pull.
   const previewClips = useMemo(() => {
-    if (!drag || !drag.moved || drag.kind !== 'resize') return clips;
-    return clips.map((c) =>
-      c.id === drag.clipId
-        ? resizeClip(c, drag.edge, drag.dx * msPerPx, assets[c.assetId]?.durationMs)
-        : c,
-    );
-  }, [clips, drag, msPerPx, assets]);
+    if (!drag || !drag.moved) return clips;
+    const clip = clips.find((c) => c.id === drag.clipId);
+    if (!clip) return clips;
+    return drag.kind === 'resize'
+      ? resizeClipInList(
+          clips,
+          drag.clipId,
+          drag.edge,
+          drag.dx * msPerPx,
+          assets[clip.assetId]?.durationMs,
+        )
+      : placeClip(
+          clips,
+          drag.clipId,
+          dropStartMs(drag.origStartMs + drag.dx * msPerPx, clip.durationMs, clip.id),
+        );
+  }, [clips, drag, msPerPx, assets, dropStartMs]);
 
   // The same for a sound mid-drag: both moving and trimming preview on the real lane.
   const previewAudio = useMemo(() => {
@@ -124,21 +150,14 @@ export function Timeline() {
     return audioTracks.map((t) => {
       if (t.id !== audioDrag.trackId) return t;
       return audioDrag.kind === 'move'
-        ? moveAudio(t, audioDrag.origStartMs + audioDrag.dx * msPerPx)
+        ? moveAudio(t, dropStartMs(audioDrag.origStartMs + audioDrag.dx * msPerPx, t.durationMs, t.id))
         : resizeAudio(t, audioDrag.edge, audioDrag.dx * msPerPx, assets[t.assetId]?.durationMs);
     });
-  }, [audioTracks, audioDrag, msPerPx, assets]);
+  }, [audioTracks, audioDrag, msPerPx, assets, dropStartMs]);
 
   const placed = useMemo(() => layout(previewClips), [previewClips]);
   const total = timelineEndMs(previewClips, previewAudio);
   const width = Math.max(toPx(total), 320);
-
-  // A reorder keeps the order on screen and shows where the clip would land instead.
-  const dropOffsetMs = useMemo(() => {
-    if (!drag || drag.kind !== 'move' || !drag.moved) return null;
-    const rest = clips.filter((c) => c.id !== drag.clipId);
-    return startOfIndex(rest, dropIndexFor(clips, drag.clipId, drag.startTimeMs + drag.dx * msPerPx));
-  }, [clips, drag, msPerPx]);
 
   const selectedClipId =
     selection.kind === 'none' || selection.kind === 'audio' ? null : selection.clipId;
@@ -161,16 +180,16 @@ export function Timeline() {
     return rect ? (clientX - rect.left) * msPerPx : 0;
   }
 
-  function beginDrag(e: React.PointerEvent, kind: ClipDrag['kind'], clipId: string, edge: ClipEdge) {
+  function beginDrag(e: React.PointerEvent, kind: ClipDrag['kind'], clip: Clip, edge: ClipEdge) {
     if (e.button !== 0) return;
     e.stopPropagation();
     // A drag that ended off the clip left this armed; a fresh press means a fresh click.
     swallowClick.current = false;
     setDragState({
       kind,
-      clipId,
+      clipId: clip.id,
       edge,
-      startTimeMs: timeFromClientX(e.clientX),
+      origStartMs: clip.startMs,
       startX: e.clientX,
       dx: 0,
       moved: false,
@@ -202,7 +221,13 @@ export function Timeline() {
       if (current.kind === 'resize') {
         resize(current.clipId, current.edge, dx * msPerPx);
       } else {
-        moveClip(current.clipId, dropIndexFor(clips, current.clipId, current.startTimeMs + dx * msPerPx));
+        const clip = clips.find((c) => c.id === current.clipId);
+        if (clip) {
+          moveClipTo(
+            current.clipId,
+            dropStartMs(current.origStartMs + dx * msPerPx, clip.durationMs, clip.id),
+          );
+        }
       }
     };
 
@@ -216,7 +241,7 @@ export function Timeline() {
       window.removeEventListener('pointerup', commit);
       window.removeEventListener('pointercancel', cancel);
     };
-  }, [dragging, clips, msPerPx, moveClip, resize, setDragState]);
+  }, [dragging, clips, msPerPx, moveClipTo, resize, setDragState, dropStartMs]);
 
   function beginAudioDrag(
     e: React.PointerEvent,
@@ -265,7 +290,13 @@ export function Timeline() {
       if (current.kind === 'resize') {
         resizeAudioTrack(current.trackId, current.edge, dx * msPerPx);
       } else {
-        moveAudioTrack(current.trackId, current.origStartMs + dx * msPerPx);
+        const track = audioTracks.find((t) => t.id === current.trackId);
+        if (track) {
+          moveAudioTrack(
+            current.trackId,
+            dropStartMs(current.origStartMs + dx * msPerPx, track.durationMs, track.id),
+          );
+        }
       }
     };
 
@@ -279,7 +310,15 @@ export function Timeline() {
       window.removeEventListener('pointerup', commit);
       window.removeEventListener('pointercancel', cancel);
     };
-  }, [audioDragging, msPerPx, moveAudioTrack, resizeAudioTrack, setAudioDragState]);
+  }, [
+    audioDragging,
+    audioTracks,
+    msPerPx,
+    moveAudioTrack,
+    resizeAudioTrack,
+    setAudioDragState,
+    dropStartMs,
+  ]);
 
   function onSelectClip(clipId: string) {
     if (swallowClick.current) {
@@ -287,6 +326,13 @@ export function Timeline() {
       return;
     }
     select({ kind: 'clip', clipId });
+  }
+
+  function onMoveKey(e: React.KeyboardEvent, clip: Clip) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const step = e.shiftKey ? COARSE_NUDGE_MS : NUDGE_MS;
+    moveClipTo(clip.id, clip.startMs + (e.key === 'ArrowLeft' ? -step : step));
   }
 
   function onResizeKey(e: React.KeyboardEvent, clipId: string, edge: ClipEdge) {
@@ -381,6 +427,20 @@ export function Timeline() {
         >
           🗑
         </button>
+        <button
+          type="button"
+          className={`tool tool--wide ${snapping ? 'tool--on' : ''}`}
+          aria-label="Snap to edges"
+          aria-pressed={snapping}
+          title={
+            snapping
+              ? 'Drags land anywhere, but nudge onto a nearby edge or the playhead'
+              : 'Drags land exactly where you let go'
+          }
+          onClick={toggleSnapping}
+        >
+          ⇥ Snap
+        </button>
 
         <label className="timeline__zoom">
           ZOOM
@@ -421,7 +481,7 @@ export function Timeline() {
                 ) : (
                   <div>
                     <b>Drop photos, videos and audio here</b>
-                    One timeline — visuals land side by side, sounds get their own lanes
+                    One timeline — visuals land on the track, sounds get their own lanes
                   </div>
                 )}
               </div>
@@ -440,6 +500,7 @@ export function Timeline() {
                     onSelect={select}
                     onSelectClip={onSelectClip}
                     onDragStart={beginDrag}
+                    onMoveKey={onMoveKey}
                     onResizeKey={onResizeKey}
                   />
                 ))}
@@ -452,10 +513,6 @@ export function Timeline() {
                     toPx={toPx}
                   />
                 ))}
-
-                {dropOffsetMs !== null && (
-                  <div className="insert-marker" style={{ left: toPx(dropOffsetMs) }} />
-                )}
 
                 <div className="playhead" style={{ left: toPx(playheadMs) }} />
               </div>
@@ -645,6 +702,7 @@ function TimelineClip({
   onSelect,
   onSelectClip,
   onDragStart,
+  onMoveKey,
   onResizeKey,
 }: {
   clip: Clip;
@@ -657,7 +715,8 @@ function TimelineClip({
   drag: ClipDrag | null;
   onSelect: (s: Selection) => void;
   onSelectClip: (clipId: string) => void;
-  onDragStart: (e: React.PointerEvent, kind: ClipDrag['kind'], clipId: string, edge: ClipEdge) => void;
+  onDragStart: (e: React.PointerEvent, kind: ClipDrag['kind'], clip: Clip, edge: ClipEdge) => void;
+  onMoveKey: (e: React.KeyboardEvent, clip: Clip) => void;
   onResizeKey: (e: React.KeyboardEvent, clipId: string, edge: ClipEdge) => void;
 }) {
   const width = Math.max(toPx(clip.durationMs), MIN_CLIP_PX);
@@ -668,14 +727,14 @@ function TimelineClip({
   const segments = segmentsOf(clip);
   const roomy = width > 70;
   const resizable = width >= MIN_HANDLE_CLIP_PX;
-  const reordering = drag !== null && drag.kind === 'move' && drag.moved;
+  const moving = drag !== null && drag.kind === 'move' && drag.moved;
 
   const classes = [
     'clip',
     selected && 'clip--selected',
     clip.ai && 'clip--ai',
     offline && 'clip--offline',
-    reordering && 'clip--reordering',
+    moving && 'clip--moving',
     drag !== null && drag.kind === 'resize' && drag.moved && 'clip--resizing',
   ]
     .filter(Boolean)
@@ -697,27 +756,25 @@ function TimelineClip({
 
   return (
     <div
+      // The clip is drawn where it will land, so a drag previews its real place on the track.
       className={classes}
-      style={{
-        left: toPx(startMs),
-        width,
-        // A reordering clip rides with the cursor; the marker says where it will land.
-        transform: reordering ? `translateX(${drag.dx}px)` : undefined,
-      }}
+      style={{ left: toPx(startMs), width }}
       data-testid={`clip-${clip.id}`}
     >
       <button
         type="button"
         aria-label={`${clip.name} ${clip.kind} clip`}
-        onPointerDown={(e) => onDragStart(e, 'move', clip.id, 'start')}
+        title="Drag anywhere along the track · arrow keys nudge"
+        onPointerDown={(e) => onDragStart(e, 'move', clip, 'start')}
         onClick={() => onSelectClip(clip.id)}
+        onKeyDown={(e) => onMoveKey(e, clip)}
         style={{
           position: 'absolute',
           inset: 0,
           background: 'none',
           border: 0,
           padding: 0,
-          cursor: reordering ? 'grabbing' : 'grab',
+          cursor: moving ? 'grabbing' : 'grab',
         }}
       >
         {offline ? (
@@ -740,7 +797,7 @@ function TimelineClip({
             className={`clip__handle clip__handle--${edge}`}
             aria-label={`Resize the ${edge} of ${clip.name}`}
             title={`Drag to ${edge === 'start' ? 'trim the start' : 'change the length'} · arrow keys nudge`}
-            onPointerDown={(e) => onDragStart(e, 'resize', clip.id, edge)}
+            onPointerDown={(e) => onDragStart(e, 'resize', clip, edge)}
             onKeyDown={(e) => onResizeKey(e, clip.id, edge)}
             onClick={(e) => e.stopPropagation()}
           />
