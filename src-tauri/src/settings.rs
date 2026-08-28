@@ -1,4 +1,8 @@
 //! Higgsfield credentials, stored by the backend so they never reach the webview.
+//!
+//! A Higgsfield credential is a key *id* plus a *secret* and both are needed to form the
+//! `Authorization: Key {id}:{secret}` header, so the dialog asks for both and the
+//! connection only counts as configured once it has them.
 
 use serde::{Deserialize, Serialize};
 use solcut_higgsfield::Config;
@@ -12,11 +16,11 @@ const FILE: &str = "higgsfield.json";
 #[serde(rename_all = "camelCase")]
 pub struct SettingsView {
     pub configured: bool,
-    /// e.g. `••••7fa2` — never the key itself.
-    pub api_key_hint: String,
+    /// e.g. `••••7fa2` — never the key id itself.
+    pub api_key_id_hint: String,
     pub has_secret: bool,
     pub base_url: String,
-    pub model: String,
+    /// The model endpoint, e.g. `/higgsfield-ai/dop/standard`.
     pub endpoint: String,
 }
 
@@ -24,41 +28,35 @@ impl From<&Config> for SettingsView {
     fn from(c: &Config) -> Self {
         Self {
             configured: c.is_configured(),
-            api_key_hint: mask(&c.api_key),
-            has_secret: !c.api_secret.trim().is_empty(),
+            api_key_id_hint: mask(&c.api_key_id),
+            has_secret: !c.api_key_secret.trim().is_empty(),
             base_url: c.base_url.clone(),
-            model: c.model.clone(),
             endpoint: c.endpoint.clone(),
         }
     }
 }
 
 /// What Settings sends back. Blank secret fields mean "leave what is stored alone", so
-/// the user can edit the model without retyping their key.
+/// the user can edit the endpoint without retyping their credential.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsInput {
-    pub api_key: Option<String>,
-    pub api_secret: Option<String>,
+    pub api_key_id: Option<String>,
+    pub api_key_secret: Option<String>,
     pub base_url: Option<String>,
-    pub model: Option<String>,
     pub endpoint: Option<String>,
 }
 
 impl SettingsInput {
     pub fn apply_to(&self, mut config: Config) -> Config {
-        if let Some(v) = non_blank(&self.api_key) {
-            config.api_key = v;
+        if let Some(v) = non_blank(&self.api_key_id) {
+            config.api_key_id = v;
         }
-        if let Some(v) = &self.api_secret {
-            // An explicit empty string clears the secret; `None` leaves it.
-            config.api_secret = v.trim().to_string();
+        if let Some(v) = non_blank(&self.api_key_secret) {
+            config.api_key_secret = v;
         }
         if let Some(v) = non_blank(&self.base_url) {
             config.base_url = v;
-        }
-        if let Some(v) = non_blank(&self.model) {
-            config.model = v;
         }
         if let Some(v) = non_blank(&self.endpoint) {
             config.endpoint = v;
@@ -109,7 +107,7 @@ pub fn save(dir: &Path, config: &Config) -> Result<(), String> {
     Ok(())
 }
 
-/// The file holds an API key, so keep it owner-readable.
+/// The file holds a credential, so keep it owner-readable.
 #[cfg(unix)]
 fn restrict(path: &Path) {
     use std::os::unix::fs::PermissionsExt as _;
@@ -122,6 +120,14 @@ fn restrict(_path: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn configured() -> Config {
+        Config {
+            api_key_id: "hf_live_abcdef7fa2".into(),
+            api_key_secret: "shh".into(),
+            ..Config::default()
+        }
+    }
 
     #[test]
     fn masking_keeps_only_the_last_four_characters() {
@@ -137,45 +143,34 @@ mod tests {
     }
 
     #[test]
-    fn the_view_never_carries_the_key_itself() {
-        let config = Config {
-            api_key: "hf_secret_value".into(),
-            ..Config::default()
-        };
-        let view = SettingsView::from(&config);
+    fn the_view_never_carries_the_credential_itself() {
+        let view = SettingsView::from(&configured());
         assert!(view.configured);
-        assert!(!serde_json::to_string(&view)
-            .unwrap()
-            .contains("hf_secret_value"));
+        assert!(view.has_secret);
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(!json.contains("hf_live_abcdef7fa2"));
+        assert!(!json.contains("shh"));
     }
 
     #[test]
-    fn blank_fields_leave_the_stored_key_alone() {
-        let stored = Config {
-            api_key: "keep-me".into(),
+    fn a_key_id_without_a_secret_is_not_configured() {
+        let half = Config {
+            api_key_id: "id-only".into(),
             ..Config::default()
         };
-        let updated = SettingsInput {
-            model: Some("turbo".into()),
-            ..Default::default()
-        }
-        .apply_to(stored);
-        assert_eq!(updated.api_key, "keep-me");
-        assert_eq!(updated.model, "turbo");
+        assert!(!SettingsView::from(&half).configured);
     }
 
     #[test]
-    fn an_explicit_empty_secret_clears_it() {
-        let stored = Config {
-            api_secret: "old".into(),
-            ..Config::default()
-        };
+    fn blank_fields_leave_the_stored_credential_alone() {
         let updated = SettingsInput {
-            api_secret: Some(String::new()),
+            endpoint: Some("/veo3.1/first-last-frame-to-video".into()),
             ..Default::default()
         }
-        .apply_to(stored);
-        assert_eq!(updated.api_secret, "");
+        .apply_to(configured());
+        assert_eq!(updated.api_key_id, "hf_live_abcdef7fa2");
+        assert_eq!(updated.api_key_secret, "shh");
+        assert_eq!(updated.endpoint, "/veo3.1/first-last-frame-to-video");
     }
 
     #[test]
@@ -183,15 +178,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("solcut-settings-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        assert!(!load(&dir).is_configured(), "a fresh install has no key");
+        assert!(
+            !load(&dir).is_configured(),
+            "a fresh install has no credential"
+        );
 
-        let config = Config {
-            api_key: "hf_k".into(),
-            model: "dop".into(),
-            ..Config::default()
-        };
-        save(&dir, &config).expect("save");
-        assert_eq!(load(&dir).api_key, "hf_k");
+        save(&dir, &configured()).expect("save");
+        let loaded = load(&dir);
+        assert_eq!(loaded.api_key_id, "hf_live_abcdef7fa2");
+        assert_eq!(loaded.api_key_secret, "shh");
 
         #[cfg(unix)]
         {
@@ -200,7 +195,7 @@ mod tests {
                 .unwrap()
                 .permissions()
                 .mode();
-            assert_eq!(mode & 0o777, 0o600, "the key file is owner-only");
+            assert_eq!(mode & 0o777, 0o600, "the credential file is owner-only");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

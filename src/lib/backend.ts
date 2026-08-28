@@ -12,18 +12,17 @@ import type { MediaKind } from '../types/project';
 
 export interface SettingsView {
   configured: boolean;
-  apiKeyHint: string;
+  apiKeyIdHint: string;
   hasSecret: boolean;
   baseUrl: string;
-  model: string;
+  /** The model endpoint, e.g. `/higgsfield-ai/dop/standard`. */
   endpoint: string;
 }
 
 export interface SettingsInput {
-  apiKey?: string;
-  apiSecret?: string;
+  apiKeyId?: string;
+  apiKeySecret?: string;
   baseUrl?: string;
-  model?: string;
   endpoint?: string;
 }
 
@@ -50,13 +49,13 @@ export interface GenerateInput {
   prompt: string;
   startFrame: string;
   endFrame?: string;
-  durationSeconds: number;
 }
 
 export interface GenerationUpdate {
   generationId: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
   progress: number;
+  /** The Higgsfield `request_id`, once the API has accepted the submission. */
   jobId?: string;
   elapsedSecs: number;
   slow: boolean;
@@ -70,6 +69,25 @@ export interface ExportProgress {
 }
 
 const DESKTOP_ONLY = 'This needs the SolCut desktop app — run it with `pnpm tauri dev`.';
+
+/** Kept in step with `solcut_higgsfield::DEFAULT_BASE_URL` / `DEFAULT_ENDPOINT`. */
+export const DEFAULT_BASE_URL = 'https://api.higgsfield.ai';
+export const DEFAULT_ENDPOINT = '/higgsfield-ai/dop/standard';
+
+/**
+ * Documented endpoints that take a first frame — and, for all but the veo ones, a last
+ * frame too. Offered as suggestions in Settings so pointing at another model does not
+ * mean reading the API reference first.
+ */
+export const KNOWN_ENDPOINTS = [
+  '/higgsfield-ai/dop/standard',
+  '/higgsfield-ai/dop/turbo',
+  '/higgsfield-ai/dop/lite',
+  '/minimax/hailuo-02/pro/image-to-video',
+  '/kling-video/v2.5-turbo/pro/image-to-video',
+  '/veo3.1/first-last-frame-to-video',
+  '/veo3.1/fast/first-last-frame-to-video',
+];
 
 export function isDesktop(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -93,11 +111,10 @@ export async function getSettings(): Promise<SettingsView> {
   if (!isDesktop()) {
     return {
       configured: false,
-      apiKeyHint: '',
+      apiKeyIdHint: '',
       hasSecret: false,
-      baseUrl: 'https://platform.higgsfield.ai',
-      model: 'dop',
-      endpoint: '/v1/image2video',
+      baseUrl: DEFAULT_BASE_URL,
+      endpoint: DEFAULT_ENDPOINT,
     };
   }
   return invoke<SettingsView>('get_settings');

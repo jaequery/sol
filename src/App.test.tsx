@@ -23,12 +23,14 @@ vi.mock('./lib/backend', () => ({
   assetSrc: (p: string) => `asset://${p}`,
   getSettings: async () => ({
     configured: true,
-    apiKeyHint: '••••7fa2',
-    hasSecret: false,
-    baseUrl: 'https://platform.higgsfield.ai',
-    model: 'dop',
-    endpoint: '/v1/image2video',
+    apiKeyIdHint: '••••7fa2',
+    hasSecret: true,
+    baseUrl: 'https://api.higgsfield.ai',
+    endpoint: '/higgsfield-ai/dop/standard',
   }),
+  DEFAULT_BASE_URL: 'https://api.higgsfield.ai',
+  DEFAULT_ENDPOINT: '/higgsfield-ai/dop/standard',
+  KNOWN_ENDPOINTS: ['/higgsfield-ai/dop/standard'],
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
   importPaths: vi.fn(),
@@ -187,7 +189,6 @@ describe('acceptance', () => {
     const sent = generateAnimation.mock.calls[0][0];
 
     expect(sent.prompt).toBe('slow dolly-in over the water');
-    expect(sent.durationSeconds).toBeCloseTo(3.2, 5);
     expect(sent.startFrame).toContain('data:image/jpeg;base64,');
     expect(sent.endFrame).toContain('data:image/jpeg;base64,');
     expect(sent.startFrame).not.toEqual(sent.endFrame);
