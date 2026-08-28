@@ -12,6 +12,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { useEditor } from './state/store';
+import * as backend from './lib/backend';
 import type { GenerateInput, GenerationUpdate } from './lib/backend';
 
 const generateAnimation = vi.fn(async (_input: GenerateInput) => {});
@@ -312,6 +313,74 @@ describe('acceptance', () => {
     await user.click(screen.getByRole('button', { name: 'Add keyframe at playhead' }));
 
     expect(screen.getByText('Add a second keyframe to define a segment.')).toBeInTheDocument();
+  });
+});
+
+describe('media bin', () => {
+  it('a media item can be removed, taking its timeline clips with it', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('surf.mp4', 'video/mp4')]);
+
+    expect(await screen.findByRole('button', { name: 'Remove sunset.jpg' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove surf.mp4' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Remove sunset.jpg' }));
+
+    // Gone from the bin, and gone from the single track it was sitting on.
+    expect(screen.queryByRole('button', { name: 'Remove sunset.jpg' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'sunset.jpg photo clip' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'surf.mp4 video clip' })).toBeInTheDocument();
+
+    const state = useEditor.getState();
+    expect(Object.values(state.assets).map((a) => a.name)).toEqual(['surf.mp4']);
+    expect(state.clips.map((c) => c.name)).toEqual(['surf.mp4']);
+    expect(state.selection).toEqual({ kind: 'none' });
+    // Nothing failed on the way out.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('emptying the bin returns it to its first-run state', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropOnTimeline([file('sunset.jpg', 'image/jpeg')]);
+
+    await user.click(await screen.findByRole('button', { name: 'Remove sunset.jpg' }));
+
+    expect(screen.getByText('No media yet')).toBeInTheDocument();
+    expect(screen.getByText('Drop photos and videos here')).toBeInTheDocument();
+    expect(useEditor.getState().playheadMs).toBe(0);
+  });
+
+  it('the import button survives the first import and works on every cycle', async () => {
+    const user = userEvent.setup();
+    vi.mocked(backend.pickMediaFiles).mockClear();
+    render(<App />);
+
+    // Present on an empty bin…
+    expect(screen.getByRole('button', { name: 'Import media' })).toBeInTheDocument();
+
+    for (const name of ['take-1.jpg', 'take-2.jpg']) {
+      vi.mocked(backend.pickMediaFiles).mockResolvedValue([`/media/${name}`]);
+      vi.mocked(backend.importPaths).mockResolvedValue({
+        imported: [{ path: `/media/${name}`, name, kind: 'photo', sizeBytes: 1024 }],
+        rejected: [],
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Import media' }));
+
+      expect(await screen.findByRole('button', { name: `Remove ${name}` })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: `${name} photo clip` })).toBeInTheDocument();
+      // …and still present now that the bin has something in it.
+      expect(screen.getByRole('button', { name: 'Import media' })).toBeEnabled();
+
+      await user.click(screen.getByRole('button', { name: `Remove ${name}` }));
+      expect(screen.queryByRole('button', { name: `Remove ${name}` })).not.toBeInTheDocument();
+    }
+
+    expect(backend.pickMediaFiles).toHaveBeenCalledTimes(2);
+    expect(useEditor.getState().clips).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Import media' })).toBeInTheDocument();
   });
 });
 

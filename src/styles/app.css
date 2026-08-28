@@ -149,6 +149,25 @@ input {
   letter-spacing: 0;
   font-weight: 500;
 }
+.panel-head__action {
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  color: var(--ink-2);
+  font: 600 var(--fs-xs) / 1 var(--font);
+  letter-spacing: 0.04em;
+  padding: 5px 8px;
+  text-transform: none;
+}
+.panel-head .right + .panel-head__action {
+  /* The count already claimed the free space; sit next to it on the head's own gap. */
+  margin-left: 0;
+}
+.panel-head__action:hover {
+  border-color: var(--accent-line);
+  color: var(--ink);
+}
 
 /* ------------------------------------------------------------------ media bin */
 
@@ -197,7 +216,7 @@ input {
 }
 .bin__tile .kind {
   position: absolute;
-  right: 5px;
+  left: 5px;
   top: 5px;
   width: 16px;
   height: 16px;
@@ -207,6 +226,27 @@ input {
   place-items: center;
   font-size: 9px;
   border: 1px solid rgba(255, 255, 255, 0.09);
+}
+.bin__remove {
+  position: absolute;
+  right: 5px;
+  top: 5px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 4px;
+  background: rgba(6, 7, 12, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: #dfe3f4;
+  display: grid;
+  place-items: center;
+  font-size: 10px;
+  line-height: 1;
+}
+.bin__remove:hover {
+  background: var(--err);
+  border-color: var(--err);
+  color: #2a1220;
 }
 .bin__skeleton {
   aspect-ratio: 16 / 10;
