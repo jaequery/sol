@@ -85,10 +85,11 @@ export interface TransitionSource {
 }
 
 /**
- * What a generation is for: the segment between two keyframes of one photo, or the cut
- * between two adjacent photos. Success routes on this — a segment result replaces the
- * segment, a cut result is inserted at the cut (or swapped over `replacesClipId` when it
- * is a regeneration of an existing transition clip).
+ * What a generation is for: the segment between two keyframes of one photo, the cut
+ * between two adjacent photos, or one leg of a three-photo film. Success routes on this — a
+ * segment result replaces the segment, a cut result is inserted at the cut (or swapped over
+ * `replacesClipId` when it is a regeneration of an existing transition clip), and a film
+ * leg's result is parked in film state until every leg is in.
  */
 export type GenerationTarget =
   | { kind: 'segment'; clipId: string; fromKeyframeId: string; toKeyframeId: string }
@@ -99,6 +100,13 @@ export type GenerationTarget =
       from: TransitionSource;
       to: TransitionSource;
       replacesClipId?: string;
+    }
+  | {
+      kind: 'film';
+      startAssetId: string;
+      endAssetId: string;
+      /** 0 for photo 1 -> 2, 1 for photo 2 -> 3. Results are keyed by this, never by arrival. */
+      filmSegmentIndex: number;
     };
 
 export interface Generation {
@@ -114,6 +122,23 @@ export interface Generation {
   outputPath?: string;
   error?: GenerationError;
 }
+
+/** A generation narrowed to one kind of target — what the code that only handles one takes. */
+export type GenerationOf<K extends GenerationTarget['kind']> = Generation & {
+  target: Extract<GenerationTarget, { kind: K }>;
+};
+
+export type SegmentGeneration = GenerationOf<'segment'>;
+export type CutGeneration = GenerationOf<'cut'>;
+
+/**
+ * A transition between two *different* photos — one leg of a film.
+ *
+ * Its result is parked in film state rather than dropped on the timeline: a film goes onto
+ * the track in one piece, once every leg has succeeded, so a half-finished film never
+ * half-edits the project.
+ */
+export type FilmGeneration = GenerationOf<'film'>;
 
 export interface Clip {
   id: string;
