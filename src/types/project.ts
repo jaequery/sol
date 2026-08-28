@@ -72,11 +72,37 @@ export interface GenerationError {
   retryable: boolean;
 }
 
+/**
+ * One side of a generated transition: which clip stood there, what media it showed, and the
+ * exact framing that was baked into the frame sent to Higgsfield. Kept on the finished clip
+ * so a later edit to either neighbour can be detected (staleness) and regenerated from.
+ */
+export interface TransitionSource {
+  clipId: string;
+  assetId: string;
+  transform: Transform2D;
+}
+
+/**
+ * What a generation is for: the segment between two keyframes of one photo, or the cut
+ * between two adjacent photos. Success routes on this — a segment result replaces the
+ * segment, a cut result is inserted at the cut (or swapped over `replacesClipId` when it
+ * is a regeneration of an existing transition clip).
+ */
+export type GenerationTarget =
+  | { kind: 'segment'; clipId: string; fromKeyframeId: string; toKeyframeId: string }
+  | {
+      kind: 'cut';
+      afterClipId: string;
+      beforeClipId: string;
+      from: TransitionSource;
+      to: TransitionSource;
+      replacesClipId?: string;
+    };
+
 export interface Generation {
   id: string;
-  clipId: string;
-  fromKeyframeId: string;
-  toKeyframeId: string;
+  target: GenerationTarget;
   prompt: string;
   status: GenerationStatus;
   /** 0..1 */
@@ -105,6 +131,16 @@ export interface Clip {
     prompt: string;
     sourceAssetId: string;
   };
+  /**
+   * Present when this clip is a generated transition between two photos. `ai` is set too so
+   * every AI-clip affordance applies; this records the exact sources so the clip can be
+   * flagged stale when its neighbours change, and regenerated in place.
+   */
+  transition?: {
+    prompt: string;
+    from: TransitionSource;
+    to: TransitionSource;
+  };
 }
 
 /** Which end of a clip a resize drag has hold of. */
@@ -130,6 +166,7 @@ export type Selection =
   | { kind: 'clip'; clipId: string }
   | { kind: 'keyframe'; clipId: string; keyframeId: string }
   | { kind: 'segment'; clipId: string; fromKeyframeId: string; toKeyframeId: string }
+  | { kind: 'cut'; afterClipId: string; beforeClipId: string }
   | { kind: 'audio'; trackId: string };
 
 export const IDENTITY_TRANSFORM: Transform2D = {
@@ -147,6 +184,14 @@ export const MAX_SCALE = 4;
 export const DEFAULT_PHOTO_DURATION_MS = 5000;
 export const DEFAULT_VIDEO_DURATION_MS = 5000;
 export const DEFAULT_AUDIO_DURATION_MS = 5000;
+
+/** Used for a cut whose prompt box was left empty — generating must need zero typing. */
+export const DEFAULT_TRANSITION_PROMPT = 'Smooth cinematic motion transition';
+/**
+ * The model decides the real length (DoP takes no duration parameter), so a transition is
+ * inserted at this provisional length and probe-corrected once the file's metadata loads.
+ */
+export const DEFAULT_TRANSITION_DURATION_MS = 5000;
 
 /**
  * Matches `AUDIO_EXTS` in `src-tauri/src/media.rs`. Shared here (not in the store) so the

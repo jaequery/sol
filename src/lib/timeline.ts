@@ -21,6 +21,7 @@ import {
   type PlacedClip,
   type Segment,
   type Transform2D,
+  type TransitionSource,
 } from '../types/project';
 
 let idCounter = 0;
@@ -522,6 +523,132 @@ function pickPrompts(clip: Clip, keep: (k: Keyframe) => boolean): Record<string,
     if (keep(k) && clip.prompts[k.id]) out[k.id] = clip.prompts[k.id];
   }
   return out;
+}
+
+// ---------------------------------------------------------------- cuts & transitions
+
+/** A photo→photo boundary on the track — the place a generated transition can fill. */
+export interface Cut {
+  /** The photo on the left; the transition lands right after it. */
+  afterClipId: string;
+  /** The photo on the right. */
+  beforeClipId: string;
+  /** Where the boundary sits on the timeline. */
+  timeMs: number;
+  /** The insertion index a transition clip would take (the right photo's index). */
+  index: number;
+}
+
+/**
+ * Every boundary between two adjacent photos. Only photos: a generated transition needs a
+ * still on each side, so cuts touching video (including a landed transition, which breaks
+ * its own pair into photo|video and video|photo) simply are not offered.
+ */
+export function photoCuts(clips: Clip[]): Cut[] {
+  const placed = layout(clips);
+  const cuts: Cut[] = [];
+  for (let i = 0; i < placed.length - 1; i += 1) {
+    const a = placed[i].clip;
+    const b = placed[i + 1].clip;
+    if (a.kind === 'photo' && b.kind === 'photo') {
+      cuts.push({ afterClipId: a.id, beforeClipId: b.id, timeMs: placed[i].endMs, index: i + 1 });
+    }
+  }
+  return cuts;
+}
+
+/** What lands on the timeline when a transition render finishes. */
+export interface GeneratedTransition {
+  assetId: string;
+  name: string;
+  prompt: string;
+  durationMs: number;
+  from: TransitionSource;
+  to: TransitionSource;
+}
+
+function transitionClip(id: string, generated: GeneratedTransition): Clip {
+  return {
+    id,
+    assetId: generated.assetId,
+    kind: 'video',
+    name: generated.name,
+    durationMs: Math.max(MIN_CLIP_DURATION_MS, Math.round(generated.durationMs)),
+    trimStartMs: 0,
+    keyframes: [],
+    prompts: {},
+    ai: { prompt: generated.prompt, sourceAssetId: generated.from.assetId },
+    transition: { prompt: generated.prompt, from: generated.from, to: generated.to },
+  };
+}
+
+/**
+ * Put a finished transition into its cut. The pair must still sit adjacent and in order —
+ * the timeline may have been edited while Higgsfield rendered — otherwise this is an
+ * identity no-op and the caller explains rather than inserting the clip somewhere wrong.
+ */
+export function insertTransitionClip(
+  clips: Clip[],
+  afterClipId: string,
+  beforeClipId: string,
+  generated: GeneratedTransition,
+): Clip[] {
+  const at = clips.findIndex((c) => c.id === afterClipId);
+  if (at === -1 || clips[at + 1]?.id !== beforeClipId) return clips;
+  return [...clips.slice(0, at + 1), transitionClip(makeId('clip'), generated), ...clips.slice(at + 1)];
+}
+
+/**
+ * A regeneration swaps the finished render over the existing transition clip, in place and
+ * keeping its id so the selection stays on it. Identity no-op when the clip is gone or is
+ * not a transition.
+ */
+export function replaceTransitionClip(
+  clips: Clip[],
+  transitionClipId: string,
+  generated: GeneratedTransition,
+): Clip[] {
+  const at = clips.findIndex((c) => c.id === transitionClipId);
+  if (at === -1 || !clips[at].transition) return clips;
+  return [...clips.slice(0, at), transitionClip(transitionClipId, generated), ...clips.slice(at + 1)];
+}
+
+export type TransitionStaleness = 'fresh' | 'stale' | 'orphaned';
+
+/** Below this, a framing difference is slider noise, not a reason to flag a re-render. */
+const STALENESS_EPSILON = 0.001;
+
+function framingDrifted(a: Transform2D, b: Transform2D): boolean {
+  return (
+    Math.abs(a.scale - b.scale) > STALENESS_EPSILON ||
+    Math.abs(a.x - b.x) > STALENESS_EPSILON ||
+    Math.abs(a.y - b.y) > STALENESS_EPSILON ||
+    Math.abs(a.rotation - b.rotation) > STALENESS_EPSILON ||
+    Math.abs(a.opacity - b.opacity) > STALENESS_EPSILON
+  );
+}
+
+/**
+ * Whether a finished transition still matches what stands around it. `stale` means both
+ * neighbours are photos but not the ones (or not the framings) it was rendered from, so a
+ * one-tap regenerate can fix it; `orphaned` means a neighbour is missing or not a photo,
+ * so there is nothing to regenerate between. Never acts — the user decides what to spend.
+ */
+export function transitionStaleness(clips: Clip[], transitionClipId: string): TransitionStaleness {
+  const at = clips.findIndex((c) => c.id === transitionClipId);
+  const clip = at === -1 ? undefined : clips[at];
+  if (!clip?.transition) return 'orphaned';
+
+  const left = clips[at - 1];
+  const right = clips[at + 1];
+  if (!left || !right || left.kind !== 'photo' || right.kind !== 'photo') return 'orphaned';
+
+  const { from, to } = clip.transition;
+  if (left.id !== from.clipId || left.assetId !== from.assetId) return 'stale';
+  if (right.id !== to.clipId || right.assetId !== to.assetId) return 'stale';
+  if (framingDrifted(transformAt(left, left.durationMs), from.transform)) return 'stale';
+  if (framingDrifted(transformAt(right, 0), to.transform)) return 'stale';
+  return 'fresh';
 }
 
 export function formatTimecode(ms: number): string {

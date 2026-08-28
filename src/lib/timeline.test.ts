@@ -12,13 +12,16 @@ import {
   insertClips,
   insertIndexAt,
   insertIndexAtTime,
+  insertTransitionClip,
   layout,
   moveAudio,
   moveClip,
   moveKeyframe,
   photoClip,
+  photoCuts,
   removeKeyframe,
   replaceSegment,
+  replaceTransitionClip,
   resetIds,
   resizeAudio,
   resizeClip,
@@ -28,9 +31,11 @@ import {
   timelineEndMs,
   totalDurationMs,
   transformAt,
+  transitionStaleness,
   truncateName,
   updateKeyframe,
   videoClip,
+  type GeneratedTransition,
 } from './timeline';
 import {
   IDENTITY_TRANSFORM,
@@ -448,6 +453,158 @@ describe('resizing a clip', () => {
     expect(resizeClip(clip, 'end', 0)).toBe(clip);
     expect(resizeClip(clip, 'end', Number.NaN)).toBe(clip);
     expect(resizeClip(clip, 'start', 0.4)).toBe(clip);
+  });
+});
+
+describe('cuts & transitions', () => {
+  function pair(): [Clip, Clip] {
+    return [
+      photoClip({ id: 'asset_a', name: 'a.jpg' }, 2000),
+      photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000),
+    ];
+  }
+
+  /** What a finished render between `a` and `b` looks like when it lands. */
+  function generatedBetween(a: Clip, b: Clip, assetId = 'asset_tr'): GeneratedTransition {
+    return {
+      assetId,
+      name: 'ai-tr.mp4',
+      prompt: 'smooth cinematic motion',
+      durationMs: 5000,
+      from: { clipId: a.id, assetId: a.assetId, transform: transformAt(a, a.durationMs) },
+      to: { clipId: b.id, assetId: b.assetId, transform: transformAt(b, 0) },
+    };
+  }
+
+  describe('photoCuts', () => {
+    it('offers one cut per adjacent photo pair, and none touching video', () => {
+      const [a, b] = pair();
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 4000);
+      const c = photoClip({ id: 'asset_c', name: 'c.jpg' }, 1000);
+
+      expect(photoCuts([a, b, v, c])).toEqual([
+        { afterClipId: a.id, beforeClipId: b.id, timeMs: 2000, index: 1 },
+      ]);
+      expect(photoCuts([a])).toEqual([]);
+      expect(photoCuts([])).toEqual([]);
+      expect(photoCuts([a, v, b])).toEqual([]);
+    });
+
+    it('a landed transition breaks its own pair, so its chip disappears structurally', () => {
+      const [a, b] = pair();
+      const withTransition = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
+      expect(withTransition).toHaveLength(3);
+      expect(photoCuts(withTransition)).toEqual([]);
+    });
+
+    it('two halves of one split photo still make a cut — same image on both sides', () => {
+      const [a] = pair();
+      const half = { ...a, id: 'clip_half2' };
+      expect(photoCuts([a, half])).toHaveLength(1);
+    });
+  });
+
+  describe('insertTransitionClip', () => {
+    it('inserts a fully-marked video clip between the pair', () => {
+      const [a, b] = pair();
+      const result = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
+
+      expect(result.map((c) => c.kind)).toEqual(['photo', 'video', 'photo']);
+      const t = result[1];
+      expect(t.assetId).toBe('asset_tr');
+      expect(t.durationMs).toBe(5000);
+      expect(t.trimStartMs).toBe(0);
+      expect(t.ai).toEqual({ prompt: 'smooth cinematic motion', sourceAssetId: 'asset_a' });
+      expect(t.transition).toMatchObject({
+        prompt: 'smooth cinematic motion',
+        from: { clipId: a.id, assetId: 'asset_a' },
+        to: { clipId: b.id, assetId: 'asset_b' },
+      });
+      expect(totalDurationMs(result)).toBe(10_000);
+    });
+
+    it('is an identity no-op when the pair is gone, separated, or reversed', () => {
+      const [a, b] = pair();
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 4000);
+      const generated = generatedBetween(a, b);
+
+      expect(insertTransitionClip([a, v, b], a.id, b.id, generated)).toEqual([a, v, b]);
+      expect(insertTransitionClip([b, a], a.id, b.id, generated)).toEqual([b, a]);
+      expect(insertTransitionClip([b], a.id, b.id, generated)).toEqual([b]);
+    });
+
+    it('never inserts a clip too short to grab', () => {
+      const [a, b] = pair();
+      const result = insertTransitionClip([a, b], a.id, b.id, {
+        ...generatedBetween(a, b),
+        durationMs: 10,
+      });
+      expect(result[1].durationMs).toBe(MIN_CLIP_DURATION_MS);
+    });
+  });
+
+  describe('replaceTransitionClip', () => {
+    it('swaps a regenerated render over the old one, in place and keeping its id', () => {
+      const [a, b] = pair();
+      const clips = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
+      const old = clips[1];
+
+      const result = replaceTransitionClip(clips, old.id, generatedBetween(a, b, 'asset_tr2'));
+      expect(result.map((c) => c.id)).toEqual(clips.map((c) => c.id));
+      expect(result[1].assetId).toBe('asset_tr2');
+      expect(result[1].transition).toBeTruthy();
+    });
+
+    it('is an identity no-op for an unknown clip or one that is not a transition', () => {
+      const [a, b] = pair();
+      const clips = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
+      expect(replaceTransitionClip(clips, 'nope', generatedBetween(a, b))).toBe(clips);
+      expect(replaceTransitionClip(clips, a.id, generatedBetween(a, b))).toBe(clips);
+    });
+  });
+
+  describe('transitionStaleness', () => {
+    function landed(): { clips: Clip[]; a: Clip; b: Clip; t: Clip } {
+      const [a, b] = pair();
+      const clips = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
+      return { clips, a, b, t: clips[1] };
+    }
+
+    it('is fresh while the pair and their framings match what was rendered', () => {
+      const { clips, t } = landed();
+      expect(transitionStaleness(clips, t.id)).toBe('fresh');
+    });
+
+    it('goes stale when a neighbour is a different clip or a different asset', () => {
+      const { clips, b, t } = landed();
+      const other = photoClip({ id: 'asset_c', name: 'c.jpg' }, 1000);
+      expect(transitionStaleness([other, t, b], t.id)).toBe('stale');
+
+      const swappedAsset = { ...clips[0], assetId: 'asset_other' };
+      expect(transitionStaleness([swappedAsset, t, b], t.id)).toBe('stale');
+    });
+
+    it('goes stale when a neighbour’s relevant framing drifts, but shrugs off noise', () => {
+      const { clips, a, b, t } = landed();
+      const reframed = addKeyframe(a, a.durationMs, { ...IDENTITY_TRANSFORM, scale: 2 });
+      expect(transitionStaleness([reframed, t, b], t.id)).toBe('stale');
+
+      // A drift far below the epsilon is slider noise, not a reason to flag a re-spend.
+      const noisy = addKeyframe(a, a.durationMs, { ...IDENTITY_TRANSFORM, scale: 1 + 1e-7 });
+      expect(transitionStaleness([noisy, t, b], t.id)).toBe('fresh');
+      expect(transitionStaleness(clips, t.id)).toBe('fresh');
+    });
+
+    it('is orphaned when a neighbour is missing or not a photo', () => {
+      const { a, b, t } = landed();
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 4000);
+      expect(transitionStaleness([t, b], t.id)).toBe('orphaned');
+      expect(transitionStaleness([a, t], t.id)).toBe('orphaned');
+      expect(transitionStaleness([v, t, b], t.id)).toBe('orphaned');
+      // Not a transition at all — there are no sources to compare.
+      expect(transitionStaleness([a, t, b], a.id)).toBe('orphaned');
+      expect(transitionStaleness([a, t, b], 'nope')).toBe('orphaned');
+    });
   });
 });
 

@@ -12,7 +12,8 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { buildExportSpec, useEditor } from './state/store';
-import { layout } from './lib/timeline';
+import { addKeyframe, layout } from './lib/timeline';
+import { DEFAULT_TRANSITION_PROMPT, IDENTITY_TRANSFORM } from './types/project';
 import * as backend from './lib/backend';
 import type { GenerateInput, GenerationUpdate } from './lib/backend';
 
@@ -91,6 +92,9 @@ beforeEach(() => {
     playheadMs: 0,
     playing: false,
     generations: {},
+    cutPrompts: {},
+    animateQueue: null,
+    animateSubmittingId: null,
     importProblems: [],
     importing: 0,
     toasts: [],
@@ -326,6 +330,338 @@ describe('acceptance', () => {
     await user.click(screen.getByRole('button', { name: 'Add keyframe at playhead' }));
 
     expect(screen.getByText('Add a second keyframe to define a segment.')).toBeInTheDocument();
+  });
+});
+
+describe('AI transitions between photos', () => {
+  it('1 — dropping two photos grows a ✦ chip on the cut between them', async () => {
+    render(<App />);
+    await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('cliff.png', 'image/png')]);
+
+    expect(await screen.findByRole('button', { name: CUT_CHIP })).toBeInTheDocument();
+    expect(useEditor.getState().clips.map((c) => c.kind)).toEqual(['photo', 'photo']);
+  });
+
+  it('2 — a chip tap only selects; Generate sends A-end and B-start with the default prompt', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropPhotoPair();
+
+    // Give the left photo's end framing a distinct scale so the stills are tellable apart.
+    act(() => {
+      const s = useEditor.getState();
+      const a = s.clips[0];
+      useEditor.setState({
+        clips: s.clips.map((c) =>
+          c.id === a.id ? addKeyframe(c, a.durationMs, { ...IDENTITY_TRANSFORM, scale: 1.6 }) : c,
+        ),
+      });
+    });
+
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+    // Selecting is free: nothing is sent until the big button.
+    expect(generateAnimation).not.toHaveBeenCalled();
+    expect(useEditor.getState().selection.kind).toBe('cut');
+
+    await user.click(await screen.findByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    const sent = generateAnimation.mock.calls[0][0];
+    expect(sent.prompt).toBe(DEFAULT_TRANSITION_PROMPT);
+    expect(sent.startFrame).toBe('data:image/jpeg;base64,frame-at-scale-1.6');
+    expect(sent.endFrame).toBe('data:image/jpeg;base64,frame-at-scale-1');
+
+    // The cut has no width on the track, so the chip itself is the progress surface.
+    const id = Object.keys(useEditor.getState().generations)[0];
+    await act(async () => {
+      emitGenerationUpdate({ generationId: id, status: 'running', progress: 0.46, elapsedSecs: 12, slow: false });
+    });
+    expect(await screen.findByText('◐ 46%')).toBeInTheDocument();
+  });
+
+  it('3 — success inserts the transition at the cut as an editable AI video clip', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const id = await runCutGeneration(user);
+    await succeed(id, '/home/u/.cache/solcut/generated/out.mp4');
+
+    const generated = await screen.findByRole('button', { name: /ai-.*\.mp4 video clip/i });
+    expect(within(generated).getByText('✦ AI')).toBeInTheDocument();
+
+    const clips = useEditor.getState().clips;
+    expect(clips.map((c) => c.kind)).toEqual(['photo', 'video', 'photo']);
+    expect(clips[1].transition).toBeTruthy();
+    // The cut had no width, so the reel grows by the transition's length.
+    expect(clips.reduce((sum, c) => sum + c.durationMs, 0)).toBe(15_000);
+    // Its chip is gone — that boundary is no longer photo→photo…
+    expect(screen.queryByRole('button', { name: CUT_CHIP })).not.toBeInTheDocument();
+    // …and the preview plays the new clip where the cut was.
+    act(() => useEditor.getState().setPlayhead(6000));
+    expect(await screen.findByTestId('preview-video')).toHaveAttribute(
+      'src',
+      'asset:///home/u/.cache/solcut/generated/out.mp4',
+    );
+    // The export spec reads photo, video, photo — the pipeline needs nothing new.
+    const spec = buildExportSpec(clips, useEditor.getState().assets);
+    expect(spec.clips.map((c) => c.kind)).toEqual(['photo', 'video', 'photo']);
+  });
+
+  it('4 — a failure turns the chip rose and Retry resubmits the same cut', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const id = await runCutGeneration(user);
+
+    await act(async () => {
+      emitGenerationUpdate({
+        generationId: id,
+        status: 'failed',
+        progress: 0,
+        elapsedSecs: 4,
+        slow: false,
+        error: { title: 'Rate limited', message: 'rate limited', retryable: true },
+      });
+    });
+
+    expect(await screen.findByText('✕ FAILED')).toBeInTheDocument();
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText('Rate limited')).toBeInTheDocument();
+
+    generateAnimation.mockClear();
+    await user.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    expect(generateAnimation.mock.calls[0][0].prompt).toBe(DEFAULT_TRANSITION_PROMPT);
+
+    // Retry rebuilt the same target — the failed record itself was dismissed.
+    const s = useEditor.getState();
+    const gens = Object.values(s.generations);
+    expect(gens).toHaveLength(1);
+    expect(gens[0].target).toMatchObject({
+      kind: 'cut',
+      afterClipId: s.clips[0].id,
+      beforeClipId: s.clips[1].id,
+    });
+  });
+
+  it('5 — Animate all fills every cut, one submission at a time', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropOnTimeline(['a.jpg', 'b.jpg', 'c.jpg', 'd.jpg'].map((n) => file(n, 'image/jpeg')));
+    await screen.findByRole('button', { name: 'a.jpg photo clip' });
+    await waitFor(() => expect(useEditor.getState().settings?.configured).toBe(true));
+
+    await user.click(screen.getByRole('button', { name: 'Animate all cuts' }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    // The next cut waits until the first submission has been accepted by the API.
+    await act(async () => {});
+    expect(generateAnimation).toHaveBeenCalledTimes(1);
+
+    const [first] = Object.values(useEditor.getState().generations);
+    await act(async () => {
+      emitGenerationUpdate({ generationId: first.id, status: 'queued', progress: 0, jobId: 'job-1', elapsedSecs: 1, slow: false });
+    });
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(2));
+
+    const second = Object.values(useEditor.getState().generations).find((g) => g.id !== first.id)!;
+    await act(async () => {
+      emitGenerationUpdate({ generationId: second.id, status: 'queued', progress: 0, jobId: 'job-2', elapsedSecs: 1, slow: false });
+    });
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(3));
+
+    const targets = Object.values(useEditor.getState().generations).map((g) => g.target);
+    expect(targets).toHaveLength(3);
+    expect(targets.every((t) => t.kind === 'cut')).toBe(true);
+  });
+
+  it('6a — a submission that fails to start does not stall the queue', async () => {
+    const user = userEvent.setup();
+    generateAnimation.mockImplementationOnce(async () => {
+      throw new Error('the backend refused');
+    });
+    render(<App />);
+    await dropOnTimeline(['a.jpg', 'b.jpg', 'c.jpg'].map((n) => file(n, 'image/jpeg')));
+    await screen.findByRole('button', { name: 'a.jpg photo clip' });
+    await waitFor(() => expect(useEditor.getState().settings?.configured).toBe(true));
+
+    await user.click(screen.getByRole('button', { name: 'Animate all cuts' }));
+
+    // Cut 1's submit blew up before any backend event could exist; cut 2 still goes out.
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(2));
+    const statuses = Object.values(useEditor.getState().generations).map((g) => g.status);
+    expect(statuses.sort()).toEqual(['failed', 'queued']);
+  });
+
+  it('6b — a cut that went ineligible while queued is skipped, not stalled on', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropOnTimeline(['a.jpg', 'b.jpg', 'c.jpg', 'd.jpg', 'e.jpg'].map((n) => file(n, 'image/jpeg')));
+    await screen.findByRole('button', { name: 'a.jpg photo clip' });
+    await waitFor(() => expect(useEditor.getState().settings?.configured).toBe(true));
+
+    await user.click(screen.getByRole('button', { name: 'Animate all cuts' }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    const [first] = Object.values(useEditor.getState().generations);
+
+    // c.jpg vanishes while a→b submits, invalidating the queued b|c and c|d cuts.
+    act(() => {
+      const s = useEditor.getState();
+      const c = s.clips.find((x) => x.name === 'c.jpg')!;
+      useEditor.setState({ selection: { kind: 'clip', clipId: c.id } });
+      s.deleteSelection();
+    });
+
+    await act(async () => {
+      emitGenerationUpdate({ generationId: first.id, status: 'queued', progress: 0, jobId: 'job-1', elapsedSecs: 1, slow: false });
+    });
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(2));
+
+    const s = useEditor.getState();
+    const d = s.clips.find((x) => x.name === 'd.jpg')!;
+    const e = s.clips.find((x) => x.name === 'e.jpg')!;
+    const second = Object.values(s.generations).find((g) => g.id !== first.id)!;
+    expect(second.target).toMatchObject({ kind: 'cut', afterClipId: d.id, beforeClipId: e.id });
+  });
+
+  it('7 — a reframed neighbour marks it stale; Regenerate uses the new framing', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const id = await runCutGeneration(user);
+    await succeed(id);
+
+    // The right photo's first frame is re-framed after the render landed.
+    act(() => {
+      const s = useEditor.getState();
+      const b = s.clips[2];
+      useEditor.setState({
+        clips: s.clips.map((c) =>
+          c.id === b.id ? addKeyframe(c, 0, { ...IDENTITY_TRANSFORM, scale: 2 }) : c,
+        ),
+      });
+    });
+    expect(await screen.findByText('⟳ SOURCES CHANGED')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /ai-.*\.mp4 video clip/i }));
+    generateAnimation.mockClear();
+    await user.click(await screen.findByRole('button', { name: /regenerate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    // The NEW neighbour framing went out, not the one the old render was made from.
+    expect(generateAnimation.mock.calls[0][0].endFrame).toBe('data:image/jpeg;base64,frame-at-scale-2');
+
+    const regen = Object.values(useEditor.getState().generations).find((g) => g.status === 'queued')!;
+    await succeed(regen.id, '/home/u/.cache/solcut/generated/tr2.mp4');
+
+    // Swapped in place: same shape, and the staleness tag is gone.
+    expect(useEditor.getState().clips.map((c) => c.kind)).toEqual(['photo', 'video', 'photo']);
+    expect(screen.queryByText('⟳ SOURCES CHANGED')).not.toBeInTheDocument();
+  });
+
+  it('8 — removing a neighbour photo mid-flight cancels the render', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const id = await runCutGeneration(user);
+
+    const cancelGeneration = vi.mocked(backend.cancelGeneration);
+    cancelGeneration.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Remove cliff.png' }));
+
+    await waitFor(() => expect(cancelGeneration).toHaveBeenCalledWith(id));
+    expect(useEditor.getState().generations[id]).toBeUndefined();
+  });
+
+  it('9 — a timeline reordered mid-render gets a toast, never a misplaced clip', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropOnTimeline(['a.jpg', 'b.jpg', 'c.jpg'].map((n) => file(n, 'image/jpeg')));
+    await screen.findByRole('button', { name: 'a.jpg photo clip' });
+
+    await user.click(screen.getByRole('button', { name: 'Select the cut between a.jpg and b.jpg' }));
+    await user.click(await screen.findByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    const id = Object.keys(useEditor.getState().generations)[0];
+
+    // While it renders, c.jpg is dragged between the pair.
+    act(() => {
+      const s = useEditor.getState();
+      s.moveClip(s.clips[2].id, 1);
+    });
+    await succeed(id);
+
+    const s = useEditor.getState();
+    expect(s.clips).toHaveLength(3);
+    expect(s.clips.every((c) => c.kind === 'photo')).toBe(true);
+    expect(await screen.findByText('Transition finished, but its photos moved')).toBeInTheDocument();
+  });
+
+  it('10 — a chip press never scrubs, reorders, or spends', async () => {
+    render(<App />);
+    await dropPhotoPair();
+    act(() => useEditor.getState().setPlayhead(1234));
+
+    const chip = screen.getByRole('button', { name: CUT_CHIP });
+    await act(async () => {
+      fireEvent.pointerDown(chip, { button: 0, clientX: 300 });
+      fireEvent.pointerMove(window, { clientX: 340 });
+      fireEvent.pointerUp(window, { clientX: 340 });
+    });
+    await act(async () => {
+      fireEvent.click(chip);
+    });
+
+    const s = useEditor.getState();
+    expect(s.playheadMs).toBe(1234);
+    expect(s.clips.map((c) => c.name)).toEqual(['sunset.jpg', 'cliff.png']);
+    expect(s.selection).toEqual({
+      kind: 'cut',
+      afterClipId: s.clips[0].id,
+      beforeClipId: s.clips[1].id,
+    });
+    expect(generateAnimation).not.toHaveBeenCalled();
+  });
+
+  it('11 — with no credential the cut card explains and nothing is sent', async () => {
+    const user = userEvent.setup();
+    storedSettings = { ...STORED_SETTINGS, configured: false, hasSecret: false, apiKeyIdHint: '' };
+    render(<App />);
+    await dropPhotoPair();
+
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+    expect(await screen.findByText('Connect Higgsfield to generate')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /generate transition/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Animate all cuts' })).toBeDisabled();
+    expect(generateAnimation).not.toHaveBeenCalled();
+  });
+
+  it('12 — a chip whose photo is offline is disabled with the reason', async () => {
+    render(<App />);
+    await dropPhotoPair();
+
+    act(() => {
+      const s = useEditor.getState();
+      const cliff = Object.values(s.assets).find((a) => a.name === 'cliff.png')!;
+      useEditor.setState({ assets: { ...s.assets, [cliff.id]: { ...cliff, missing: true } } });
+    });
+
+    const chip = screen.getByRole('button', { name: CUT_CHIP });
+    expect(chip).toBeDisabled();
+    expect(chip).toHaveAttribute('title', expect.stringContaining('re-import'));
+  });
+
+  it('13 — splitting a transition keeps AI footage but severs its transition identity', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const id = await runCutGeneration(user);
+    await succeed(id);
+
+    act(() => {
+      const s = useEditor.getState();
+      s.setPlayhead(7500); // inside the 5s transition sitting at 5000–10000
+      s.splitAtPlayhead();
+    });
+
+    const clips = useEditor.getState().clips;
+    expect(clips).toHaveLength(4);
+    expect(clips[1].ai).toBeTruthy();
+    expect(clips[2].ai).toBeTruthy();
+    expect(clips[1].transition).toBeUndefined();
+    expect(clips[2].transition).toBeUndefined();
   });
 });
 
@@ -713,4 +1049,36 @@ async function runGeneration(user: ReturnType<typeof userEvent.setup>): Promise<
   await user.click(screen.getByRole('button', { name: /generate animation/i }));
   await waitFor(() => expect(generateAnimation).toHaveBeenCalled());
   return Object.keys(useEditor.getState().generations)[0];
+}
+
+// ---- AI transitions
+
+const CUT_CHIP = 'Select the cut between sunset.jpg and cliff.png';
+
+async function dropPhotoPair() {
+  await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('cliff.png', 'image/png')]);
+  await screen.findByRole('button', { name: 'sunset.jpg photo clip' });
+}
+
+/** Drop two photos, select their cut, press Generate. Returns the generation id. */
+async function runCutGeneration(user: ReturnType<typeof userEvent.setup>): Promise<string> {
+  await dropPhotoPair();
+  await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+  await user.click(await screen.findByRole('button', { name: /generate transition/i }));
+  await waitFor(() => expect(generateAnimation).toHaveBeenCalled());
+  return Object.keys(useEditor.getState().generations)[0];
+}
+
+/** Drive one generation to success, flushing the duration probe inside act. */
+function succeed(id: string, outputPath = '/home/u/.cache/solcut/generated/tr.mp4') {
+  return act(async () => {
+    emitGenerationUpdate({
+      generationId: id,
+      status: 'succeeded',
+      progress: 1,
+      elapsedSecs: 60,
+      slow: false,
+      outputPath,
+    });
+  });
 }

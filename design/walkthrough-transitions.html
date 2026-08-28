@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SolCut — AI transitions walkthrough</title>
+<style>
+/*
+ * SolCut design system — "Midnight Studio" (Concept 1, approved).
+ * Every colour, radius, and type step in the app comes from here.
+ */
+:root {
+  /* surfaces, back to front */
+  --bg: #0b0c10;
+  --panel: #131520;
+  --panel-2: #1a1d2b;
+  --sunken: #0e1018;
+  --chrome: #0f1119;
+  --line: #262a3d;
+  --line-soft: #1d2130;
+
+  /* text */
+  --ink: #eef0f8;
+  --ink-2: #9aa1bd;
+  --ink-3: #646b8a;
+
+  /* accent + status */
+  --accent: #7c5cff;
+  --accent-2: #a78bfa;
+  --accent-dim: #241d4d;
+  --accent-line: #4c3ba8;
+  --accent-wash: #1a1533;
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --err: #fb7185;
+  --err-wash: #2a1220;
+  --playhead: #ff4d6d;
+
+  /* geometry */
+  --r-sm: 6px;
+  --r: 8px;
+  --r-md: 10px;
+  --r-lg: 14px;
+
+  /* type */
+  --font: 'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --fs-xs: 10px;
+  --fs-sm: 11px;
+  --fs: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+
+  /* spacing */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+
+  /* chrome metrics — shared by the app shell and the mockups */
+  --h-titlebar: 38px;
+  --h-panelhead: 36px;
+  --h-transport: 44px;
+  --h-toolbar: 34px;
+  --h-ruler: 22px;
+  --w-bin: 224px;
+  --w-inspector: 292px;
+
+  --shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+  --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:#05060a;color:var(--ink);font-family:var(--font);font-size:var(--fs-md);-webkit-font-smoothing:antialiased}
+.page{max-width:1180px;margin:0 auto;padding:32px 20px 80px}
+h1{font-size:26px;font-weight:700;letter-spacing:-.025em;margin:0 0 6px}
+.lede{color:var(--ink-3);font-size:13.5px;line-height:1.65;max-width:74ch;margin:0 0 10px}
+.kicker{display:inline-block;font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent-2);
+  border:1px solid var(--accent-line);background:var(--accent-wash);padding:5px 9px;border-radius:var(--r-sm);margin-bottom:14px}
+.toc{display:flex;flex-wrap:wrap;gap:6px;margin:18px 0 34px;padding:14px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--panel)}
+.toc a{font-size:11.5px;color:var(--ink-2);text-decoration:none;border:1px solid var(--line);background:var(--sunken);padding:5px 9px;border-radius:99px}
+.toc a:hover{color:var(--ink);border-color:var(--accent-line)}
+.act{margin:44px 0 18px;padding-bottom:10px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:10px}
+.act h2{margin:0;font-size:15px;font-weight:650;letter-spacing:-.01em}
+.act span{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3)}
+figure{margin:0 0 34px}
+.stepno{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+.stepno b{width:22px;height:22px;border-radius:6px;background:var(--accent-dim);border:1px solid var(--accent-line);color:var(--accent-2);
+  display:grid;place-items:center;font:700 10.5px/1 var(--mono)}
+.stepno .t{font-size:13px;font-weight:650}
+.stepno .s{margin-left:auto;font:600 9.5px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;padding:4px 8px;border-radius:99px;
+  border:1px solid var(--line);color:var(--ink-3);background:var(--sunken)}
+.s.ok{color:var(--ok);border-color:#14503c;background:#08211a}
+.s.run{color:var(--accent-2);border-color:var(--accent-line);background:var(--accent-wash)}
+.s.err{color:var(--err);border-color:#5c2036;background:var(--err-wash)}
+.s.warn{color:var(--warn);border-color:#5a4212;background:#241c06}
+figcaption{margin-top:10px;font-size:12.5px;line-height:1.6;color:var(--ink-2);border-left:2px solid var(--accent-line);padding-left:11px}
+figcaption b{color:var(--ink);font-weight:600}
+
+/* ---------- app shell ---------- */
+.app{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--shadow);position:relative}
+.titlebar{height:var(--h-titlebar);display:flex;align-items:center;gap:10px;padding:0 12px;
+  background:linear-gradient(180deg,#171a28,#101220);border-bottom:1px solid var(--line)}
+.dots{display:flex;gap:6px}.dots i{width:11px;height:11px;border-radius:50%;display:block}
+.dots i:nth-child(1){background:#ff5f57}.dots i:nth-child(2){background:#febc2e}.dots i:nth-child(3){background:#28c840}
+.doc{font-size:var(--fs);color:var(--ink-2)}.doc b{color:var(--ink);font-weight:600}
+.tb-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.btn{border:1px solid var(--line);background:var(--panel-2);color:var(--ink);border-radius:var(--r-sm);padding:6px 12px;font-size:var(--fs);font-weight:550}
+.btn.primary{background:linear-gradient(180deg,var(--accent),#6a4ae0);border-color:#8b6bff}
+.btn.ghost{background:transparent}
+.btn.dis{opacity:.42}
+.chip-run{display:flex;align-items:center;gap:6px;font:600 10px/1 var(--mono);color:var(--accent-2);
+  border:1px solid var(--accent-line);background:var(--accent-wash);padding:5px 8px;border-radius:99px}
+
+.body{display:grid;grid-template-columns:var(--w-bin) 1fr var(--w-inspector);height:378px}
+.col{min-width:0;display:flex;flex-direction:column}
+.col+.col{border-left:1px solid var(--line)}
+.hd{height:var(--h-panelhead);display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line);
+  font:600 var(--fs-sm)/1 var(--font);letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);background:var(--chrome)}
+.hd .r{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:500;color:var(--ink-3)}
+
+.bin{padding:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px;overflow:hidden;background:var(--panel);align-content:start}
+.thumb{position:relative;aspect-ratio:16/10;border-radius:var(--r);overflow:hidden;border:1px solid var(--line)}
+.thumb .t{position:absolute;inset:0}
+.thumb .lbl{position:absolute;left:5px;bottom:5px;font:600 9px/1 var(--mono);background:rgba(6,7,12,.8);
+  border:1px solid rgba(255,255,255,.09);padding:3px 5px;border-radius:4px;color:#dfe3f4;max-width:calc(100% - 10px);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thumb .kind{position:absolute;right:5px;top:5px;width:16px;height:16px;border-radius:4px;background:rgba(6,7,12,.8);
+  display:grid;place-items:center;font-size:9px;border:1px solid rgba(255,255,255,.09)}
+.skel{position:relative;aspect-ratio:16/10;border-radius:var(--r);border:1px solid var(--line);
+  background:linear-gradient(100deg,#171a27 30%,#22263a 50%,#171a27 70%)}
+.bin-empty{grid-column:1/-1;border:1.5px dashed var(--line);border-radius:var(--r-md);padding:20px 12px;text-align:center;color:var(--ink-3);font-size:11.5px;line-height:1.6}
+.bin-empty b{display:block;color:var(--ink-2);font-size:12px;margin-bottom:4px}
+.bin-err{grid-column:1/-1;border:1px solid #5c2036;background:var(--err-wash);border-radius:var(--r);padding:8px 9px;font-size:10.5px;line-height:1.5;color:#ffc2cf}
+.bin-err b{display:block;color:var(--err);font-weight:650;margin-bottom:2px}
+
+.stage{flex:1;display:grid;place-items:center;background:radial-gradient(120% 90% at 50% 0%,#151827,#0a0b12);padding:16px;position:relative}
+.canvas{width:100%;max-width:452px;aspect-ratio:16/9;border-radius:var(--r-md);position:relative;overflow:hidden;
+  border:1px solid #2c3149;box-shadow:var(--shadow)}
+.canvas .img{position:absolute;inset:0}
+.framebox{position:absolute;inset:18% 14%;border:1.5px dashed rgba(167,139,250,.85);border-radius:4px}
+.framebox::after{content:"";position:absolute;right:-5px;bottom:-5px;width:9px;height:9px;background:var(--accent-2);border-radius:2px}
+.hud{position:absolute;left:10px;top:10px;display:flex;gap:6px;align-items:center;background:rgba(8,9,16,.74);
+  border:1px solid rgba(255,255,255,.1);border-radius:var(--r-sm);padding:5px 8px;font:600 10px/1 var(--mono);color:#cfd5ee}
+.dia{width:8px;height:8px;background:var(--accent-2);transform:rotate(45deg);border-radius:1px;display:block}
+.badge-ai{position:absolute;right:10px;top:10px;display:flex;gap:5px;align-items:center;background:rgba(124,92,255,.9);
+  border:1px solid rgba(255,255,255,.25);border-radius:99px;padding:4px 9px;font:700 9.5px/1 var(--mono);letter-spacing:.06em;color:#fff}
+.stage-empty{text-align:center;color:var(--ink-3);font-size:12.5px;line-height:1.7;max-width:300px}
+.stage-empty .ic{font-size:30px;opacity:.35;margin-bottom:10px}
+.stage-empty b{display:block;color:var(--ink-2);font-size:13px;margin-bottom:5px}
+.offline{position:absolute;inset:0;display:grid;place-items:center;background:repeating-linear-gradient(135deg,#16151c 0 10px,#1c1a24 10px 20px);
+  color:var(--warn);font:600 11px/1.6 var(--mono);text-align:center}
+
+.transport{height:var(--h-transport);display:flex;align-items:center;gap:14px;justify-content:center;border-top:1px solid var(--line);background:var(--chrome)}
+.tbtn{width:28px;height:28px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--panel-2);display:grid;place-items:center;color:var(--ink-2);font-size:11px}
+.tbtn.play{background:var(--ink);color:var(--bg);border-color:var(--ink);width:32px;height:32px}
+.tc{font:600 var(--fs-sm)/1 var(--mono);color:var(--ink-2);letter-spacing:.04em}
+.tc.dim{color:#4b5170}
+
+.insp{padding:12px;overflow:hidden;background:var(--panel);display:flex;flex-direction:column;gap:12px}
+.card{border:1px solid var(--line);border-radius:var(--r-md);background:var(--panel-2);overflow:hidden}
+.card.ai{border-color:#3a2f6b}
+.card.err{border-color:#5c2036}
+.card .ch{display:flex;align-items:center;gap:8px;padding:9px 11px;border-bottom:1px solid var(--line);font-size:var(--fs);font-weight:600}
+.card.ai .ch{background:var(--accent-wash);border-color:#3a2f6b}
+.card.err .ch{background:var(--err-wash);border-color:#5c2036;color:#ffc2cf}
+.card .cb{padding:11px}
+.card.off{opacity:.45}
+.row{display:flex;align-items:center;justify-content:space-between;gap:9px;padding:5px 0}
+.row label{color:var(--ink-2);font-size:11.5px;flex:0 0 auto}
+.num{font:600 var(--fs-sm)/1 var(--mono);background:var(--sunken);border:1px solid var(--line);border-radius:var(--r-sm);padding:5px 7px;min-width:56px;text-align:right}
+.slider{height:4px;border-radius:3px;background:var(--sunken);position:relative;flex:1;border:1px solid var(--line)}
+.slider i{position:absolute;left:0;top:-1px;bottom:-1px;background:linear-gradient(90deg,#5b40d6,var(--accent-2));border-radius:3px}
+.slider b{position:absolute;top:50%;transform:translate(-50%,-50%);width:11px;height:11px;border-radius:50%;background:#fff}
+.ta{width:100%;min-height:64px;background:var(--sunken);border:1px solid #33305e;border-radius:var(--r);color:var(--ink);
+  padding:9px;font-size:var(--fs);line-height:1.55;overflow:hidden}
+.ta.ph{color:var(--ink-3)}
+.ta.scroll{max-height:64px;overflow:hidden;position:relative}
+.ta.scroll::after{content:"";position:absolute;left:0;right:0;bottom:0;height:22px;background:linear-gradient(180deg,transparent,var(--sunken))}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.chip{font-size:10.5px;color:var(--ink-2);border:1px solid var(--line);background:var(--sunken);border-radius:99px;padding:4px 8px}
+.gen{width:100%;margin-top:10px;padding:9px;border-radius:var(--r);border:1px solid #8b6bff;color:#fff;font-weight:650;font-size:var(--fs);
+  background:linear-gradient(180deg,var(--accent),#6a4ae0);text-align:center}
+.gen.dis{opacity:.4;background:var(--panel-2);border-color:var(--line);color:var(--ink-3)}
+.gen.danger{background:linear-gradient(180deg,#e05570,#c33a56);border-color:#ff7d96}
+.hint{font-size:11px;color:var(--ink-3);margin-top:7px;line-height:1.5}
+.hint.err{color:#ffb3c2}
+.callout{border:1px solid #5a4212;background:#241c06;border-radius:var(--r);padding:9px;font-size:11px;line-height:1.55;color:#ffe0a3}
+.callout b{display:block;color:var(--warn);margin-bottom:3px}
+.callout .a{display:inline-block;margin-top:7px;color:var(--warn);border:1px solid #5a4212;border-radius:var(--r-sm);padding:4px 8px;font-weight:600}
+.insp-empty{margin:auto;text-align:center;color:var(--ink-3);font-size:11.5px;line-height:1.7;padding:0 8px}
+.insp-empty .ic{font-size:22px;opacity:.35;margin-bottom:8px}
+.insp-empty b{display:block;color:var(--ink-2);font-size:12px;margin-bottom:4px}
+.pbar{height:4px;border-radius:3px;background:var(--sunken);border:1px solid var(--line);position:relative;overflow:hidden;margin-top:8px}
+.pbar i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#5b40d6,var(--accent-2));border-radius:3px}
+.kv{display:flex;justify-content:space-between;font-size:11px;color:var(--ink-3);padding:4px 0}
+.kv b{font:600 10.5px/1 var(--mono);color:var(--ink-2)}
+.btn-row{display:flex;gap:6px;margin-top:9px}
+.btn-row .b{flex:1;text-align:center;font-size:11.5px;font-weight:600;border:1px solid var(--line);background:var(--sunken);border-radius:var(--r-sm);padding:7px}
+.btn-row .b.pri{border-color:#8b6bff;background:linear-gradient(180deg,var(--accent),#6a4ae0);color:#fff}
+
+/* ---------- timeline ---------- */
+.tl{border-top:1px solid var(--line);background:#0d0f18;position:relative}
+.tlbar{height:var(--h-toolbar);display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line)}
+.tool{width:26px;height:22px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--panel-2);display:grid;place-items:center;font-size:11px;color:var(--ink-2)}
+.tool.on{background:var(--accent-dim);border-color:var(--accent-line);color:#cbbcff}
+.tool.wide{width:auto;padding:0 9px;font-weight:600;font-size:11px}
+.tool.dis{opacity:.4}
+.zoom{margin-left:auto;display:flex;align-items:center;gap:7px;color:var(--ink-3);font:600 10px/1 var(--mono)}
+.zbar{width:78px;height:3px;background:#191c2a;border-radius:2px;position:relative}
+.zbar i{position:absolute;left:0;top:0;bottom:0;background:var(--ink-3);border-radius:2px}
+.ruler{height:var(--h-ruler);position:relative;border-bottom:1px solid var(--line);background:#0a0c14;overflow:hidden}
+.ruler span{position:absolute;top:5px;font:600 9px/1 var(--mono);color:var(--ink-3)}
+.ruler i{position:absolute;top:0;bottom:0;width:1px;background:var(--line-soft)}
+.track{position:relative;height:92px;padding:10px 0 0}
+.clips{position:relative;height:62px;margin:0 12px}
+.clip{position:absolute;top:0;bottom:0;border-radius:var(--r);overflow:hidden;border:1px solid rgba(255,255,255,.1)}
+.clip .fill{position:absolute;inset:0;opacity:.92}
+.clip .strip{position:absolute;inset:0;display:flex}
+.clip .strip div{flex:1;border-right:1px solid rgba(0,0,0,.25)}
+.clip .name{position:absolute;left:7px;top:6px;right:36px;font:600 10px/1 var(--font);color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.7);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.clip .dur{position:absolute;right:7px;bottom:6px;font:600 9px/1 var(--mono);color:rgba(255,255,255,.85);text-shadow:0 1px 3px rgba(0,0,0,.7)}
+.clip.sel{border-color:var(--accent-2);box-shadow:0 0 0 1px var(--accent-2),0 6px 22px rgba(124,92,255,.35)}
+.clip.ai{border-color:#8b6bff}
+.clip .aitag{position:absolute;left:7px;bottom:6px;font:700 8.5px/1 var(--mono);letter-spacing:.08em;background:rgba(124,92,255,.92);
+  border:1px solid rgba(255,255,255,.25);color:#fff;padding:3px 5px;border-radius:4px}
+.clip .grip{position:absolute;top:0;bottom:0;width:7px;background:rgba(0,0,0,.35);display:grid;place-items:center}
+.clip .grip.l{left:0}.clip .grip.r{right:0}
+.clip .grip b{width:2px;height:16px;background:rgba(255,255,255,.6);border-radius:2px;display:block}
+.clip.gone{border-color:#5a4212;background:repeating-linear-gradient(135deg,#16151c 0 9px,#1f1c26 9px 18px)}
+.clip .gonetag{position:absolute;inset:0;display:grid;place-items:center;font:600 9.5px/1 var(--mono);color:var(--warn)}
+.kflane{position:absolute;left:0;right:0;bottom:0;height:20px;background:linear-gradient(180deg,rgba(6,7,12,.12),rgba(6,7,12,.85))}
+.kf{position:absolute;bottom:5px;width:10px;height:10px;background:#fff;border:1.5px solid var(--accent);transform:translateX(-50%) rotate(45deg);border-radius:2px}
+.kf.on{background:var(--accent-2);border-color:#fff}
+.kfcluster{position:absolute;bottom:4px;transform:translateX(-50%);font:700 8px/1 var(--mono);background:var(--accent);color:#fff;
+  border:1px solid #fff;border-radius:99px;padding:3px 5px}
+.seg{position:absolute;bottom:9px;height:2px;background:repeating-linear-gradient(90deg,var(--accent-2) 0 5px,transparent 5px 9px);border-radius:2px}
+.seg.solid{background:var(--accent-2)}
+.segpill{position:absolute;bottom:24px;transform:translateX(-50%);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:210px;
+  font:600 9px/1 var(--font);background:rgba(124,92,255,.9);color:#fff;padding:4px 7px;border-radius:99px;border:1px solid rgba(255,255,255,.25)}
+.kfhint{position:absolute;left:50%;bottom:4px;transform:translateX(-50%);font:600 9px/1 var(--mono);color:rgba(255,255,255,.55)}
+.genclip{position:absolute;top:0;bottom:0;border-radius:var(--r);border:1.5px dashed #6f5bd6;
+  background:repeating-linear-gradient(135deg,#1b1738 0 10px,#221c48 10px 20px);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;color:#cbbcff;font:600 10px/1 var(--font);padding:0 8px}
+.genclip.err{border-color:#a13a55;background:repeating-linear-gradient(135deg,#241019 0 10px,#2e1420 10px 20px);color:#ffb3c2}
+.genclip .mini{width:70%;height:3px;background:rgba(255,255,255,.14);border-radius:3px;position:relative;overflow:hidden}
+.genclip .mini i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#5b40d6,var(--accent-2));border-radius:3px}
+.genclip .sub{font:600 8.5px/1 var(--mono);opacity:.8}
+.ghost{position:absolute;top:0;bottom:0;border-radius:var(--r);border:1.5px dashed var(--accent);background:rgba(124,92,255,.13)}
+.playhead{position:absolute;top:0;bottom:0;width:2px;background:var(--playhead);z-index:6}
+.playhead::before{content:"";position:absolute;top:-1px;left:50%;transform:translateX(-50%);border-left:6px solid transparent;border-right:6px solid transparent;border-top:8px solid var(--playhead)}
+.dropzone{position:absolute;inset:10px 12px 8px;border:1.5px dashed var(--line);border-radius:var(--r-md);display:grid;place-items:center;
+  text-align:center;color:var(--ink-3);font-size:11.5px;line-height:1.6}
+.dropzone.hot{border-color:var(--accent);background:rgba(124,92,255,.1);color:#cbbcff}
+.dropzone b{display:block;color:var(--ink-2);font-size:12px;margin-bottom:3px}
+.dropzone.hot b{color:#dcd3ff}
+.insert{position:absolute;top:6px;bottom:6px;width:3px;background:var(--accent);border-radius:2px;box-shadow:0 0 12px rgba(124,92,255,.9)}
+.dragbadge{position:absolute;right:16px;top:-26px;font:700 9.5px/1 var(--mono);background:var(--accent);color:#fff;border-radius:99px;padding:5px 9px;border:1px solid #a78bfa}
+.scrollbar{position:absolute;left:12px;right:12px;bottom:3px;height:4px;background:#151827;border-radius:3px}
+.scrollbar i{position:absolute;top:0;bottom:0;background:#39405c;border-radius:3px}
+
+/* ---------- overlays ---------- */
+.scrim{position:absolute;inset:0;background:rgba(4,5,10,.72);display:grid;place-items:center;z-index:20}
+.modal{width:392px;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--shadow-pop);overflow:hidden}
+.modal .mh{padding:13px 15px;border-bottom:1px solid var(--line);font-size:var(--fs-md);font-weight:650;display:flex;align-items:center;gap:8px}
+.modal .mb{padding:15px;display:flex;flex-direction:column;gap:11px}
+.modal .mf{padding:12px 15px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end;background:var(--chrome)}
+.field label{display:block;font-size:11px;color:var(--ink-2);margin-bottom:5px;font-weight:550}
+.input{background:var(--sunken);border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;font:500 12px/1 var(--mono);color:var(--ink)}
+.input.ph{color:var(--ink-3)}
+.input.bad{border-color:#5c2036}
+.stagelist{display:flex;flex-direction:column;gap:8px}
+.stagerow{display:flex;align-items:center;gap:9px;font-size:11.5px;color:var(--ink-2)}
+.stagerow .d{width:15px;height:15px;border-radius:50%;border:1.5px solid var(--line);display:grid;place-items:center;font-size:8px;color:var(--ink-3);flex:0 0 auto}
+.stagerow.done .d{background:var(--ok);border-color:var(--ok);color:#052e22}
+.stagerow.now .d{border-color:var(--accent-2);color:var(--accent-2)}
+.stagerow.now{color:var(--ink)}
+.errbox{border:1px solid #5c2036;background:var(--err-wash);border-radius:var(--r);padding:10px;font-size:11.5px;line-height:1.6;color:#ffc2cf}
+.errbox b{display:block;color:var(--err);margin-bottom:4px;font-weight:650}
+.errbox code{display:block;margin-top:7px;font:500 10px/1.5 var(--mono);background:#170a11;border:1px solid #40182a;border-radius:5px;padding:7px;color:#ffa8bb;white-space:pre-wrap}
+.toast{position:absolute;right:16px;bottom:16px;z-index:20;display:flex;align-items:center;gap:10px;background:var(--panel-2);
+  border:1px solid var(--line);border-radius:var(--r-md);padding:11px 13px;box-shadow:var(--shadow-pop);max-width:330px}
+.toast .ic{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;font-size:12px;flex:0 0 auto}
+.toast.ok .ic{background:#08211a;border:1px solid #14503c;color:var(--ok)}
+.toast .tx{font-size:11.5px;line-height:1.5;min-width:0}
+.toast .tx b{display:block;font-size:12px;font-weight:650;margin-bottom:2px}
+.toast .tx span{color:var(--ink-3);font:500 10px/1.4 var(--mono);display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.toast .a{margin-left:auto;font-size:11px;font-weight:600;color:var(--accent-2);border:1px solid var(--accent-line);border-radius:var(--r-sm);padding:5px 8px;flex:0 0 auto}
+
+/* gradients standing in for real media */
+.g1{background:linear-gradient(135deg,#f6c17c,#e2688f 55%,#7b4bd6)}
+.g2{background:linear-gradient(135deg,#7ee0d5,#3d8bd8 60%,#26307a)}
+.g3{background:linear-gradient(160deg,#2a3550,#5c7fb8 45%,#c9dbf2)}
+.g4{background:linear-gradient(135deg,#ffd6a5,#ff8fa3 50%,#b06ab3)}
+.g5{background:linear-gradient(200deg,#0f2027,#2c5364 60%,#7ea8c4)}
+.g6{background:linear-gradient(135deg,#3a1c71,#d76d77 55%,#ffaf7b)}
+
+/* ---------- cut chips (new for AI transitions) ---------- */
+.cutchip{position:absolute;top:50%;transform:translate(-50%,-50%);z-index:4;width:24px;height:24px;border-radius:99px;
+  background:var(--accent-wash);border:1px solid var(--accent-line);color:var(--accent-2);display:grid;place-items:center;
+  font-size:12px;box-shadow:0 2px 10px rgba(0,0,0,.55)}
+.cutchip.sel{background:var(--accent-dim);border-color:var(--accent-2);color:#dcd3ff;
+  box-shadow:0 0 0 1.5px var(--accent-2),0 0 16px rgba(124,92,255,.55)}
+.cutchip.run{width:auto;height:22px;padding:0 8px;border-radius:99px;display:flex;gap:5px;align-items:center;
+  border:1.5px dashed #6f5bd6;background:#1b1738;color:#cbbcff;font:600 9px/1 var(--mono);white-space:nowrap}
+.cutchip.run i{width:26px;height:3px;border-radius:3px;background:rgba(255,255,255,.14);position:relative;overflow:hidden;display:block}
+.cutchip.run i b{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#5b40d6,var(--accent-2));border-radius:3px;display:block}
+.cutchip.slow{border-color:#8a6a1c;color:#ffe0a3}
+.cutchip.fail{width:auto;height:22px;padding:0 8px;display:flex;gap:5px;align-items:center;border:1.5px dashed #a13a55;
+  background:#241019;color:#ffb3c2;font:600 9px/1 var(--mono);white-space:nowrap}
+.staletag{position:absolute;right:7px;top:5px;font:700 8px/1 var(--mono);letter-spacing:.06em;background:rgba(36,28,6,.92);
+  border:1px solid #5a4212;color:var(--warn);padding:3px 5px;border-radius:4px;white-space:nowrap}
+
+</style>
+</head>
+<body>
+
+<div class="page">
+<div class="kicker">SOL-GTG802 · hi-fi walkthrough · AI transitions · concept 1 “Midnight Studio”</div>
+<h1>AI transitions between photos — the complete flow</h1>
+<p class="lede">Drop photos on the timeline and every cut between two of them grows a ✦ chip: one tap selects it, one button asks Higgsfield to animate from the left photo’s last frame to the right photo’s first, and the finished clip lands in the cut — editable, regenerable, exportable. Drawn with the same Midnight Studio tokens (<code style="font-family:var(--mono);font-size:11px;color:var(--accent-2)">src/styles/tokens.css</code>) as the shipping app and the existing walkthrough. Each frame names its trigger and its way out, start to finish without gaps.</p>
+<div class="toc"><a href="#f1">1. Dropping photos on the empty timeline</a><a href="#f2">2. Every cut between two photos grows a ✦ chip</a><a href="#f3">3. A cut is selected — ready with zero typing</a><a href="#f4">4. No API key yet</a><a href="#f5">5. Queued</a><a href="#f6">6. Rendering — the rest of the app stays usable</a><a href="#f7">7. Taking longer than usual</a><a href="#f8">8. Failed — rate limited</a><a href="#f9">9. Succeeded — the transition is a clip on the timeline</a><a href="#f10">10. The transition is a normal, editable clip</a><a href="#f11">11. Sources changed — marked stale, never re-billed silently</a><a href="#f12">12. A source photo was deleted — regenerate needs both sides</a><a href="#f13">13. Animate all — every remaining cut at once</a><a href="#f14">14. Filling in — jobs are submitted one at a time</a><a href="#f15">15. The timeline moved mid-render</a><a href="#f16">16. Four photos, three transitions — one continuous film</a></div>
+<div class="act"><span>Act 1</span><h2>Photos in, sparkles appear</h2></div>
+<figure id="f1"><div class="stepno"><b>1</b><span class="t">Dropping photos on the empty timeline</span><span class="s run">DRAG-OVER</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="bin-empty"><b>No media yet</b>Drop photos and videos anywhere,<br>or click Import.</div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="stage-empty"><div class="ic">🎞</div><b>Nothing on the timeline</b>Drop a photo or a video below to start.<br>Photos can be animated with keyframes.</div></div><div class="transport"><div class="tc">00:00.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:00.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="insp-empty"><div class="ic">◇</div><b>Nothing selected</b>Release to add 3 photos<br>to the timeline.</div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool dis">✂</div><div class="tool dis">◆</div><div class="tool dis">🗑</div><div class="tool wide  dis">◆ Add keyframe</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="dropzone hot"><div><b>Release to add 3 files</b>sunset.jpg · cliff.png · market.jpg</div></div><div class="insert" style="left:4%"></div><div class="dragbadge">3 FILES</div></div></div></div></div>
+<figcaption><b>Trigger:</b> the user drags photos from the OS onto the empty editor — the only action the ticket asks of them. The drop zone lights up and counts the payload. <b>Next:</b> release, and the photos land side by side.</figcaption></figure>
+<figure id="f2"><div class="stepno"><b>2</b><span class="t">Every cut between two photos grows a ✦ chip</span><span class="s ok">NEW</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g1" style="transform:scale(1.0) translate(0,0)"></div></div></div><div class="transport"><div class="tc">00:00.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:15.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="card"><div class="ch">▣ sunset.jpg · Photo</div><div class="cb"><div class="kv"><span>Duration</span><b>5.00s</b></div><div class="kv"><span>Source</span><b>4032 × 3024</b></div><div class="gen">◆ Add keyframe</div><div class="hint">The ✦ between two photos generates a Higgsfield transition for that cut — or press ✦ Animate all to fill every cut at once.</div></div></div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide ">✦ Animate all · 2</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip sel" style="left:0%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:32%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip" style="left:64%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="cutchip" style="left:31.5%">✦</div><div class="cutchip" style="left:63.5%">✦</div><div class="playhead" style="left:2%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> the drop finished. Three photos sit on the single track and each photo→photo cut carries a small ✦ chip; the toolbar offers <em>✦ Animate all · 2</em> for the whole reel. Nothing generates — and nothing is charged — until the user asks. <b>Next:</b> tap a ✦ chip, or Animate all.</figcaption></figure>
+<div class="act"><span>Act 2</span><h2>One transition, start to finish</h2></div>
+<figure id="f3"><div class="stepno"><b>3</b><span class="t">A cut is selected — ready with zero typing</span><span class="s ok">READY</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g1" style="transform:scale(1.0) translate(0,0)"></div><div class="hud"><span class="dia"></span> CUT · sunset.jpg → cliff.png</div></div></div><div class="transport"><div class="tc">00:05.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:15.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="card ai"><div class="ch">✦ Transition · sunset.jpg → cliff.png</div><div class="cb"><div class="hint" style="margin:0 0 8px">Higgsfield animates from the last frame of <b style="color:var(--ink-2)">sunset.jpg</b> to the first frame of <b style="color:var(--ink-2)">cliff.png</b>.</div><div class="ta ph">Smooth cinematic motion transition (default) — or describe your own…</div><div class="chips"><span class="chip">+ crossfade morph</span><span class="chip">+ whip pan</span><span class="chip">+ zoom through</span><span class="chip">+ dreamy dissolve</span></div><div class="gen">✦ Generate transition</div><div class="hint">No typing needed — leaving this empty uses the default prompt.</div></div></div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide ">✦ Animate all · 2</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:32%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip" style="left:64%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="cutchip sel" style="left:31.5%">✦</div><div class="cutchip" style="left:63.5%">✦</div><div class="playhead" style="left:31.5%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> the ✦ chip between sunset.jpg and cliff.png is tapped. Tapping only <em>selects</em> the cut — a stray click never spends credits. The card names both photos, the prompt is optional (the grey text is the default that will be used), and one big button does the rest. <b>Next:</b> press Generate transition — or type a prompt first.</figcaption></figure>
+<figure id="f4"><div class="stepno"><b>4</b><span class="t">No API key yet</span><span class="s warn">BLOCKED</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g1" style="transform:scale(1.0) translate(0,0)"></div><div class="hud"><span class="dia"></span> CUT · sunset.jpg → cliff.png</div></div></div><div class="transport"><div class="tc">00:05.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:15.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="card ai"><div class="ch">✦ Transition · sunset.jpg → cliff.png</div><div class="cb"><div class="hint" style="margin:0 0 8px">Higgsfield animates from the last frame of <b style="color:var(--ink-2)">sunset.jpg</b> to the first frame of <b style="color:var(--ink-2)">cliff.png</b>.</div><div class="ta ph">Smooth cinematic motion transition (default) — or describe your own…</div><div class="chips"><span class="chip">+ crossfade morph</span><span class="chip">+ whip pan</span><span class="chip">+ zoom through</span><span class="chip">+ dreamy dissolve</span></div><div class="callout" style="margin-top:10px"><b>Connect Higgsfield to generate</b>No API key is stored yet. Nothing has been sent.<span class="a">Open settings →</span></div></div></div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide ">✦ Animate all · 2</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:32%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip" style="left:64%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="cutchip sel" style="left:31.5%">✦</div><div class="cutchip" style="left:63.5%">✦</div><div class="playhead" style="left:31.5%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> Generate was pressed with no Higgsfield credential stored. The request is never sent; the card explains and points at settings (the same ✦ Connect Higgsfield dialog the AI segment flow uses). <b>Next:</b> paste the key, come back, and generate.</figcaption></figure>
+<figure id="f5"><div class="stepno"><b>5</b><span class="t">Queued</span><span class="s run">QUEUED</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><span class="chip-run">◐ 1 rendering</span><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g1" style="transform:scale(1.0) translate(0,0)"></div><div class="hud"><span class="dia"></span> CUT · sunset.jpg → cliff.png</div></div></div><div class="transport"><div class="tc">00:05.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:15.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="card ai"><div class="ch">✦ Transition · sunset.jpg → cliff.png</div><div class="cb"><div class="ta ph" style="opacity:.65">Smooth cinematic motion transition (default)</div><div class="kv" style="margin-top:9px"><span>Status</span><b>QUEUED</b></div><div class="kv"><span>Job</span><b>tr_4b8e2…</b></div><div class="kv"><span>Progress</span><b>4%</b></div><div class="pbar"><i style="width:4%"></i></div><div class="btn-row"><span class="b">Cancel</span></div><div class="hint">Runs in the background — keep editing.</div></div></div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide ">✦ Animate all · 1</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:32%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip" style="left:64%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="cutchip run" style="left:31.5%">◐ QUEUED</div><div class="cutchip" style="left:63.5%">✦</div><div class="playhead" style="left:31.5%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> Higgsfield accepted the job. The chip itself becomes the progress surface — the cut has no width on the track, so nothing fake occupies timeline space — and the title bar counts the render. <b>Next:</b> it starts rendering, or Cancel gets the plain cut back.</figcaption></figure>
+<figure id="f6"><div class="stepno"><b>6</b><span class="t">Rendering — the rest of the app stays usable</span><span class="s run">RUNNING</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><span class="chip-run">◐ 1 rendering</span><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g4" style="transform:scale(1.0) translate(0,0)"></div><div class="hud"><span class="dia"></span> PREVIEWING market.jpg</div></div></div><div class="transport"><div class="tc">00:12.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:15.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="card"><div class="ch">▣ market.jpg · Photo</div><div class="cb"><div class="kv"><span>Duration</span><b>5.00s</b></div><div class="kv"><span>Keyframes</span><b>none</b></div><div class="gen">◆ Add keyframe</div><div class="hint">Generation runs in the background — select anything, keep editing, even start another transition.</div></div></div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide ">✦ Animate all · 1</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:32%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip sel" style="left:64%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="cutchip run" style="left:31.5%">◐ 46%<i><b style="width:46%"></b></i></div><div class="cutchip" style="left:63.5%">✦</div><div class="playhead" style="left:80%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> polling reports progress; the chip shows a live 46%. Meanwhile the user has selected market.jpg and the inspector serves it normally — generation never blocks the editor. <b>Next:</b> it completes; tapping the chip re-opens its progress card with Cancel.</figcaption></figure>
+<figure id="f7"><div class="stepno"><b>7</b><span class="t">Taking longer than usual</span><span class="s warn">SLOW</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><span class="chip-run">◐ 1 rendering</span><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g1" style="transform:scale(1.0) translate(0,0)"></div><div class="hud"><span class="dia"></span> CUT · sunset.jpg → cliff.png</div></div></div><div class="transport"><div class="tc">00:05.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:15.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="card ai"><div class="ch">✦ Transition · sunset.jpg → cliff.png</div><div class="cb"><div class="ta ph" style="opacity:.65">Smooth cinematic motion transition (default)</div><div class="kv" style="margin-top:9px"><span>Status</span><b>RUNNING</b></div><div class="kv"><span>Job</span><b>tr_4b8e2…</b></div><div class="kv"><span>Progress</span><b>62%</b></div><div class="pbar"><i style="width:62%"></i></div><div class="kv"><span>Elapsed</span><b>01:47</b></div><div class="callout" style="margin-top:9px"><b>Taking longer than usual</b>Jobs normally finish in about 45–90 s. Your edits are safe — the transition lands on the timeline when it is done.</div><div class="btn-row"><span class="b">Cancel</span></div><div class="hint">Runs in the background — keep editing.</div></div></div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide ">✦ Animate all · 1</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:32%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip" style="left:64%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="cutchip run slow" style="left:31.5%">◐ 62% · 01:47<i><b style="width:62%"></b></i></div><div class="cutchip" style="left:63.5%">✦</div><div class="playhead" style="left:31.5%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> the job passes the 90-second soft threshold. The chip picks up an amber tint and the card adds a calm advisory — no modal, no spinner lock, Cancel intact. <b>Next:</b> it finishes, or you cancel it.</figcaption></figure>
+<figure id="f8"><div class="stepno"><b>8</b><span class="t">Failed — rate limited</span><span class="s err">ERROR</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g1" style="transform:scale(1.0) translate(0,0)"></div><div class="hud"><span class="dia"></span> CUT · sunset.jpg → cliff.png</div></div></div><div class="transport"><div class="tc">00:05.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:15.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="card err"><div class="ch">✕ Transition failed</div><div class="cb"><div class="errbox"><b>Rate limited (HTTP 429)</b>Higgsfield is throttling this key. The prompt has been kept.<code>retry-after: 30s</code></div><div class="btn-row"><span class="b pri">Retry</span><span class="b">Dismiss</span></div><div class="hint">The cut simply stays a hard cut until a transition lands — dismissing loses nothing.</div></div></div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide ">✦ Animate all · 1</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:32%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip" style="left:64%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="cutchip fail" style="left:31.5%">✕ FAILED</div><div class="cutchip" style="left:63.5%">✦</div><div class="playhead" style="left:31.5%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> the API returned 429 (the same card covers 401/403 and network failures with the message swapped). The chip turns rose in place; retry is one click and reuses the kept prompt. <b>Next:</b> retry, or dismiss and the reel is exactly as it was.</figcaption></figure>
+<figure id="f9"><div class="stepno"><b>9</b><span class="t">Succeeded — the transition is a clip on the timeline</span><span class="s ok">SUCCESS</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g1" style="transform:scale(1.05) translate(-1%,1%)"></div><div class="hud"><span class="dia"></span> AI TRANSITION · 00:07.20</div><div class="badge-ai">✦ AI GENERATED</div></div></div><div class="transport"><div class="tc">00:07.20</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:20.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="card ai"><div class="ch">✦ AI transition · sunset.jpg → cliff.png</div><div class="cb"><div class="kv"><span>Duration</span><b>5.00s</b></div><div class="kv"><span>Model</span><b>dop · standard</b></div><div class="kv"><span>From</span><b>sunset.jpg</b></div><div class="kv"><span>To</span><b>cliff.png</b></div><div class="ta" style="margin-top:9px;opacity:.8">smooth cinematic motion transition</div><div class="btn-row"><span class="b pri">↻ Regenerate</span><span class="b">Delete</span></div><div class="hint">A transition is a normal clip — trim its edges, drag it, or delete it to restore the hard cut.</div></div></div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide ">✦ Animate all · 1</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip sel ai" style="left:24%;width:23.5%"><div class="strip"><div class="g1"></div><div class="g3"></div><div class="g1"></div><div class="g3"></div><div class="g1"></div><div class="g3"></div></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">ai-transition-01.mp4</div><div class="dur">5.0s</div><div class="aitag">✦ AI</div></div><div class="clip" style="left:48%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip" style="left:72%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="cutchip" style="left:71.75%">✦</div><div class="playhead" style="left:36%"></div></div></div></div><div class="toast ok"><div class="ic">✓</div><div class="tx"><b>Transition ready</b><span>sunset.jpg → cliff.png · 5.0s</span></div></div></div>
+<figcaption><b>Trigger:</b> the render finished and the MP4 was downloaded. It is inserted <em>at the cut</em> as a real clip — the reel grows from 15s to 20s, the ✦ AI badge marks it, and its old chip is gone because that boundary is no longer photo→photo. The cliff→market cut still offers its ✦. <b>Next:</b> play it, edit it, or fill the next cut.</figcaption></figure>
+<div class="act"><span>Act 3</span><h2>Editable afterward</h2></div>
+<figure id="f10"><div class="stepno"><b>10</b><span class="t">The transition is a normal, editable clip</span><span class="s ok">EDITABLE</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g3" style="transform:scale(1.02) translate(0,0)"></div><div class="hud"><span class="dia"></span> AI TRANSITION · 00:06.10</div><div class="badge-ai">✦ AI GENERATED</div></div></div><div class="transport"><div class="tc">00:06.10</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:20.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="card ai"><div class="ch">✦ AI transition · sunset.jpg → cliff.png</div><div class="cb"><div class="kv"><span>Duration</span><b>5.00s</b></div><div class="kv"><span>Model</span><b>dop · standard</b></div><div class="kv"><span>From</span><b>sunset.jpg</b></div><div class="kv"><span>To</span><b>cliff.png</b></div><div class="ta" style="margin-top:9px;opacity:.8">smooth cinematic motion transition</div><div class="btn-row"><span class="b pri">↻ Regenerate</span><span class="b">Delete</span></div><div class="hint">A transition is a normal clip — trim its edges, drag it, or delete it to restore the hard cut.</div></div></div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide ">✦ Animate all · 1</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip sel ai" style="left:24%;width:23.5%"><div class="strip"><div class="g1"></div><div class="g3"></div><div class="g1"></div><div class="g3"></div><div class="g1"></div><div class="g3"></div></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">ai-transition-01.mp4</div><div class="dur">5.0s</div><div class="aitag">✦ AI</div></div><div class="clip" style="left:48%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip" style="left:72%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="cutchip" style="left:71.75%">✦</div><div class="playhead" style="left:30%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> the generated clip is selected. The card shows what made it — both source photos, the model, the prompt (editable) — and offers Regenerate; the grips on the clip trim it like any video, and it can be dragged or deleted. <b>Next:</b> tweak the prompt and Regenerate, or leave it be.</figcaption></figure>
+<figure id="f11"><div class="stepno"><b>11</b><span class="t">Sources changed — marked stale, never re-billed silently</span><span class="s warn">STALE</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g3" style="transform:scale(1.3) translate(-4%,2%)"></div><div class="framebox"></div><div class="hud"><span class="dia"></span> KEYFRAME 1 · 00:10.00</div></div></div><div class="transport"><div class="tc">00:10.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:20.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="card ai"><div class="ch">✦ AI transition · sunset.jpg → cliff.png</div><div class="cb"><div class="kv"><span>Duration</span><b>5.00s</b></div><div class="kv"><span>Model</span><b>dop · standard</b></div><div class="kv"><span>From</span><b>sunset.jpg</b></div><div class="kv"><span>To</span><b>cliff.png</b></div><div class="ta" style="margin-top:9px;opacity:.8">smooth cinematic motion transition</div><div class="callout" style="margin-top:9px"><b>Sources changed</b>cliff.png was reframed after this transition was generated, so its first frame no longer matches. Nothing is charged until you tap Regenerate.</div><div class="btn-row"><span class="b pri">↻ Regenerate</span><span class="b">Delete</span></div><div class="hint">A transition is a normal clip — trim its edges, drag it, or delete it to restore the hard cut.</div></div></div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide ">✦ Animate all · 1</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip sel ai" style="left:24%;width:23.5%"><div class="strip"><div class="g1"></div><div class="g3"></div><div class="g1"></div><div class="g3"></div><div class="g1"></div><div class="g3"></div></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">ai-transition-01.mp4</div><div class="dur">5.0s</div><div class="aitag">✦ AI</div><div class="staletag">⟳ SOURCES CHANGED</div></div><div class="clip" style="left:48%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div><div class="kflane"><div class="kf" style="left:30%"></div></div></div><div class="clip" style="left:72%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="cutchip" style="left:71.75%">✦</div><div class="playhead" style="left:52%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> the user zoomed cliff.png in with a keyframe — the transition's end frame no longer matches its neighbor (a reorder, replacement or trim marks it the same way). The clip keeps playing but wears an amber tag, and the card says exactly what changed. Nothing regenerates — or costs — on its own. <b>Next:</b> tap Regenerate to re-render against the new framing, or ignore it.</figcaption></figure>
+<figure id="f12"><div class="stepno"><b>12</b><span class="t">A source photo was deleted — regenerate needs both sides</span><span class="s warn">ORPHANED</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g1" style="transform:scale(1.05) translate(-1%,1%)"></div><div class="hud"><span class="dia"></span> AI TRANSITION · 00:06.10</div><div class="badge-ai">✦ AI GENERATED</div></div></div><div class="transport"><div class="tc">00:06.10</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:15.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="card ai"><div class="ch">✦ AI transition · sunset.jpg → cliff.png</div><div class="cb"><div class="kv"><span>Duration</span><b>5.00s</b></div><div class="kv"><span>Model</span><b>dop · standard</b></div><div class="kv"><span>From</span><b>sunset.jpg</b></div><div class="kv"><span>To</span><b>cliff.png</b></div><div class="ta" style="margin-top:9px;opacity:.8">smooth cinematic motion transition</div><div class="callout" style="margin-top:9px"><b>Source photo missing</b>cliff.png was removed from the bin. The transition still plays and exports, but Regenerate needs a photo on each side of it.</div><div class="btn-row"><span class="b" style="opacity:.4">↻ Regenerate</span><span class="b">Delete</span></div><div class="hint">A transition is a normal clip — trim its edges, drag it, or delete it to restore the hard cut.</div></div></div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip sel ai" style="left:32%;width:31%"><div class="strip"><div class="g1"></div><div class="g3"></div><div class="g1"></div><div class="g3"></div><div class="g1"></div><div class="g3"></div></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">ai-transition-01.mp4</div><div class="dur">5.0s</div><div class="aitag">✦ AI</div><div class="staletag">⟳ SOURCE MISSING</div></div><div class="clip" style="left:64%;width:31%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="playhead" style="left:40%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> cliff.png was removed, taking its clip with it. The paid transition is <em>kept</em> — it renders and exports fine — but it is flagged and Regenerate is disabled with the reason (its neighbors are no longer two photos). <b>Next:</b> delete it to get a hard cut, or leave it in the film.</figcaption></figure>
+<div class="act"><span>Act 4</span><h2>The whole film in one tap</h2></div>
+<figure id="f13"><div class="stepno"><b>13</b><span class="t">Animate all — every remaining cut at once</span><span class="s ok">READY</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div><div class="thumb"><div class="t g6"></div><div class="kind">▣</div><div class="lbl">neon.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g6" style="transform:scale(1.0) translate(0,0)"></div></div></div><div class="transport"><div class="tc">00:00.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:20.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="insp-empty"><div class="ic">✦</div><b>3 cuts to fill</b>Animate all generates a transition for<br>every photo→photo cut that doesn’t<br>have one yet — one confirmation,<br>no other configuration.</div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide on">✦ Animate all · 3</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:24%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip" style="left:48%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:72%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">neon.jpg</div><div class="dur">5.0s</div></div><div class="cutchip" style="left:23.75%">✦</div><div class="cutchip" style="left:47.75%">✦</div><div class="cutchip" style="left:71.75%">✦</div><div class="playhead" style="left:2%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> a fresh reel — four photos, three cuts, and the toolbar's <em>✦ Animate all · 3</em> is lit. This is the whole “5-year-old” flow: drop photos, press one button. <b>Next:</b> press it and watch the cuts fill in.</figcaption></figure>
+<figure id="f14"><div class="stepno"><b>14</b><span class="t">Filling in — jobs are submitted one at a time</span><span class="s run">RUNNING</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><span class="chip-run">◐ 2 rendering</span><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div><div class="thumb"><div class="t g6"></div><div class="kind">▣</div><div class="lbl">neon.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g6" style="transform:scale(1.0) translate(0,0)"></div></div></div><div class="transport"><div class="tc">00:00.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:20.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="insp-empty"><div class="ic">◐</div><b>2 rendering</b>Each cut renders independently.<br>Submissions go out one at a time so<br>a rate limit never kills the batch;<br>everything then renders in parallel.</div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide on">✦ Animate all · 1</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:24%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip" style="left:48%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:72%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">neon.jpg</div><div class="dur">5.0s</div></div><div class="cutchip run" style="left:23.75%">◐ 41%<i><b style="width:41%"></b></i></div><div class="cutchip run" style="left:47.75%">◐ QUEUED</div><div class="cutchip" style="left:71.75%">✦</div><div class="playhead" style="left:2%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> Animate all was pressed. The first cut is rendering at 41%, the second is queued, the third is next in line — submissions are deliberately serialized so a burst can’t trip Higgsfield’s rate limit and strand half the batch. The whole app stays editable throughout. <b>Next:</b> chips resolve into clips one by one.</figcaption></figure>
+<figure id="f15"><div class="stepno"><b>15</b><span class="t">The timeline moved mid-render</span><span class="s warn">EDGE CASE</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div><div class="thumb"><div class="t g6"></div><div class="kind">▣</div><div class="lbl">neon.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g4" style="transform:scale(1.0) translate(0,0)"></div><div class="hud"><span class="dia"></span> PREVIEWING market.jpg</div></div></div><div class="transport"><div class="tc">00:06.00</div><div class="tbtn">⏮</div><div class="tbtn play">▶</div><div class="tbtn">⏭</div><div class="tc dim">00:20.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="insp-empty"><div class="ic">✦</div><b>Nothing lost</b>The finished render wasn’t inserted<br>because its two photos are no longer<br>next to each other. Tap the ✦ on<br>their new cut to regenerate.</div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="tool wide ">✦ Animate all · 2</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip sel" style="left:24%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="clip" style="left:48%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip" style="left:72%;width:23.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">neon.jpg</div><div class="dur">5.0s</div></div><div class="cutchip" style="left:23.75%">✦</div><div class="cutchip" style="left:47.75%">✦</div><div class="cutchip run" style="left:71.75%">◐ 72%<i><b style="width:72%"></b></i></div><div class="playhead" style="left:30%"></div></div></div></div><div class="toast ok"><div class="ic" style="background:#241c06;border:1px solid #5a4212;color:var(--warn)">⚠</div><div class="tx"><b>Transition finished, but its photos moved</b><span>sunset.jpg and cliff.png are no longer neighbors — nothing was inserted</span></div></div></div>
+<figcaption><b>Trigger:</b> while sunset→cliff rendered, the user dragged market.jpg between them. The finished video is never inserted somewhere wrong: a toast explains, the reordered cuts show fresh ✦ chips, and the still-valid job on the right keeps rendering. <b>Next:</b> tap a ✦ to generate for the new order.</figcaption></figure>
+<figure id="f16"><div class="stepno"><b>16</b><span class="t">Four photos, three transitions — one continuous film</span><span class="s ok">SUCCESS</span></div>
+<div class="app">
+  <div class="titlebar"><div class="dots"><i></i><i></i><i></i></div>
+    <div class="doc">Untitled Project — <b>photo-reel.solproj</b></div><div class="tb-right"><button class="btn ghost">Import</button><button class="btn primary">Export MP4</button></div></div>
+  <div class="body" style="height:378px">
+    <div class="col"><div class="hd">Media <span class="r"></span></div><div class="bin"><div class="thumb"><div class="t g1"></div><div class="kind">▣</div><div class="lbl">sunset.jpg</div></div><div class="thumb"><div class="t g3"></div><div class="kind">▣</div><div class="lbl">cliff.png</div></div><div class="thumb"><div class="t g4"></div><div class="kind">▣</div><div class="lbl">market.jpg</div></div><div class="thumb"><div class="t g6"></div><div class="kind">▣</div><div class="lbl">neon.jpg</div></div></div></div>
+    <div class="col"><div class="hd">Preview <span class="r">1920×1080 · 30 fps</span></div><div class="stage"><div class="canvas"><div class="img g3" style="transform:scale(1.04) translate(-1%,0)"></div><div class="hud"><span class="dia"></span> PLAYING · 00:17.40</div><div class="badge-ai">✦ AI GENERATED</div></div></div><div class="transport"><div class="tc">00:17.40</div><div class="tbtn">⏮</div><div class="tbtn play">❚❚</div><div class="tbtn">⏭</div><div class="tc dim">00:35.00</div></div></div>
+    <div class="col"><div class="hd">Inspector</div><div class="insp"><div class="insp-empty"><div class="ic">▶</div><b>Playing</b>4 photos + 3 generated transitions.<br>Export MP4 renders it exactly as<br>played — transitions are ordinary<br>clips to the exporter.</div></div></div>
+  </div><div class="tl"><div class="tlbar"><div class="tool on">⌖</div><div class="tool">✂</div><div class="tool">◆</div><div class="tool">🗑</div><div class="tool wide on">◆ Add keyframe</div><div class="zoom">ZOOM <div class="zbar"><i style="width:55%"></i></div> 100%</div></div><div class="ruler"><i style="left:2%"></i><span style="left:2.6%">00:00</span><i style="left:20%"></i><span style="left:20.6%">00:03</span><i style="left:38%"></i><span style="left:38.6%">00:06</span><i style="left:56%"></i><span style="left:56.6%">00:09</span><i style="left:74%"></i><span style="left:74.6%">00:12</span><i style="left:92%"></i><span style="left:92.6%">00:15</span></div><div class="track" style="height:92px"><div class="clips"><div class="clip" style="left:0%;width:12.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">sunset.jpg</div><div class="dur">5.0s</div></div><div class="clip ai" style="left:13%;width:12.5%"><div class="strip"><div class="g1"></div><div class="g3"></div><div class="g1"></div><div class="g3"></div><div class="g1"></div><div class="g3"></div></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">ai-transition-01.mp4</div><div class="dur">5.0s</div><div class="aitag">✦ AI</div></div><div class="clip" style="left:26%;width:12.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">cliff.png</div><div class="dur">5.0s</div></div><div class="clip ai" style="left:39%;width:12.5%"><div class="strip"><div class="g3"></div><div class="g4"></div><div class="g3"></div><div class="g4"></div><div class="g3"></div><div class="g4"></div></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">ai-transition-02.mp4</div><div class="dur">5.0s</div><div class="aitag">✦ AI</div></div><div class="clip" style="left:52%;width:12.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">market.jpg</div><div class="dur">5.0s</div></div><div class="clip ai" style="left:65%;width:12.5%"><div class="strip"><div class="g4"></div><div class="g6"></div><div class="g4"></div><div class="g6"></div><div class="g4"></div><div class="g6"></div></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">ai-transition-03.mp4</div><div class="dur">5.0s</div><div class="aitag">✦ AI</div></div><div class="clip" style="left:78%;width:12.5%"><div class="fill g1"></div><div class="grip l"><b></b></div><div class="grip r"><b></b></div><div class="name">neon.jpg</div><div class="dur">5.0s</div></div><div class="playhead" style="left:50%"></div></div></div></div></div>
+<figcaption><b>Trigger:</b> every cut has resolved. Playback sweeps photo → generated motion → photo without a hard cut in sight, and Export MP4 needs nothing new — a transition is just a video clip to the ffmpeg pipeline. <b>Next:</b> export, or keep sculpting: every transition stays editable forever.</figcaption></figure>
+</div>
+
+</body>
+</html>
