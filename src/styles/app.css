@@ -792,6 +792,9 @@ input {
   background: var(--panel-2);
   padding: 0;
   text-align: left;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
 }
 .clip img,
 .clip video {
@@ -841,6 +844,65 @@ input {
   padding: 3px 5px;
   border-radius: 4px;
 }
+/* The two grab bars on a clip's edges. Wide enough to hit, quiet until the clip is hovered. */
+.clip__handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  z-index: 2;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r);
+  background: transparent;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.clip__handle::before {
+  content: '';
+  position: absolute;
+  top: 22%;
+  bottom: 22%;
+  left: 3px;
+  width: 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.75);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.65);
+  opacity: 0;
+  transition: opacity 90ms ease-out;
+}
+.clip__handle--start {
+  left: 0;
+}
+.clip__handle--end {
+  right: 0;
+}
+.clip:hover .clip__handle::before,
+.clip--selected .clip__handle::before,
+.clip--resizing .clip__handle::before,
+.clip__handle:focus-visible::before {
+  opacity: 1;
+}
+.clip__handle:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: -2px;
+}
+
+/* Mid-drag: the clip rides with the cursor, and the insertion marker says where it lands. */
+.clip--reordering {
+  cursor: grabbing;
+  z-index: 8;
+  opacity: 0.85;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
+}
+.clip--resizing {
+  border-color: var(--accent-2);
+  z-index: 8;
+}
+.track--dragging {
+  cursor: grabbing;
+}
+
 .clip--offline {
   border-color: #5a4212;
   background: repeating-linear-gradient(135deg, #16151c 0 9px, #1f1c26 9px 18px);
@@ -860,6 +922,8 @@ input {
   right: 0;
   bottom: 0;
   height: 22px;
+  /* Above the edge handles: a keyframe sitting on 0 must stay clickable. */
+  z-index: 3;
   background: linear-gradient(180deg, rgba(6, 7, 12, 0.12), rgba(6, 7, 12, 0.85));
 }
 .kflane__hint {

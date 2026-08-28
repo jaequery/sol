@@ -3,26 +3,37 @@ import {
   addKeyframe,
   clipAt,
   cssTransform,
+  dropIndexFor,
   findSegment,
   formatDuration,
   formatTimecode,
   insertClips,
   insertIndexAt,
+  insertIndexAtTime,
   layout,
+  moveClip,
   moveKeyframe,
   photoClip,
   removeKeyframe,
   replaceSegment,
   resetIds,
+  resizeClip,
   segmentsOf,
   setPrompt,
+  startOfIndex,
   totalDurationMs,
   transformAt,
   truncateName,
   updateKeyframe,
   videoClip,
 } from './timeline';
-import { IDENTITY_TRANSFORM, MAX_SCALE, type Clip } from '../types/project';
+import {
+  IDENTITY_TRANSFORM,
+  MAX_PHOTO_DURATION_MS,
+  MAX_SCALE,
+  MIN_CLIP_DURATION_MS,
+  type Clip,
+} from '../types/project';
 
 beforeEach(resetIds);
 
@@ -275,5 +286,162 @@ describe('formatting', () => {
     expect(long).toHaveLength(20);
     expect(long).toContain('…');
     expect(long.endsWith('jpeg')).toBe(true);
+  });
+});
+
+describe('reordering a clip', () => {
+  const three = () => [
+    photoClip({ id: 'a', name: 'a.jpg' }, 1000),
+    photoClip({ id: 'b', name: 'b.jpg' }, 2000),
+    photoClip({ id: 'c', name: 'c.jpg' }, 3000),
+  ];
+
+  it('drops on the boundary nearest where the clip was let go', () => {
+    const clips = three();
+    const c = clips[2].id;
+    // Ignoring the dragged clip, the rest is a(0–1000) then b(1000–3000).
+    expect(dropIndexFor(clips, c, 0)).toBe(0);
+    expect(dropIndexFor(clips, c, 900)).toBe(1);
+    expect(dropIndexFor(clips, c, 2900)).toBe(2);
+  });
+
+  it('moves the clip to that index and leaves the others in order', () => {
+    const clips = three();
+    const moved = moveClip(clips, clips[2].id, 0);
+    expect(moved.map((x) => x.name)).toEqual(['c.jpg', 'a.jpg', 'b.jpg']);
+    // Only the order changed; the track is the same length.
+    expect(totalDurationMs(moved)).toBe(totalDurationMs(clips));
+  });
+
+  it('is a no-op when the clip is put back where it came from', () => {
+    const clips = three();
+    expect(moveClip(clips, clips[1].id, 1)).toBe(clips);
+    expect(moveClip(clips, 'not-a-clip', 0)).toBe(clips);
+  });
+
+  it('clamps a drag past either end onto the end', () => {
+    const clips = three();
+    expect(moveClip(clips, clips[0].id, 99).map((x) => x.name)).toEqual([
+      'b.jpg',
+      'c.jpg',
+      'a.jpg',
+    ]);
+    expect(moveClip(clips, clips[2].id, -5).map((x) => x.name)).toEqual([
+      'c.jpg',
+      'a.jpg',
+      'b.jpg',
+    ]);
+  });
+
+  it('agrees with the file-drop index, which is the same maths over a ratio', () => {
+    const clips = three();
+    expect(insertIndexAt(clips, 0.5)).toBe(insertIndexAtTime(clips, 3000));
+    expect(startOfIndex(clips, 2)).toBe(3000);
+    expect(startOfIndex(clips, 99)).toBe(6000);
+  });
+});
+
+describe('resizing a clip', () => {
+  it('changes a photo\u2019s duration from the tail', () => {
+    const clip = resizeClip(photo(6000), 'end', 2500);
+    expect(clip.durationMs).toBe(8500);
+    expect(resizeClip(clip, 'end', -3000).durationMs).toBe(5500);
+  });
+
+  it('trims a photo from the head, which shortens it without moving the tail', () => {
+    const before = photo(6000);
+    const after = resizeClip(before, 'start', 1500);
+    expect(after.durationMs).toBe(4500);
+    // Photos have no in-point to move.
+    expect(after.trimStartMs).toBe(0);
+  });
+
+  it('keeps a photo\u2019s keyframes inside it, pinning the ones that fall outside', () => {
+    let clip = photo(6000);
+    clip = addKeyframe(clip, 0, { ...IDENTITY_TRANSFORM, scale: 1 });
+    clip = addKeyframe(clip, 6000, { ...IDENTITY_TRANSFORM, scale: 3 });
+    clip = setPrompt(clip, clip.keyframes[0].id, 'dolly in');
+
+    const shorter = resizeClip(clip, 'end', -3000);
+    expect(shorter.durationMs).toBe(3000);
+    expect(shorter.keyframes.map((k) => k.timeMs)).toEqual([0, 3000]);
+    // The framing the user set for the end is still the framing at the new end.
+    expect(shorter.keyframes[1].transform.scale).toBe(3);
+    expect(shorter.prompts[shorter.keyframes[0].id]).toBe('dolly in');
+  });
+
+  it('slides a photo\u2019s keyframes with the content when the head moves', () => {
+    let clip = photo(6000);
+    clip = addKeyframe(clip, 1000);
+    clip = addKeyframe(clip, 5000);
+
+    const trimmed = resizeClip(clip, 'start', 2000);
+    expect(trimmed.durationMs).toBe(4000);
+    // 1000 fell off the front and pinned to 0; 5000 travelled to 3000.
+    expect(trimmed.keyframes.map((k) => k.timeMs)).toEqual([0, 3000]);
+
+    const grown = resizeClip(clip, 'start', -1000);
+    expect(grown.durationMs).toBe(7000);
+    expect(grown.keyframes.map((k) => k.timeMs)).toEqual([2000, 6000]);
+  });
+
+  it('collapses keyframes that come to rest on the same instant, keeping the last', () => {
+    let clip = photo(6000);
+    clip = addKeyframe(clip, 4000, { ...IDENTITY_TRANSFORM, scale: 2 });
+    clip = addKeyframe(clip, 5000, { ...IDENTITY_TRANSFORM, scale: 3 });
+    clip = setPrompt(clip, clip.keyframes[0].id, 'gone with it');
+
+    const shorter = resizeClip(clip, 'end', -3000);
+    expect(shorter.durationMs).toBe(3000);
+    expect(shorter.keyframes).toHaveLength(1);
+    expect(shorter.keyframes[0].transform.scale).toBe(3);
+    // The prompt hung off a keyframe that no longer exists, so it went too.
+    expect(shorter.prompts).toEqual({});
+  });
+
+  it('will not pull a video past the end of its source', () => {
+    const clip = videoClip({ id: 'v', name: 'surf.mp4' }, 4000);
+    expect(resizeClip(clip, 'end', 10_000, 9000).durationMs).toBe(9000);
+    // Already at the source's length: there is nothing more to show.
+    const full = resizeClip(clip, 'end', 10_000, 9000);
+    expect(resizeClip(full, 'end', 1000, 9000)).toBe(full);
+  });
+
+  it('lets an unprobed video shrink but not grow, because nothing proves the frames exist', () => {
+    const clip = videoClip({ id: 'v', name: 'surf.mp4' }, 4000);
+    expect(resizeClip(clip, 'end', 3000)).toBe(clip);
+    expect(resizeClip(clip, 'end', -1500).durationMs).toBe(2500);
+  });
+
+  it('walks a video\u2019s in-point when its head is trimmed, and back again', () => {
+    const clip = videoClip({ id: 'v', name: 'surf.mp4' }, 9000);
+    const trimmed = resizeClip(clip, 'start', 2000, 9000);
+    expect([trimmed.trimStartMs, trimmed.durationMs]).toEqual([2000, 7000]);
+    // The out-point never moved, so it is still inside the source.
+    expect(trimmed.trimStartMs + trimmed.durationMs).toBe(9000);
+
+    const back = resizeClip(trimmed, 'start', -5000, 9000);
+    expect([back.trimStartMs, back.durationMs]).toEqual([0, 9000]);
+    // And it cannot be pulled back past the first frame.
+    expect(resizeClip(back, 'start', -1000, 9000)).toBe(back);
+  });
+
+  it('holds both edges apart by the minimum, and caps a photo', () => {
+    const clip = photo(6000);
+    expect(resizeClip(clip, 'end', -99_000).durationMs).toBe(MIN_CLIP_DURATION_MS);
+    expect(resizeClip(clip, 'start', 99_000).durationMs).toBe(MIN_CLIP_DURATION_MS);
+    expect(resizeClip(clip, 'end', MAX_PHOTO_DURATION_MS * 2).durationMs).toBe(
+      MAX_PHOTO_DURATION_MS,
+    );
+    expect(resizeClip(clip, 'start', -MAX_PHOTO_DURATION_MS * 2).durationMs).toBe(
+      MAX_PHOTO_DURATION_MS,
+    );
+  });
+
+  it('leaves the clip alone when the edge did not really move', () => {
+    const clip = photo(6000);
+    expect(resizeClip(clip, 'end', 0)).toBe(clip);
+    expect(resizeClip(clip, 'end', Number.NaN)).toBe(clip);
+    expect(resizeClip(clip, 'start', 0.4)).toBe(clip);
   });
 });

@@ -7,11 +7,12 @@
  * The Rust side of the same flow is covered by `cargo test -p solcut-higgsfield`.
  */
 
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
-import { useEditor } from './state/store';
+import { buildExportSpec, useEditor } from './state/store';
+import { layout } from './lib/timeline';
 import * as backend from './lib/backend';
 import type { GenerateInput, GenerationUpdate } from './lib/backend';
 
@@ -64,7 +65,6 @@ async function dropOnTimeline(files: File[]) {
   const track = screen.getByTestId('timeline-track');
   const dataTransfer = { files, items: files.map(() => ({})), types: ['Files'] };
   await act(async () => {
-    const { fireEvent } = await import('@testing-library/react');
     fireEvent.dragOver(track, { dataTransfer, clientX: 0 });
     fireEvent.drop(track, { dataTransfer, clientX: 0 });
   });
@@ -84,6 +84,8 @@ beforeEach(() => {
     toasts: [],
     exportState: null,
     settingsOpen: false,
+    // 100 px per second makes every drag below exactly 10 ms to the pixel.
+    pxPerSecond: 100,
   });
 });
 
@@ -384,7 +386,108 @@ describe('media bin', () => {
   });
 });
 
+describe('direct manipulation on the track', () => {
+  it('a clip dragged along the track changes places with its neighbour', async () => {
+    render(<App />);
+    await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('surf.mp4', 'video/mp4')]);
+    const surf = await screen.findByRole('button', { name: 'surf.mp4 video clip' });
+
+    // Grabbed at 7 s — inside the video — and let go over the first half of the photo.
+    await dragFromTo(surf, 700, 100);
+
+    const state = useEditor.getState();
+    expect(state.clips.map((c) => c.name)).toEqual(['surf.mp4', 'sunset.jpg']);
+    // Reordering does not change how long anything is, only where it sits.
+    expect(state.clips.map((c) => c.durationMs)).toEqual([5000, 5000]);
+    expect(state.selection).toEqual({ kind: 'clip', clipId: state.clips[0].id });
+  });
+
+  it('a press that does not travel is still a click, not a reorder', async () => {
+    render(<App />);
+    await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('surf.mp4', 'video/mp4')]);
+    const surf = await screen.findByRole('button', { name: 'surf.mp4 video clip' });
+
+    await dragFromTo(surf, 700, 702);
+    await act(async () => fireEvent.click(surf));
+
+    const state = useEditor.getState();
+    expect(state.clips.map((c) => c.name)).toEqual(['sunset.jpg', 'surf.mp4']);
+    expect(state.selection).toEqual({ kind: 'clip', clipId: state.clips[1].id });
+  });
+
+  it("dragging a clip's end handle restretches it and slides the clips after it", async () => {
+    render(<App />);
+    await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('surf.mp4', 'video/mp4')]);
+    const handle = await screen.findByRole('button', { name: 'Resize the end of sunset.jpg' });
+
+    await dragFromTo(handle, 500, 700);
+
+    const clips = useEditor.getState().clips;
+    expect(clips[0].durationMs).toBe(7000);
+    const photo = screen.getByRole('button', { name: 'sunset.jpg photo clip' });
+    expect(within(photo).getByText('7.0s')).toBeInTheDocument();
+    // Single track, no gaps: the video starts where the photo now ends.
+    expect(layout(clips)[1].startMs).toBe(7000);
+  });
+
+  it("a video's head handle moves its in-point, and neither edge escapes the source", async () => {
+    render(<App />);
+    await dropOnTimeline([file('surf.mp4', 'video/mp4')]);
+    // The probe put the source's real length on the asset; that is the wall.
+    await waitFor(() =>
+      expect(Object.values(useEditor.getState().assets)[0].durationMs).toBe(5000),
+    );
+
+    const head = await screen.findByRole('button', { name: 'Resize the start of surf.mp4' });
+    await dragFromTo(head, 100, 250);
+
+    let clip = useEditor.getState().clips[0];
+    expect([clip.trimStartMs, clip.durationMs]).toEqual([1500, 3500]);
+
+    // There are no frames past the end of the file, so pulling the tail does nothing.
+    const tail = screen.getByRole('button', { name: 'Resize the end of surf.mp4' });
+    await dragFromTo(tail, 100, 600);
+    clip = useEditor.getState().clips[0];
+    expect([clip.trimStartMs, clip.durationMs]).toEqual([1500, 3500]);
+
+    // Arrow keys do the same job for anyone not using a mouse.
+    await act(async () => fireEvent.keyDown(head, { key: 'ArrowLeft', shiftKey: true }));
+    clip = useEditor.getState().clips[0];
+    expect([clip.trimStartMs, clip.durationMs]).toEqual([500, 4500]);
+  });
+
+  it('both edits survive the round trip into the export spec', async () => {
+    render(<App />);
+    await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('surf.mp4', 'video/mp4')]);
+    await waitFor(() => expect(useEditor.getState().clips).toHaveLength(2));
+
+    await dragFromTo(await screen.findByRole('button', { name: 'Resize the end of sunset.jpg' }), 0, 200);
+    await dragFromTo(screen.getByRole('button', { name: 'Resize the start of surf.mp4' }), 0, 150);
+    await dragFromTo(screen.getByRole('button', { name: 'surf.mp4 video clip' }), 800, 100);
+
+    const { clips, assets } = useEditor.getState();
+    const spec = buildExportSpec(clips, assets);
+
+    // Reordered, and both length edits are in the spec ffmpeg is driven from.
+    expect(spec.clips.map((c) => [c.name, c.kind, c.durationMs])).toEqual([
+      ['surf.mp4', 'video', 3500],
+      ['sunset.jpg', 'photo', 7000],
+    ]);
+    expect(spec.clips[0]).toMatchObject({ trimStartMs: 1500 });
+  });
+});
+
 // ---------------------------------------------------------------- helpers
+
+/**
+ * A pointer drag. The clip drag listens on the window so it survives the cursor leaving the
+ * clip, which is exactly how the events are delivered here.
+ */
+async function dragFromTo(target: Element, fromX: number, toX: number) {
+  await act(async () => fireEvent.pointerDown(target, { button: 0, clientX: fromX }));
+  await act(async () => fireEvent.pointerMove(window, { clientX: toX }));
+  await act(async () => fireEvent.pointerUp(window, { clientX: toX }));
+}
 
 async function setUpTwoKeyframes(user: ReturnType<typeof userEvent.setup>) {
   await dropOnTimeline([file('sunset.jpg', 'image/jpeg')]);

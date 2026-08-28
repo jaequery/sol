@@ -10,7 +10,9 @@ timeline in place of the still.
 ## What it does
 
 - **A single track.** Photos and videos land on the same lane in drop order. No layers, no
-  compositing — that is the whole point of the design.
+  compositing — that is the whole point of the design. Drag a clip along the track to
+  reorder it, or either of its edges to change how long it runs — a video's edges trim its
+  in- and out-points and cannot leave the source file.
 - **2D keyframes on photos.** Scale, position, rotation and opacity, interpolated between
   keyframes and previewed live as you scrub.
 - **Prompt-driven AI segments.** Select the gap between two keyframes, describe the motion,
@@ -87,6 +89,10 @@ building) is then testable on any machine, including CI without a GTK toolchain.
 - **Photo scale is 1.0–4.0.** `zoompan` cannot zoom out past the frame, so scaling a photo
   below "cover" — which would show empty background — is not part of the model. The editor
   and the exporter agree on this.
+- **A video can only be trimmed once its length is known.** The length is read from the
+  file's metadata a moment after import; until it arrives the clip can be shortened but not
+  lengthened, because nothing yet proves there are more frames to show.
+- **A photo is held for at most 10 minutes**, and no clip goes under 100 ms.
 - **Export needs ffmpeg on `PATH`.** It is checked before anything is written, and refused
   with instructions rather than half-rendered.
 - **Browser drops have no filesystem path.** `pnpm dev` in a browser can import and edit,
