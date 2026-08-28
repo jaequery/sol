@@ -1258,3 +1258,195 @@ input {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* ---------------------------------------------------------------- film wizard
+ * A floating panel, not a modal: a film takes minutes and the editor behind it has to
+ * stay live, so this sits below the settings/export scrim in the stack and never covers
+ * the whole window.
+ */
+.filmwiz {
+  position: fixed;
+  top: calc(var(--h-titlebar) + var(--sp-3));
+  right: var(--sp-3);
+  width: 336px;
+  max-width: calc(100vw - 2 * var(--sp-3));
+  max-height: calc(100vh - var(--h-titlebar) - 2 * var(--sp-3));
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  z-index: 40;
+}
+.filmwiz__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--fs-md);
+  font-weight: 650;
+}
+.filmwiz__head > span {
+  flex: 1;
+}
+.filmwiz__close {
+  background: none;
+  border: 0;
+  color: var(--ink-3);
+  font-size: var(--fs);
+  padding: 2px 4px;
+  border-radius: var(--r-sm);
+}
+.filmwiz__close:hover {
+  color: var(--ink);
+  background: var(--panel-2);
+}
+.filmwiz__body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  overflow-y: auto;
+}
+.filmwiz__foot {
+  padding: 11px 14px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+  background: var(--chrome);
+}
+
+.filmwiz__drop {
+  border: 1.5px dashed var(--line);
+  border-radius: var(--r-md);
+  padding: 14px;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+.filmwiz__drop b {
+  display: block;
+  color: var(--ink-2);
+  font-size: var(--fs);
+  margin-bottom: 3px;
+}
+.filmwiz__drop .btn {
+  margin-top: var(--sp-2);
+}
+.filmwiz__drop--hot {
+  border-color: var(--accent);
+  background: rgba(124, 92, 255, 0.1);
+  color: #cbbcff;
+}
+
+/* The three slots are the film's running order, top to bottom. */
+.filmwiz__slots {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.filmwiz__slot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  padding: 5px 7px;
+}
+.filmwiz__slot img {
+  width: 40px;
+  height: 26px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  background: var(--sunken);
+}
+.filmwiz__slot--empty {
+  border-style: dashed;
+  background: none;
+  color: var(--ink-3);
+  min-height: 38px;
+}
+.filmwiz__n {
+  width: 16px;
+  text-align: center;
+  font: 650 var(--fs-sm) / 1 var(--mono);
+  color: var(--accent-2);
+}
+.filmwiz__name {
+  flex: 1;
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.filmwiz__slot > button {
+  background: none;
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  border-radius: var(--r-sm);
+  width: 20px;
+  height: 20px;
+  font-size: var(--fs-sm);
+  line-height: 1;
+}
+.filmwiz__slot > button:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--accent-line);
+}
+.filmwiz__slot > button:disabled {
+  opacity: 0.35;
+}
+
+/* The chosen photos, in order, as a reminder of what is being rendered. */
+.filmwiz__strip {
+  display: flex;
+  gap: 4px;
+}
+.filmwiz__strip img {
+  flex: 1;
+  min-width: 0;
+  height: 48px;
+  object-fit: cover;
+  border-radius: var(--r-sm);
+  background: var(--sunken);
+}
+
+.filmwiz__leg {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  padding: 9px;
+  background: var(--sunken);
+}
+.filmwiz__leg--error {
+  border-color: #5c2036;
+}
+.filmwiz__leg .kv {
+  margin: 0;
+}
+.filmwiz__leg .block-btn {
+  margin-top: var(--sp-2);
+  padding: 6px;
+}
+
+/* The second way in, from the first-run timeline. */
+.dropzone__cta {
+  margin-top: 10px;
+  background: none;
+  border: 1px solid var(--accent-line);
+  color: var(--accent-2);
+  border-radius: var(--r);
+  padding: 5px 10px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.dropzone__cta:hover {
+  background: var(--accent-wash);
+  color: #dcd3ff;
+}

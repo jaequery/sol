@@ -18,6 +18,11 @@ timeline in place of the still.
 - **Prompt-driven AI segments.** Select the gap between two keyframes, describe the motion,
   and the two keyframe framings are rendered to stills and sent to Higgsfield as the first
   and last frame of the generation. The finished MP4 replaces that segment.
+- **A film from three photos.** **✦ New film from 3 photos** — in the title bar and in the
+  empty timeline — opens a panel that takes exactly three photos, puts them in order, and
+  offers a prompt per transition already filled in. Generate runs the two Higgsfield
+  transitions (photo 1 → 2 and 2 → 3) side by side and shows them landing leg by leg; the
+  panel is not modal, so the editor stays usable while they render.
 - **MP4 export** of the whole timeline via ffmpeg, keyframe motion included.
 
 ## Running it
@@ -88,7 +93,8 @@ src/                     React + TypeScript editor
   lib/frames.ts          rendering a keyframe to a still for the API
   lib/backend.ts         the only place that talks to Tauri
   state/store.ts         zustand store
-  components/            title bar, media bin, preview, inspector, timeline, dialogs
+  components/            title bar, media bin, preview, inspector, timeline, film wizard,
+                         dialogs
 src-tauri/
   src/                   Tauri commands, the generation job loop, settings storage
   crates/higgsfield/     Higgsfield API client — no Tauri or GUI dependencies

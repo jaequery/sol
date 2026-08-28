@@ -95,3 +95,29 @@ states themselves are what `lib/film.ts` and the store already define.
 | 43 | **Film partial — a leg failed** | A leg returns an error | The failed leg carries the API's own message (rows 18–20) and a retry that re-runs **only** that leg; the leg that landed keeps its file | Retry the leg, or dismiss |
 | 44 | **Film cancelled** | Cancel a running film | Legs in flight go `cancelled` — polling stops, the request already with the API is not recalled, exactly as a single cancel does. A leg that already rendered keeps its file | Retry a leg, or dismiss |
 | 45 | **Film succeeded** | Every leg in | The film goes onto the track **in one piece and in segment order** — whichever leg came back first — each clip badged AI and immediately playable | Play, or export |
+
+## 8. The 3-image film wizard
+
+The chrome over section 7: how three photos get chosen, ordered, prompted and watched. The
+panel is deliberately **not modal** — a film takes minutes and the editor behind it stays
+live — so it floats, closing it only hides it, and stopping a render is the explicit Cancel
+rather than a side effect of getting the panel out of the way. Rows 46–58 are the wizard's
+own states; what the film underneath is doing is rows 39–45.
+
+| # | State | Trigger | What is shown | Way out |
+|---|---|---|---|---|
+| 46 | **Two ways in** | App running | **✦ New film from 3 photos** sits in the title bar, and again inside the empty timeline's drop zone next to "Drop photos and videos here". Both open the same panel | Click either |
+| 47 | **Wizard open, nothing chosen** | Either entry action | A floating panel: a "Drop three photos here" zone with a **Choose photos** button, three numbered empty slots, and the two transition prompts already filled in | Choose photos, drop, or Close |
+| 48 | **Drag-over the wizard** | OS file drag over the drop zone | The zone lights up in accent, exactly as the timeline's does | Drop, or drag out |
+| 49 | **Under three photos** | 1 or 2 photos chosen | The empty slots stay visible and an inline reason reads "2 of 3 photos chosen — add 1 more."; **Generate film** is disabled | Add the rest |
+| 50 | **A fourth photo offered** | More files dropped than slots | The extras are listed by name with the reason "a film takes exactly 3 photos, and three are already chosen"; the three that fit are kept | Dismiss, or remove one and re-add |
+| 51 | **A non-photo offered** | A video or unsupported file dropped | Named inline with its own reason — a video reads "a film's three keyframes are photos — a video cannot be one of them", anything else lists the photo extensions | Dismiss |
+| 52 | **Reordering** | ↑ / ↓ on a filled slot | The slot swaps with its neighbour and the numbers follow: slot order *is* the film's running order, so it is what decides the two transition pairs | Move it back |
+| 53 | **Removing a photo** | ✕ on a filled slot | The slot empties, the ones after it move up, and the panel falls back to row 49 | Add another |
+| 54 | **Prompts** | Panel open | One editable textarea per transition, headed "Transition 1 · photo 1 → photo 2", pre-filled from `defaultFilmPrompt` — zero typing is required to generate | Edit, or leave as is |
+| 55 | **Refused — no credential** | No key ID *and* secret stored | A "Connect Higgsfield to generate" callout with **Open settings →**, and **Generate film** stays disabled. Nothing is imported and nothing is sent — there is no local renderer to fall back on. In a plain browser the same callout says rendering needs the desktop app | Save both halves of the key |
+| 56 | **Ready** | Exactly 3 photos and a credential | **Generate film** enables. Pressing it imports the three photos into the media bin — **assets only, nothing on the track**, because a film's material is the transitions and the photos are inputs — then starts both legs | Generate, or Close |
+| 57 | **Import refused** | The backend will not take one of the files | The panel keeps the run view out and shows "The film could not start" with the backend's own per-file reason; no film is created | Remove the file, retry |
+| 58 | **Watching the run** | A film is under way | The panel switches to the run view: the three photos as a strip, a combined bar with "n of 2 succeeded", and a row per leg with its own status, bar, error (rows 18–20) and **Retry this transition**. The editor behind it stays fully usable, and the title bar's "n rendering" chip counts the legs | Cancel film, or Close (the film keeps running) |
+| 59 | **Reopening mid-film** | Entry action clicked while a film runs | The same panel comes back on the in-flight run, not on a fresh intake — one film at a time, and the panel says so | Cancel film, or wait |
+| 60 | **Run finished** | Every leg in, or the run stopped | **Add to timeline** enables only once every leg succeeded; it places the film in one piece (row 45), then puts the panel away. **Start over** forgets the film and returns the panel to row 47 | Add to timeline, or start over |
