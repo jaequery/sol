@@ -4,6 +4,10 @@
 //! normalised parts are stitched with the concat demuxer. That is slower than one giant
 //! filter graph but it keeps each clip's failure isolated and reportable, and it lets the
 //! UI show real per-clip progress.
+//!
+//! A clip carries the time it starts at, so the track may have gaps in it. A gap becomes a
+//! part like any other — black picture, silent bed, same encoder settings — which is what
+//! lets the concat stay a stream copy.
 
 pub mod expr;
 
@@ -102,6 +106,10 @@ pub enum Source {
 #[serde(rename_all = "camelCase")]
 pub struct ExportClip {
     pub name: String,
+    /// Where on the timeline the clip starts. Defaulted so a spec from an editor that laid
+    /// its clips end to end — every `start_ms` zero — still stitches in list order.
+    #[serde(default)]
+    pub start_ms: u32,
     pub duration_ms: u32,
     #[serde(flatten)]
     pub source: Source,
@@ -338,7 +346,50 @@ pub fn normalize_args(
         args.extend(["-map".into(), "1:a:0".into()]);
     }
 
+    args.extend(encode_args(spec, &duration, out));
+    args
+}
+
+/// Full ffmpeg argv for the part that fills a gap between two clips: black picture, silent
+/// bed, and the encoder settings every other part uses, so the concat is still a copy.
+pub fn gap_args(spec: &ExportSpec, duration_ms: u32, out: &Path) -> Vec<String> {
+    let duration = num(duration_ms as f32 / 1000.0);
+    let mut args: Vec<String> = vec!["-hide_banner".into(), "-nostdin".into(), "-y".into()];
+
     args.extend([
+        "-f".into(),
+        "lavfi".into(),
+        "-t".into(),
+        duration.clone(),
+        "-i".into(),
+        format!(
+            "color=c=black:s={w}x{h}:r={fps}",
+            w = spec.width,
+            h = spec.height,
+            fps = spec.fps
+        ),
+    ]);
+    args.extend([
+        "-f".into(),
+        "lavfi".into(),
+        "-t".into(),
+        duration.clone(),
+        "-i".into(),
+        "anullsrc=channel_layout=stereo:sample_rate=48000".into(),
+    ]);
+    args.extend([
+        "-filter_complex".into(),
+        "[0:v]setsar=1,format=yuv420p[v]".into(),
+    ]);
+    args.extend(["-map".into(), "[v]".into(), "-map".into(), "1:a:0".into()]);
+    args.extend(encode_args(spec, &duration, out));
+    args
+}
+
+/// The encoder settings shared by every part. They have to match exactly, or the concat
+/// demuxer cannot stream-copy the parts into one film.
+fn encode_args(spec: &ExportSpec, duration: &str, out: &Path) -> Vec<String> {
+    vec![
         "-c:v".into(),
         "libx264".into(),
         "-preset".into(),
@@ -358,12 +409,43 @@ pub fn normalize_args(
         "-ac".into(),
         "2".into(),
         "-t".into(),
-        duration,
+        duration.to_string(),
         "-movflags".into(),
         "+faststart".into(),
         out.display().to_string(),
-    ]);
-    args
+    ]
+}
+
+/// One piece of the finished film, in play order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelinePart {
+    /// Empty track: black for this many milliseconds.
+    Gap(u32),
+    /// The clip at this index in `ExportSpec::clips`.
+    Clip(usize),
+}
+
+/// The film as a run of parts: every clip in time order, with a black gap wherever the
+/// track is empty — including in front of a first clip that does not start at 0:00.
+///
+/// Clips that claim the same instant (an older spec, where every `start_ms` is zero) simply
+/// follow each other: `start_ms` behind the cursor produces no gap, never a negative one.
+pub fn timeline_parts(spec: &ExportSpec) -> Vec<TimelinePart> {
+    let mut order: Vec<usize> = (0..spec.clips.len()).collect();
+    order.sort_by_key(|i| spec.clips[*i].start_ms);
+
+    let mut parts = Vec::with_capacity(order.len());
+    let mut cursor = 0u32;
+    for i in order {
+        let clip = &spec.clips[i];
+        if clip.start_ms > cursor {
+            parts.push(TimelinePart::Gap(clip.start_ms - cursor));
+            cursor = clip.start_ms;
+        }
+        parts.push(TimelinePart::Clip(i));
+        cursor += clip.duration_ms;
+    }
+    parts
 }
 
 /// The filter graph that lays every audio track over the stitched film's own sound.
@@ -549,32 +631,43 @@ impl Renderer {
         }
 
         tokio::fs::create_dir_all(workdir).await?;
-        let total = spec.clips.len() + 1 + usize::from(!spec.audio.is_empty());
-        let mut parts = Vec::with_capacity(spec.clips.len());
+        let timeline = timeline_parts(spec);
+        let total = timeline.len() + 1 + usize::from(!spec.audio.is_empty());
+        let mut parts = Vec::with_capacity(timeline.len());
 
-        for (i, clip) in spec.clips.iter().enumerate() {
-            on_progress(Progress {
-                stage: format!(
-                    "Rendering {} ({} of {})",
-                    clip.name,
-                    i + 1,
-                    spec.clips.len()
-                ),
-                done: i,
-                total,
-            });
+        for (i, part) in timeline.iter().enumerate() {
+            let out_part = workdir.join(format!("part-{i:03}.mp4"));
+            let count = timeline.len();
 
-            let part = workdir.join(format!("part-{i:03}.mp4"));
-            let has_audio =
-                matches!(clip.source, Source::Video { .. }) && self.has_audio(clip.path()).await;
-            let args = normalize_args(spec, clip, has_audio, &part);
-            self.run(&args, &format!("rendering {}", clip.name)).await?;
-            parts.push(part);
+            match part {
+                TimelinePart::Gap(duration_ms) => {
+                    on_progress(Progress {
+                        stage: format!("Rendering the gap ({} of {count})", i + 1),
+                        done: i,
+                        total,
+                    });
+                    self.run(&gap_args(spec, *duration_ms, &out_part), "rendering a gap")
+                        .await?;
+                }
+                TimelinePart::Clip(index) => {
+                    let clip = &spec.clips[*index];
+                    on_progress(Progress {
+                        stage: format!("Rendering {} ({} of {count})", clip.name, i + 1),
+                        done: i,
+                        total,
+                    });
+                    let has_audio = matches!(clip.source, Source::Video { .. })
+                        && self.has_audio(clip.path()).await;
+                    let args = normalize_args(spec, clip, has_audio, &out_part);
+                    self.run(&args, &format!("rendering {}", clip.name)).await?;
+                }
+            }
+            parts.push(out_part);
         }
 
         on_progress(Progress {
             stage: "Joining clips".into(),
-            done: spec.clips.len(),
+            done: timeline.len(),
             total,
         });
 
@@ -592,7 +685,7 @@ impl Renderer {
         if !spec.audio.is_empty() {
             on_progress(Progress {
                 stage: "Mixing audio".into(),
-                done: spec.clips.len() + 1,
+                done: timeline.len() + 1,
                 total,
             });
             self.run(
@@ -767,6 +860,7 @@ mod tests {
     fn a_photo_clip_loops_its_input_for_the_clip_duration() {
         let clip = ExportClip {
             name: "sunset.jpg".into(),
+            start_ms: 0,
             duration_ms: 2500,
             source: Source::Photo {
                 path: "/tmp/a.jpg".into(),
@@ -793,6 +887,7 @@ mod tests {
     fn a_video_clip_seeks_before_decoding_and_keeps_its_own_audio() {
         let clip = ExportClip {
             name: "surf.mp4".into(),
+            start_ms: 0,
             duration_ms: 4000,
             source: Source::Video {
                 path: "/tmp/a.mp4".into(),
@@ -817,6 +912,7 @@ mod tests {
     fn every_part_is_encoded_the_same_way_so_concat_can_stream_copy() {
         let photo = ExportClip {
             name: "a".into(),
+            start_ms: 0,
             duration_ms: 1000,
             source: Source::Photo {
                 path: "/tmp/a.jpg".into(),
@@ -825,6 +921,7 @@ mod tests {
         };
         let video = ExportClip {
             name: "b".into(),
+            start_ms: 1000,
             duration_ms: 1000,
             source: Source::Video {
                 path: "/tmp/b.mp4".into(),
@@ -846,6 +943,79 @@ mod tests {
                 .windows(2)
                 .any(|w| w[0] == "-c" && w[1] == "copy")
         );
+    }
+
+    fn photo_at(start_ms: u32, duration_ms: u32) -> ExportClip {
+        ExportClip {
+            name: format!("photo-{start_ms}.jpg"),
+            start_ms,
+            duration_ms,
+            source: Source::Photo {
+                path: "/tmp/a.jpg".into(),
+                keyframes: vec![],
+            },
+        }
+    }
+
+    #[test]
+    fn the_holes_in_the_track_become_parts_of_their_own() {
+        let mut s = spec();
+        // A late first clip, then a hole, and the clips arrive out of order.
+        s.clips = vec![photo_at(6000, 1000), photo_at(1000, 2000)];
+
+        assert_eq!(
+            timeline_parts(&s),
+            vec![
+                TimelinePart::Gap(1000),
+                TimelinePart::Clip(1),
+                TimelinePart::Gap(3000),
+                TimelinePart::Clip(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gapless_track_is_nothing_but_its_clips() {
+        let mut s = spec();
+        s.clips = vec![photo_at(0, 1000), photo_at(1000, 1000)];
+        assert_eq!(
+            timeline_parts(&s),
+            vec![TimelinePart::Clip(0), TimelinePart::Clip(1)]
+        );
+
+        // An older spec has no positions at all: every clip claims 0:00 and they simply
+        // follow one another, exactly as they used to.
+        s.clips = vec![photo_at(0, 1000), photo_at(0, 1000)];
+        assert_eq!(
+            timeline_parts(&s),
+            vec![TimelinePart::Clip(0), TimelinePart::Clip(1)]
+        );
+    }
+
+    #[test]
+    fn a_gap_part_is_black_silent_and_encoded_like_every_other_part() {
+        let args = gap_args(&spec(), 1500, Path::new("/tmp/gap.mp4"));
+        assert!(
+            args.iter()
+                .any(|a| a.starts_with("color=c=black:s=640x360")),
+            "{args:?}"
+        );
+        assert!(args.contains(&"anullsrc=channel_layout=stereo:sample_rate=48000".to_string()));
+        assert!(
+            args.windows(2).any(|w| w[0] == "-t" && w[1] == "1.5"),
+            "{args:?}"
+        );
+
+        // Concat can only stream-copy parts that agree on every encoder setting.
+        let clip = normalize_args(&spec(), &photo_at(0, 1000), false, Path::new("/tmp/1.mp4"));
+        for key in ["-c:v", "-pix_fmt", "-c:a", "-ar", "-ac", "-r"] {
+            let val = |args: &[String]| {
+                args.iter()
+                    .position(|x| x == key)
+                    .map(|i| args[i + 1].clone())
+            };
+            assert_eq!(val(&args), val(&clip), "{key} must match the clip parts");
+        }
     }
 
     #[test]
@@ -970,6 +1140,7 @@ mod tests {
         let mut s = spec();
         s.clips.push(ExportClip {
             name: "a".into(),
+            start_ms: 0,
             duration_ms: 1000,
             source: Source::Photo {
                 path: "/tmp/a.jpg".into(),
@@ -999,7 +1170,7 @@ mod wire_format {
             ],
             "clips": [
                 {
-                    "name": "sunset.jpg", "durationMs": 6000, "kind": "photo",
+                    "name": "sunset.jpg", "startMs": 500, "durationMs": 6000, "kind": "photo",
                     "path": "/tmp/sunset.jpg",
                     "keyframes": [
                         {"timeMs": 0, "scale": 1.0, "x": 0.0, "y": 0.0, "rotationDeg": 0.0, "opacity": 1.0},
@@ -1007,7 +1178,7 @@ mod wire_format {
                     ]
                 },
                 {
-                    "name": "surf.mp4", "durationMs": 9000, "kind": "video",
+                    "name": "surf.mp4", "startMs": 8000, "durationMs": 9000, "kind": "video",
                     "path": "/tmp/surf.mp4", "trimStartMs": 1500
                 }
             ]
@@ -1015,6 +1186,18 @@ mod wire_format {
 
         let spec: ExportSpec = serde_json::from_str(json).expect("the editor's json parses");
         assert_eq!(spec.clips.len(), 2);
+        // A clip that starts late leaves a hole in front of it, and one after the clip before.
+        assert_eq!(spec.clips[0].start_ms, 500);
+        assert_eq!(spec.clips[1].start_ms, 8000);
+        assert_eq!(
+            timeline_parts(&spec),
+            vec![
+                TimelinePart::Gap(500),
+                TimelinePart::Clip(0),
+                TimelinePart::Gap(1500),
+                TimelinePart::Clip(1),
+            ]
+        );
 
         let Source::Photo { keyframes, .. } = &spec.clips[0].source else {
             panic!("first clip is a photo");
@@ -1040,5 +1223,24 @@ mod wire_format {
         let json = r#"{"width": 640, "height": 360, "fps": 30, "clips": []}"#;
         let spec: ExportSpec = serde_json::from_str(json).expect("parses");
         assert!(spec.audio.is_empty());
+    }
+
+    /// And one with no `startMs` — from before clips could be placed — packs end to end.
+    #[test]
+    fn a_spec_without_positions_still_parses_and_stitches_in_order() {
+        let json = r#"{
+            "width": 640, "height": 360, "fps": 30,
+            "clips": [
+                {"name": "a.jpg", "durationMs": 1000, "kind": "photo", "path": "/tmp/a.jpg", "keyframes": []},
+                {"name": "b.jpg", "durationMs": 1000, "kind": "photo", "path": "/tmp/b.jpg", "keyframes": []}
+            ]
+        }"#;
+        let spec: ExportSpec = serde_json::from_str(json).expect("parses");
+        assert_eq!(spec.clips[0].start_ms, 0);
+        assert_eq!(
+            timeline_parts(&spec),
+            vec![TimelinePart::Clip(0), TimelinePart::Clip(1)],
+            "no positions means no gaps"
+        );
     }
 }

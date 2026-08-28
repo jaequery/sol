@@ -371,6 +371,17 @@ input {
   letter-spacing: 0.06em;
   color: #fff;
 }
+/* A gap between clips: black, exactly what the export writes there. */
+.canvas__gap {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #000;
+  color: rgba(255, 255, 255, 0.28);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.22em;
+}
 .canvas__offline {
   position: absolute;
   inset: 0;
@@ -899,8 +910,8 @@ input {
   outline-offset: -2px;
 }
 
-/* Mid-drag: the clip rides with the cursor, and the insertion marker says where it lands. */
-.clip--reordering {
+/* Mid-drag: the clip is drawn at the spot it would land on, lifted off the track. */
+.clip--moving {
   cursor: grabbing;
   z-index: 8;
   opacity: 0.85;

@@ -10,9 +10,13 @@ timeline in place of the still.
 ## What it does
 
 - **A single track.** Photos and videos land on the same lane in drop order. No layers, no
-  compositing — that is the whole point of the design. Drag a clip along the track to
-  reorder it, or either of its edges to change how long it runs — a video's edges trim its
-  in- and out-points and cannot leave the source file.
+  compositing — that is the whole point of the design. Drag a clip to **anywhere** on the
+  track: it lands exactly where you let go, gaps and all, and a gap is black film in the
+  preview and in the export. One track cannot show two clips at once, so a clip dropped on
+  top of another slides that one right rather than stacking. Drag either edge to change how
+  long a clip runs — a video's edges trim its in- and out-points and cannot leave the source
+  file — and hold **Snap** on to have a drop line itself up with a nearby edge or the
+  playhead when it comes within a few pixels.
 - **Audio tracks.** Sound files (mp3, wav, ogg, flac, aac, m4a) get their own lanes below
   the track — as many as you like, via **♪ Add audio** or a drop. Each lane holds one
   sound: drag it along the lane to place it, drag its edges to trim it, set its volume or
@@ -109,7 +113,7 @@ With no credential in the environment it says so and passes, so it is safe in a 
 ```
 src/                     React + TypeScript editor
   types/project.ts       the data model
-  lib/timeline.ts        pure timeline maths — layout, interpolation, segment replacement
+  lib/timeline.ts        pure timeline maths — placement, interpolation, segment replacement
   lib/frames.ts          rendering a keyframe to a still for the API
   lib/backend.ts         the only place that talks to Tauri
   state/store.ts         zustand store
@@ -140,6 +144,9 @@ building) is then testable on any machine, including CI without a GTK toolchain.
   the export decodes with ffmpeg either way, so a format the preview cannot play can still
   be mixed into the MP4.
 - **A photo is held for at most 10 minutes**, and no clip goes under 100 ms.
+- **A clip's head stops at the clip in front of it.** Pulling the head left reveals more of
+  the source, so it needs empty track to move into; it stops at the neighbour's end (or at
+  0:00) rather than shoving anything out of the way. The tail is the edge that pushes.
 - **Export needs ffmpeg on `PATH`.** It is checked before anything is written, and refused
   with instructions rather than half-rendered.
 - **Browser drops have no filesystem path.** `pnpm dev` in a browser can import and edit,

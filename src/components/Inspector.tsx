@@ -104,6 +104,10 @@ function InspectorBody({ clip }: { clip: Clip }) {
         </div>
         <div className="card__body">
           <div className="kv">
+            <span>Starts at</span>
+            <b>{formatTimecode(clip.startMs)}</b>
+          </div>
+          <div className="kv">
             <span>Duration</span>
             <b>{formatDuration(clip.durationMs)}</b>
           </div>
