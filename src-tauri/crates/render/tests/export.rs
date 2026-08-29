@@ -2,7 +2,7 @@
 //! that mixes them, and probe the resulting MP4. Skipped (not failed) where ffmpeg is
 //! absent, so the suite still runs on a bare machine.
 
-use solcut_render::{AudioTrack, ExportClip, ExportSpec, Keyframe, Renderer, Source};
+use solcut_render::{AudioTrack, ExportClip, ExportSpec, Renderer, Source};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -109,7 +109,7 @@ fn probe_format(path: &Path, entries: &str) -> String {
 }
 
 #[tokio::test]
-async fn exports_a_keyframed_photo_and_a_video_into_one_mp4() {
+async fn exports_a_photo_and_a_video_into_one_mp4() {
     if !ffmpeg_present() {
         eprintln!("skipping: ffmpeg is not installed");
         return;
@@ -129,29 +129,7 @@ async fn exports_a_keyframed_photo_and_a_video_into_one_mp4() {
                 name: "photo.jpg".into(),
                 start_ms: 0,
                 duration_ms: 2000,
-                source: Source::Photo {
-                    path: photo,
-                    // A Ken Burns push with a pan and a slight rotation, so every
-                    // expression path in the filter builder is exercised.
-                    keyframes: vec![
-                        Keyframe {
-                            time_ms: 0,
-                            scale: 1.0,
-                            x: 0.0,
-                            y: 0.0,
-                            rotation_deg: 0.0,
-                            opacity: 1.0,
-                        },
-                        Keyframe {
-                            time_ms: 2000,
-                            scale: 1.6,
-                            x: 8.0,
-                            y: -5.0,
-                            rotation_deg: 3.0,
-                            opacity: 1.0,
-                        },
-                    ],
-                },
+                source: Source::Photo { path: photo },
             },
             ExportClip {
                 name: "clip.mp4".into(),
@@ -229,7 +207,7 @@ async fn exports_a_keyframed_photo_and_a_video_into_one_mp4() {
 }
 
 #[tokio::test]
-async fn exports_a_photo_with_no_keyframes_at_all() {
+async fn exports_a_lone_still_photo() {
     if !ffmpeg_present() {
         eprintln!("skipping: ffmpeg is not installed");
         return;
@@ -247,10 +225,7 @@ async fn exports_a_photo_with_no_keyframes_at_all() {
             name: "photo.jpg".into(),
             start_ms: 0,
             duration_ms: 1000,
-            source: Source::Photo {
-                path: photo,
-                keyframes: vec![],
-            },
+            source: Source::Photo { path: photo },
         }],
         audio: vec![],
     };
@@ -304,10 +279,7 @@ async fn mixes_an_audio_lane_into_the_export_without_stretching_the_film() {
             name: "photo.jpg".into(),
             start_ms: 0,
             duration_ms: 2000,
-            source: Source::Photo {
-                path: photo,
-                keyframes: vec![],
-            },
+            source: Source::Photo { path: photo },
         }],
         // Starts halfway in, trimmed a little, and would outlast the 2s film if not cut.
         audio: vec![AudioTrack {
@@ -356,7 +328,6 @@ async fn a_missing_source_file_is_named_in_the_error() {
             duration_ms: 1000,
             source: Source::Photo {
                 path: dir.join("nope.jpg"),
-                keyframes: vec![],
             },
         }],
         ..ExportSpec::default()
@@ -425,17 +396,13 @@ async fn a_gap_between_two_clips_becomes_black_film_of_its_own() {
                 duration_ms: 1000,
                 source: Source::Photo {
                     path: photo.clone(),
-                    keyframes: vec![],
                 },
             },
             ExportClip {
                 name: "second.jpg".into(),
                 start_ms: 2000,
                 duration_ms: 1000,
-                source: Source::Photo {
-                    path: photo,
-                    keyframes: vec![],
-                },
+                source: Source::Photo { path: photo },
             },
         ],
         audio: vec![],

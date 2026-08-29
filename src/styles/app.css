@@ -938,123 +938,6 @@ input {
   color: var(--warn);
 }
 
-.kflane {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 22px;
-  /* Above the edge handles: a keyframe sitting on 0 must stay clickable. */
-  z-index: 3;
-  background: linear-gradient(180deg, rgba(6, 7, 12, 0.12), rgba(6, 7, 12, 0.85));
-}
-.kflane__hint {
-  position: absolute;
-  left: 50%;
-  bottom: 5px;
-  transform: translateX(-50%);
-  font: 600 9px/1 var(--mono);
-  color: rgba(255, 255, 255, 0.55);
-  white-space: nowrap;
-}
-.kf {
-  position: absolute;
-  bottom: 5px;
-  width: 11px;
-  height: 11px;
-  padding: 0;
-  background: #fff;
-  border: 1.5px solid var(--accent);
-  transform: translateX(-50%) rotate(45deg);
-  border-radius: 2px;
-}
-.kf--selected {
-  background: var(--accent-2);
-  border-color: #fff;
-}
-.segment {
-  position: absolute;
-  bottom: 8px;
-  height: 6px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-.segment::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 2px;
-  height: 2px;
-  border-radius: 2px;
-  background: repeating-linear-gradient(90deg, var(--accent-2) 0 5px, transparent 5px 9px);
-}
-.segment--selected::before {
-  background: var(--accent-2);
-  height: 3px;
-}
-.segment__pill {
-  position: absolute;
-  bottom: 26px;
-  left: 50%;
-  transform: translateX(-50%);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 240px;
-  font: 600 9px/1 var(--font);
-  background: rgba(124, 92, 255, 0.9);
-  color: #fff;
-  padding: 4px 7px;
-  border-radius: 99px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  pointer-events: none;
-}
-
-.genclip {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  border-radius: var(--r);
-  border: 1.5px dashed #6f5bd6;
-  background: repeating-linear-gradient(135deg, #1b1738 0 10px, #221c48 10px 20px);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  color: #cbbcff;
-  font: 600 var(--fs-xs) / 1 var(--font);
-  padding: 0 var(--sp-2);
-  text-align: center;
-}
-.genclip--error {
-  border-color: #a13a55;
-  background: repeating-linear-gradient(135deg, #241019 0 10px, #2e1420 10px 20px);
-  color: #ffb3c2;
-}
-.genclip__bar {
-  width: 72%;
-  height: 3px;
-  background: rgba(255, 255, 255, 0.14);
-  border-radius: 3px;
-  position: relative;
-  overflow: hidden;
-}
-.genclip__bar > i {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  background: linear-gradient(90deg, #5b40d6, var(--accent-2));
-  border-radius: 3px;
-}
-.genclip__sub {
-  font: 600 8.5px/1 var(--mono);
-  opacity: 0.8;
-}
-
 /* ---- cut chips */
 
 /* The ✦ button on a photo→photo boundary. Sized so the edge handles beside it keep a
@@ -1090,7 +973,7 @@ input {
   box-shadow: 0 0 0 1.5px var(--accent-2), 0 0 16px rgba(124, 92, 255, 0.55);
 }
 /* While its job runs the chip widens into the progress surface — the cut has no width on
-   the track for an overlay, so the dashed .genclip look moves onto the chip itself. */
+   the track for an overlay, so a dashed in-progress look moves onto the chip itself. */
 .cutchip--run,
 .cutchip--fail {
   width: auto;

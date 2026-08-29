@@ -9,7 +9,7 @@
 //!    (<https://docs.higgsfield.ai/docs/authentication>) — the credential is one thing in
 //!    two halves, and [`Config::credential`] accepts it either as two fields or as the
 //!    single `key_id:key_secret` string Higgsfield's own SDKs take.
-//! 1. [`Client::upload_image`] puts each rendered keyframe behind a public HTTPS URL,
+//! 1. [`Client::upload_image`] puts each rendered still behind a public HTTPS URL,
 //!    because every model parameter that takes an image takes a URL and nothing else.
 //! 2. [`Client::submit`] posts a flat JSON body to a model endpoint and gets back a
 //!    `request_id` with a `status_url`.
@@ -170,7 +170,7 @@ impl Config {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Frame {
     /// `data:image/jpeg;base64,…` — how the editor hands over a locally rendered
-    /// keyframe. It is uploaded before submission, because the API only takes URLs.
+    /// still. It is uploaded before submission, because the API only takes URLs.
     DataUrl(String),
     /// An already-hosted image, passed straight through.
     Url(String),
@@ -220,7 +220,7 @@ fn decode_data_url(url: &str) -> Result<(String, Vec<u8>)> {
     Ok((content_type, bytes))
 }
 
-/// One "animate the gap between these two keyframes" request.
+/// One "animate from this frame to that frame" request.
 ///
 /// There is deliberately no duration here: no documented endpoint takes a free-form
 /// length. The models publish fixed choices (the default hailuo-02 operation has none at
@@ -228,9 +228,9 @@ fn decode_data_url(url: &str) -> Result<(String, Vec<u8>)> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateRequest {
     pub prompt: String,
-    /// The photo framed as the first keyframe describes it.
+    /// The photo the motion starts from.
     pub start_frame: Frame,
-    /// The same for the second keyframe. Omitted for a single-image animation;
+    /// The same for the photo the motion ends on. Omitted for a single-image animation;
     /// supplied, it pins where the motion ends.
     pub end_frame: Option<Frame>,
     pub seed: Option<u64>,
@@ -771,7 +771,10 @@ mod tests {
 
     #[test]
     fn any_other_endpoint_is_a_choice_and_kept() {
-        for chosen in ["/higgsfield-ai/dop/turbo", "/veo3.1/first-last-frame-to-video"] {
+        for chosen in [
+            "/higgsfield-ai/dop/turbo",
+            "/veo3.1/first-last-frame-to-video",
+        ] {
             let config = Config {
                 endpoint: chosen.into(),
                 ..cfg()
@@ -835,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn a_single_keyframe_sends_one_image() {
+    fn a_single_frame_sends_one_image() {
         let body = build_body(
             "/higgsfield-ai/dop/standard",
             "drift",
@@ -923,7 +926,11 @@ mod tests {
     /// cap then cut off. What must survive is the message; what must go is the echo.
     #[test]
     fn a_validation_list_surfaces_the_message_not_the_echoed_input() {
-        let url = format!("https://cdn.test/{}/{}.jpeg", "a".repeat(80), "b".repeat(40));
+        let url = format!(
+            "https://cdn.test/{}/{}.jpeg",
+            "a".repeat(80),
+            "b".repeat(40)
+        );
         let body = json!({
             "detail": [{
                 "type": "value_error",
@@ -933,8 +940,14 @@ mod tests {
             }]
         });
         let detail = detail_of(&body.to_string());
-        assert_eq!(detail, "Value error, end frame is not supported by this model");
-        assert!(!detail.contains("cdn.test"), "the input echo is dropped: {detail}");
+        assert_eq!(
+            detail,
+            "Value error, end frame is not supported by this model"
+        );
+        assert!(
+            !detail.contains("cdn.test"),
+            "the input echo is dropped: {detail}"
+        );
     }
 
     #[test]

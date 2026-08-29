@@ -17,36 +17,33 @@ hi-fi walkthrough artifact.
 | 6a | **Bin has media** | One or more imports succeeded | The bin head keeps a **+ Import** button whatever the bin holds, so a second import never depends on the empty state's CTA | Click + Import |
 | 6b | **Media removed** | ✕ on a bin tile | The tile goes, and so do that asset's clips on the timeline — a clip with no media could only ever render as "media offline". Any in-flight generation on those clips is cancelled, the selection falls back to nothing, and the playhead clamps to the shorter timeline. Emptying the bin returns it to state 1 | Re-import |
 
-## 2. Selection / keyframes
+## 2. Selection
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
 | 7 | **Nothing selected** | Click empty timeline | Inspector shows an explanatory empty state, not a blank panel | Select a clip |
-| 8 | **Video clip selected** | Click a video clip | Inspector shows clip info + trim; the AI card is absent (animation is photos-only, per the ticket) | Select a photo |
-| 9 | **Photo selected, 0 keyframes** | Click a photo clip | Inspector shows live transform values and a primary "Add keyframe" CTA; the keyframe lane is empty with a hint | Add a keyframe |
-| 10 | **1 keyframe** | First keyframe added | Transform card is editable; AI card is **disabled** with the reason "Add a second keyframe to define a segment" | Add a second keyframe |
-| 11 | **Segment selected (2+ keyframes)** | Click the segment between two keyframes | AI card enables, headed `KF1 → KF2` with the segment duration; prompt textarea focused | Type a prompt |
-| 12 | **Prompt empty** | Segment selected, textarea blank | Generate is disabled with the inline reason "Describe the motion first" | Type ≥1 char |
+| 8 | **Video clip selected** | Click a video clip | Inspector shows clip info + trim; there is nothing AI to offer on a plain video | Select a photo, or a cut |
+| 9 | **Photo clip selected** | Click a photo clip | Inspector shows clip info and a hint pointing at the ✦ chip: put another photo beside it and bridge the cut with an AI transition (section 8) | Select a cut |
 
 ## 3. Generation (Higgsfield)
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 13 | **No credential** | Generate clicked with no key ID *and* secret stored | Inline callout in the AI card: "Connect Higgsfield to generate" + Open settings; nothing is sent | Save both halves of the key |
+| 13 | **No credential** | Generate clicked with no key ID *and* secret stored | Inline callout in the cut card: "Connect Higgsfield to generate" + Open settings; nothing is sent | Save both halves of the key |
 | 14 | **Settings dialog** | Open settings | Key ID/secret fields (masked), base URL, model endpoint; Test connection reports pass/fail inline | Save / cancel |
-| 15 | **Queued** | Job accepted by the API | Segment on the timeline becomes a hatched placeholder reading "Queued"; inspector shows the job id | Cancel |
-| 16 | **Running (partial/slow)** | Poll returns progress | Placeholder shows a live percentage and a progress bar; **the rest of the app stays fully usable** — you can select other clips, add keyframes, start a second generation | Cancel, or wait |
-| 17 | **Slow (> 90 s)** | Still running past the soft threshold | The placeholder adds "Taking longer than usual — you can keep editing"; no spinner-lock, no modal | Cancel, or wait |
-| 18 | **Failed — rate limited (429)** | API returns 429 | Segment turns error-red with "Rate limited"; inspector shows the message and a Retry (with the same prompt preserved) | Retry / dismiss |
+| 15 | **Queued** | Job accepted by the API | The cut's ✦ chip becomes the progress surface reading ◐ QUEUED; the inspector shows the job id | Cancel |
+| 16 | **Running (partial/slow)** | Poll returns progress | The chip shows a live percentage; **the rest of the app stays fully usable** — you can select other clips, edit the track, start a second generation | Cancel, or wait |
+| 17 | **Slow (> 90 s)** | Still running past the soft threshold | The card adds "Taking longer than usual — you can keep editing"; no spinner-lock, no modal | Cancel, or wait |
+| 18 | **Failed — rate limited (429)** | API returns 429 | The chip turns error-red with "Rate limited"; inspector shows the message and a Retry (with the same prompt preserved) | Retry / dismiss |
 | 19 | **Failed — auth (401/403)** | Bad key | Same error affordance, message points at settings | Fix key, retry |
 | 20 | **Failed — network / timeout** | Transport error | Same error affordance with the transport reason | Retry |
-| 21 | **Succeeded** | Poll returns a video URL and the download completes | The generated clip replaces the segment on the timeline, carries an "AI" badge, and is immediately playable in the preview | Play, or regenerate |
+| 21 | **Succeeded** | Poll returns a video URL and the download completes | The generated clip lands at its cut on the timeline, carries an "AI" badge, and is immediately playable in the preview | Play, or regenerate |
 
 ## 4. Playback / export
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 22 | **Playing** | Space / play | Playhead sweeps; transport shows pause; preview interpolates the photo transform between keyframes in real time | Pause |
+| 22 | **Playing** | Space / play | Playhead sweeps; transport shows pause; the preview plays the single track as one continuous piece, photos held covering the frame | Pause |
 | 23 | **Exporting** | Export MP4 | Modal with per-stage progress (normalising clips → concatenating → finalising) and a cancel | Cancel, or finish |
 | 24 | **Export succeeded** | ffmpeg exits 0 | Toast with the output path and "Reveal in folder" | Dismiss |
 | 25 | **Export failed — ffmpeg missing** | `ffmpeg` not on PATH | Error dialog naming the missing binary and how to install it; export is refused rather than half-written | Install, retry |
@@ -59,9 +56,8 @@ hi-fi walkthrough artifact.
 | 27 | **Long timeline** | More clips than fit | Timeline scrolls horizontally; the ruler and playhead stay in sync; zoom control rescales | Zoom out |
 | 28 | **Long file name** | Name wider than the clip | Name truncates with an ellipsis in the middle and keeps the extension; full name in the tooltip and the bin | — |
 | 29 | **Very short clip** | Clip narrower than its label | Label and duration are dropped in favour of the thumbnail; the clip stays grabbable at a 12 px minimum, and under 32 px the two resize handles step aside so there is still something to grab for a move | Zoom in |
-| 30 | **Dense keyframes** | Many keyframes in a small span | Diamonds keep a minimum spacing and collapse into a "+n" cluster chip that expands on zoom | Zoom in |
-| 31 | **Long prompt** | Prompt longer than the textarea | Textarea scrolls at a fixed height (never pushes the Generate button off-panel); the timeline segment chip truncates to one line | — |
-| 32 | **Many generations** | Several jobs at once | Each placeholder shows its own progress; the title bar shows an aggregate "n rendering" chip | — |
+| 30 | **Long prompt** | Prompt longer than the textarea | Textarea scrolls at a fixed height (never pushes the Generate button off-panel) | — |
+| 31 | **Many generations** | Several jobs at once | Each cut's chip shows its own progress; the title bar shows an aggregate "n rendering" chip | — |
 
 ## 6. Direct manipulation on the track
 
@@ -79,7 +75,7 @@ other clip along instead of stacking on it.
 | 34b | **Snapping aid** | **⇥ Snap** on (the default), drop within 8 px of an edge | The drop lines up exactly with that edge — another clip's start or end, a sound's, the playhead, or 0:00. Switched off, a drop lands precisely where it was released | Toggle ⇥ Snap |
 | 34c | **Gap on the track** | Any drop or trim that leaves empty track | The track simply shows the panel behind it; the preview reads that stretch as black with a "GAP" label, playback runs through it, and the export renders it as black, silent film | Move a clip into it |
 | 35 | **Press without travel** | Press and release under the threshold | Nothing moves; the press is a plain selection, exactly as before | — |
-| 36 | **Resizing** | Drag either edge handle | The clip's new length is previewed live. A tail growing into the next clip pushes it along; a shrinking tail leaves a gap rather than dragging anything back. A photo's keyframes travel with the head and are pinned inside the new range; a video's `trimStartMs` walks with its head, and the head moves the clip's own start so its tail stays on the frame it was on | Release |
+| 36 | **Resizing** | Drag either edge handle | The clip's new length is previewed live. A tail growing into the next clip pushes it along; a shrinking tail leaves a gap rather than dragging anything back. A video's `trimStartMs` walks with its head, and the head moves the clip's own start so its tail stays on the frame it was on | Release |
 | 37 | **Resize refused at a limit** | Dragging past a bound | The edge simply stops: a video cannot pass the first or last frame of its source (nor grow at all before its length is probed), a clip cannot go under 100 ms, a photo cannot pass 10 minutes, and a head cannot be pulled back past 0:00 or past the clip in front of it | Drag the other way |
 | 38 | **Moving or trimming without a mouse** | Clip or handle focused, ← / → | The same edit at 100 ms a press, or 1 s with Shift — the body slides the clip, a handle moves that edge | Tab away |
 
@@ -120,7 +116,7 @@ credits and staleness never re-renders on its own.
 | 53 | **Failed** | API error / rate limit / transport | The pill turns rose reading ✕ FAILED; the card explains and offers Retry (same cut, kept prompt) and Dismiss (timeline exactly as it was) | Retry, or dismiss |
 | 54 | **Succeeded — inserted at the cut** | Render downloaded | The MP4 is inserted *at the cut* as a normal video clip with the ✦ AI badge, provisionally 5 s and probe-corrected to its real length. It starts where the left photo ends and the right photo comes to rest flush against its tail — a gap the user dragged open for it is consumed, not left as black — so the reel grows by the render's length minus the gap's; the chip disappears structurally (the boundary is no longer photo→photo), and both remaining cuts keep their chips | Play, edit, or fill the next cut |
 | 55 | **Transition selected** | Click the generated clip | The AI transition card: From/To photos, editable prompt, ⟳ Regenerate. Trim, drag and delete work exactly as for any video clip | Regenerate, edit, or leave it |
-| 56 | **Stale** | A source photo was reframed, replaced, or a different clip now stands beside the transition | The clip wears an amber `⟳ SOURCES CHANGED` tag and the card says why; it still plays and exports. Nothing regenerates — or costs — on its own | One-tap Regenerate (uses the *current* neighbours), or ignore |
+| 56 | **Stale** | A source photo was replaced, or a different clip now stands beside the transition | The clip wears an amber `⟳ SOURCES CHANGED` tag and the card says why; it still plays and exports. Nothing regenerates — or costs — on its own | One-tap Regenerate (uses the *current* neighbours), or ignore |
 | 57 | **Orphaned** | A source photo was deleted, or a neighbour is no longer a photo | Amber `⟳ SOURCE MISSING` tag; Regenerate is disabled with the reason. The paid clip is kept — it renders and exports fine | Delete it for a hard cut, or leave it |
 | 58 | **Transition deleted** | 🗑 / Delete on the clip | No confirm (the app has none anywhere, and no undo): the clip goes, the photo→photo cut — and its ✦ chip — structurally reappear, and the MP4 asset stays in the bin and on disk. Re-inserting means regenerating (a re-spend) | Regenerate from the chip |
 | 59 | **Animate all** | ✦ Animate all · n in the toolbar | Every fillable cut queues; submissions go out strictly one at a time (a burst could trip the rate limit and strand half the batch), each chip showing its own state as its turn comes. A queued cut that went invalid is skipped, never stalled on | Wait, or keep editing |
@@ -128,7 +124,7 @@ credits and staleness never re-renders on its own.
 
 ## 9. Film — three photos, two transitions
 
-Three photos *are* the keyframes: the film is nothing but the AI transitions between them
+The film is nothing but the AI transitions between the three photos
 (photo 1 → 2, photo 2 → 3), concatenated. A leg is an ordinary generation and is counted by
 the title bar's "n rendering" chip like any other — what is different is where its result
 goes. A film's clips are held back until every leg has landed, so a failed leg never leaves
@@ -163,7 +159,7 @@ own states; what the film underneath is doing is rows 61–67c.
 | 70 | **Drag-over the wizard** | OS file drag over the drop zone | The zone lights up in accent, exactly as the timeline's does | Drop, or drag out |
 | 71 | **Under three photos** | 1 or 2 photos chosen | The empty slots stay visible and an inline reason reads "2 of 3 photos chosen — add 1 more."; **Generate film** is disabled | Add the rest |
 | 72 | **A fourth photo offered** | More files dropped than slots | The extras are listed by name with the reason "a film takes exactly 3 photos, and three are already chosen"; the three that fit are kept | Dismiss, or remove one and re-add |
-| 73 | **A non-photo offered** | A video or unsupported file dropped | Named inline with its own reason — a video reads "a film's three keyframes are photos — a video cannot be one of them", anything else lists the photo extensions | Dismiss |
+| 73 | **A non-photo offered** | A video or unsupported file dropped | Named inline with its own reason — a video reads "a film is made from three photos — a video cannot be one of them", anything else lists the photo extensions | Dismiss |
 | 74 | **Reordering** | ↑ / ↓ on a filled slot | The slot swaps with its neighbour and the numbers follow: slot order *is* the film's running order, so it is what decides the two transition pairs | Move it back |
 | 75 | **Removing a photo** | ✕ on a filled slot | The slot empties, the ones after it move up, and the panel falls back to row 71 | Add another |
 | 76 | **Prompts** | Panel open | One editable textarea per transition, headed "Transition 1 · photo 1 → photo 2", pre-filled from `defaultFilmPrompt` — zero typing is required to generate | Edit, or leave as is |

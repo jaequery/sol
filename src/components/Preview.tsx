@@ -1,14 +1,14 @@
 import { useEffect, useRef } from 'react';
 import { useEditor } from '../state/store';
-import { clipAt, cssTransform, formatTimecode, transformAt } from '../lib/timeline';
+import { clipAt, formatTimecode } from '../lib/timeline';
 
 /**
  * The preview.
  *
- * For a photo it applies the interpolated keyframe transform, so scrubbing shows the exact
- * motion the export will render. For a video it drives an element's `currentTime` off the
- * playhead, so the single track plays as one continuous piece. A gap between two clips is
- * black here, exactly as the exporter renders it.
+ * A photo is drawn covering the frame, exactly as the export renders it. For a video it
+ * drives an element's `currentTime` off the playhead, so the single track plays as one
+ * continuous piece. A gap between two clips is black here, exactly as the exporter
+ * renders it.
  */
 export function Preview() {
   const clips = useEditor((s) => s.clips);
@@ -42,7 +42,8 @@ export function Preview() {
               🎞
             </div>
             <b>Nothing on the timeline</b>
-            Drop a photo or a video below to start. Photos can be animated with keyframes.
+            Drop a photo or a video below to start. Photos side by side can be bridged with
+            AI transitions.
           </div>
         </div>
       );
@@ -64,7 +65,6 @@ export function Preview() {
   }
 
   const missing = !asset || asset.missing || !asset.src;
-  const transform = clip.kind === 'photo' ? transformAt(clip, localMs) : null;
 
   return (
     <div className="stage">
@@ -76,12 +76,7 @@ export function Preview() {
             <span style={{ opacity: 0.7 }}>{clip.name} is no longer available</span>
           </div>
         ) : clip.kind === 'photo' ? (
-          <img
-            src={asset.src}
-            alt={clip.name}
-            draggable={false}
-            style={{ transform: cssTransform(transform!), opacity: transform!.opacity }}
-          />
+          <img src={asset.src} alt={clip.name} draggable={false} />
         ) : (
           <video
             ref={videoRef}

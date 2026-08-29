@@ -270,7 +270,10 @@ mod tests {
 
         let loaded = load(&dir);
         assert_eq!(loaded.endpoint, solcut_higgsfield::DEFAULT_ENDPOINT);
-        assert_eq!(loaded.api_key_id, "hf_live_abcdef7fa2", "the credential is untouched");
+        assert_eq!(
+            loaded.api_key_id, "hf_live_abcdef7fa2",
+            "the credential is untouched"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

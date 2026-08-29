@@ -8,7 +8,7 @@
 
 import { create } from 'zustand';
 import * as backend from '../lib/backend';
-import { probeAudioDurationMs, probeVideoDurationMs, renderKeyframeJpeg } from '../lib/frames';
+import { probeAudioDurationMs, probeVideoDurationMs, renderPhotoJpeg } from '../lib/frames';
 import {
   AUDIO_EXTS,
   DEFAULT_AUDIO_DURATION_MS,
@@ -26,9 +26,7 @@ import {
   type FilmGeneration,
   type GenerationError,
   type Selection,
-  type Transform2D,
   type TransitionSource,
-  IDENTITY_TRANSFORM,
 } from '../types/project';
 import {
   applyGenerationToFilm,
@@ -48,32 +46,23 @@ import {
   type Film,
 } from '../lib/film';
 import {
-  addKeyframe,
   audioTrack,
   clipAt,
-  findSegment,
   insertClips,
   insertIndexAtTime,
   insertTransitionClip,
   makeId,
   moveAudio,
-  moveKeyframe,
   photoClip,
   photoCuts,
   placeClip,
-  removeKeyframe,
-  replaceSegment,
   replaceTransitionClip,
   resizeAudio,
   resizeClipInList,
-  segmentsOf,
-  setPrompt,
   setTransitionDuration,
   sortClips,
   timelineEndMs,
   trackEndMs,
-  transformAt,
-  updateKeyframe,
   videoClip,
   type Cut,
   type GeneratedTransition,
@@ -175,11 +164,7 @@ export interface EditorState {
 
   // ---- selection & editing
   select: (selection: Selection) => void;
-  addKeyframeAtPlayhead: () => void;
-  updateSelectedKeyframe: (patch: Partial<Transform2D>) => void;
-  moveSelectedKeyframe: (timeMs: number) => void;
   deleteSelection: () => void;
-  setSegmentPrompt: (prompt: string) => void;
   splitAtPlayhead: () => void;
   moveClipTo: (clipId: string, startMs: number) => void;
   resizeClip: (clipId: string, edge: ClipEdge, deltaMs: number) => void;
@@ -191,7 +176,6 @@ export interface EditorState {
   advance: (deltaMs: number) => void;
 
   // ---- generation
-  startGeneration: () => Promise<void>;
   setCutPrompt: (prompt: string) => void;
   setTransitionPrompt: (clipId: string, prompt: string) => void;
   startCutGeneration: (afterClipId: string, beforeClipId: string) => string | null;
@@ -351,17 +335,15 @@ export const useEditor = create<EditorState>((set, get) => ({
           ? doomed.has(selection.afterClipId) || doomed.has(selection.beforeClipId)
           : selection.kind !== 'none' && doomed.has(selection.clipId);
 
-    // A generation is doomed when any clip it works for is: the segment's clip, either
-    // side of the cut, or the transition clip it would replace.
+    // A generation is doomed when any clip it works for is: either side of the cut, or the
+    // transition clip it would replace.
     // Film legs animate between photos, not clips, so no clip on the track speaks for them.
     const generationDoomed = (g: Generation) =>
-      g.target.kind === 'segment'
-        ? doomed.has(g.target.clipId)
-        : g.target.kind === 'film'
-          ? false
-          : doomed.has(g.target.afterClipId) ||
-            doomed.has(g.target.beforeClipId) ||
-            (g.target.replacesClipId !== undefined && doomed.has(g.target.replacesClipId));
+      g.target.kind === 'film'
+        ? false
+        : doomed.has(g.target.afterClipId) ||
+          doomed.has(g.target.beforeClipId) ||
+          (g.target.replacesClipId !== undefined && doomed.has(g.target.replacesClipId));
 
     const kept = Object.fromEntries(
       Object.entries(generations).filter(([, g]) => !generationDoomed(g)),
@@ -444,58 +426,8 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   select: (selection) => set({ selection }),
 
-  addKeyframeAtPlayhead() {
-    const { clips, playheadMs, selection } = get();
-    const target = selectedClipId(selection) ?? clipAt(clips, playheadMs)?.placed.clip.id;
-    if (!target) return;
-
-    const placed = clips.find((c) => c.id === target);
-    if (!placed || placed.kind !== 'photo') return;
-
-    const start = startOf(clips, target);
-    const localMs = Math.min(Math.max(playheadMs - start, 0), placed.durationMs);
-    const updated = addKeyframe(placed, localMs);
-    const added =
-      updated.keyframes.find((k) => Math.abs(k.timeMs - Math.round(localMs)) < 1) ??
-      updated.keyframes[0];
-
-    set({
-      clips: clips.map((c) => (c.id === target ? updated : c)),
-      selection: { kind: 'keyframe', clipId: target, keyframeId: added.id },
-    });
-  },
-
-  updateSelectedKeyframe(patch) {
-    const { selection, clips } = get();
-    if (selection.kind !== 'keyframe') return;
-    set({
-      clips: clips.map((c) =>
-        c.id === selection.clipId ? updateKeyframe(c, selection.keyframeId, patch) : c,
-      ),
-    });
-  },
-
-  moveSelectedKeyframe(timeMs) {
-    const { selection, clips } = get();
-    if (selection.kind !== 'keyframe') return;
-    set({
-      clips: clips.map((c) =>
-        c.id === selection.clipId ? moveKeyframe(c, selection.keyframeId, timeMs) : c,
-      ),
-    });
-  },
-
   deleteSelection() {
     const { selection, clips, audioTracks, generations, cutPrompts } = get();
-    if (selection.kind === 'keyframe') {
-      set({
-        clips: clips.map((c) =>
-          c.id === selection.clipId ? removeKeyframe(c, selection.keyframeId) : c,
-        ),
-        selection: { kind: 'clip', clipId: selection.clipId },
-      });
-      return;
-    }
     if (selection.kind === 'clip') {
       const nextClips = clips.filter((c) => c.id !== selection.clipId);
       set({
@@ -514,16 +446,6 @@ export const useEditor = create<EditorState>((set, get) => ({
     // A cut is a place, not a thing: there is nothing to delete.
   },
 
-  setSegmentPrompt(prompt) {
-    const { selection, clips } = get();
-    if (selection.kind !== 'segment') return;
-    set({
-      clips: clips.map((c) =>
-        c.id === selection.clipId ? setPrompt(c, selection.fromKeyframeId, prompt) : c,
-      ),
-    });
-  },
-
   splitAtPlayhead() {
     const { clips, playheadMs } = get();
     const hit = clipAt(clips, playheadMs);
@@ -537,7 +459,6 @@ export const useEditor = create<EditorState>((set, get) => ({
       id: makeId('clip'),
       transition: undefined,
       durationMs: hit.localMs,
-      keyframes: clip.keyframes.filter((k) => k.timeMs < hit.localMs),
     };
     const tail: Clip = {
       ...clip,
@@ -547,9 +468,6 @@ export const useEditor = create<EditorState>((set, get) => ({
       startMs: clip.startMs + hit.localMs,
       durationMs: clip.durationMs - hit.localMs,
       trimStartMs: clip.trimStartMs + (clip.kind === 'video' ? hit.localMs : 0),
-      keyframes: clip.keyframes
-        .filter((k) => k.timeMs >= hit.localMs)
-        .map((k) => ({ ...k, timeMs: k.timeMs - hit.localMs })),
     };
     const index = clips.findIndex((c) => c.id === clip.id);
     const nextClips = [...clips.slice(0, index), head, tail, ...clips.slice(index + 1)];
@@ -622,12 +540,6 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   // ------------------------------------------------------------------ generation
 
-  async startGeneration() {
-    const { selection } = get();
-    if (selection.kind !== 'segment') return;
-    startSegmentGeneration(set, get, selection.clipId, selection.fromKeyframeId, selection.toKeyframeId);
-  },
-
   setCutPrompt(prompt) {
     const { selection } = get();
     if (selection.kind !== 'cut') return;
@@ -653,28 +565,18 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!clipA || !clipB) return null;
     const prompt =
       (s.cutPrompts[cutKey(afterClipId, beforeClipId)] ?? '').trim() || DEFAULT_TRANSITION_PROMPT;
-    const from: TransitionSource = {
-      clipId: clipA.id,
-      assetId: clipA.assetId,
-      transform: transformAt(clipA, clipA.durationMs),
-    };
-    const to: TransitionSource = {
-      clipId: clipB.id,
-      assetId: clipB.assetId,
-      transform: transformAt(clipB, 0),
-    };
+    const from: TransitionSource = { clipId: clipA.id, assetId: clipA.assetId };
+    const to: TransitionSource = { clipId: clipB.id, assetId: clipB.assetId };
     const target: GenerationTarget = { kind: 'cut', afterClipId, beforeClipId, from, to };
     return launchGeneration(set, get, target, prompt, {
       fromSrc: s.assets[clipA.assetId].src,
-      fromTransform: from.transform,
       toSrc: s.assets[clipB.assetId].src,
-      toTransform: to.transform,
     });
   },
 
   /**
    * Re-render an existing transition from whatever stands around it NOW — that is what
-   * makes stale → Regenerate correct after a reorder or a reframe. Nothing to do when the
+   * makes stale → Regenerate correct after a reorder or a replacement. Nothing to do when the
    * clip is orphaned: there are no longer two photos to span.
    */
   regenerateTransition(clipId) {
@@ -697,16 +599,8 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (alreadyLive) return;
 
     const prompt = clip.transition.prompt.trim() || DEFAULT_TRANSITION_PROMPT;
-    const from: TransitionSource = {
-      clipId: left.id,
-      assetId: left.assetId,
-      transform: transformAt(left, left.durationMs),
-    };
-    const to: TransitionSource = {
-      clipId: right.id,
-      assetId: right.assetId,
-      transform: transformAt(right, 0),
-    };
+    const from: TransitionSource = { clipId: left.id, assetId: left.assetId };
+    const to: TransitionSource = { clipId: right.id, assetId: right.assetId };
     const target: GenerationTarget = {
       kind: 'cut',
       afterClipId: left.id,
@@ -717,9 +611,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     };
     launchGeneration(set, get, target, prompt, {
       fromSrc: assetA.src,
-      fromTransform: from.transform,
       toSrc: assetB.src,
-      toTransform: to.transform,
     });
   },
 
@@ -730,9 +622,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     get().dismissGeneration(generationId);
 
     const target = generation.target;
-    if (target.kind === 'segment') {
-      startSegmentGeneration(set, get, target.clipId, target.fromKeyframeId, target.toKeyframeId);
-    } else if (target.kind === 'film') {
+    if (target.kind === 'film') {
       // A film leg is retried from the film panel, which is where its state is shown.
       void get().retryFilmSegment(target.filmSegmentIndex);
     } else if (target.replacesClipId !== undefined) {
@@ -798,9 +688,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     writeGeneration(set, next);
 
     if (update.status === 'succeeded' && update.outputPath) {
-      if (next.target.kind === 'segment') {
-        landSegmentResult(set, get, next, next.target, update.outputPath);
-      } else if (next.target.kind === 'film') {
+      if (next.target.kind === 'film') {
         // A film leg is parked, not placed. The film goes onto the track in one piece once
         // every leg is in, so a leg landing early cannot leave half a film in the project —
         // and it goes on by itself, the moment the last leg's file has been measured.
@@ -1183,12 +1071,6 @@ function safeObjectUrl(file: File): string {
   }
 }
 
-function selectedClipId(selection: Selection): string | null {
-  return selection.kind === 'none' || selection.kind === 'audio' || selection.kind === 'cut'
-    ? null
-    : selection.clipId;
-}
-
 // ---------------------------------------------------------------- generation plumbing
 
 function cutKey(afterClipId: string, beforeClipId: string): string {
@@ -1283,9 +1165,8 @@ function writeGeneration(set: Setter, generation: Generation): void {
 }
 
 /**
- * Send one leg of the film out: photo A, then photo B, each drawn straight — the photos are
- * the keyframes here, so there is no framing to bake in beyond the cover-crop every still
- * already gets.
+ * Send one leg of the film out: photo A, then photo B, each drawn straight — the photos
+ * themselves are the frames, with nothing baked in beyond the cover-crop every still gets.
  */
 function launchFilmSegment(set: Setter, get: () => EditorState, index: number): void {
   const segment = get().film?.segments.find((s) => s.index === index);
@@ -1317,9 +1198,7 @@ function launchFilmSegment(set: Setter, get: () => EditorState, index: number): 
     segment.prompt.trim() || defaultFilmPrompt(index),
     {
       fromSrc: start.src,
-      fromTransform: IDENTITY_TRANSFORM,
       toSrc: end.src,
-      toTransform: IDENTITY_TRANSFORM,
     },
     // The leg claims the id before anything is sent, so a straggling update from the run
     // this one replaces is recognisably stale.
@@ -1393,7 +1272,7 @@ function launchGeneration(
   get: () => EditorState,
   target: GenerationTarget,
   prompt: string,
-  frames: { fromSrc: string; fromTransform: Transform2D; toSrc: string; toTransform: Transform2D },
+  frames: { fromSrc: string; toSrc: string },
   /**
    * Runs before the record is written, with the id it is about to get. A film leg uses it
    * to claim the id, so the leg recognises this run's updates and not the one it replaced.
@@ -1415,8 +1294,8 @@ function launchGeneration(
 
   void (async () => {
     try {
-      const startFrame = await renderKeyframeJpeg(frames.fromSrc, frames.fromTransform);
-      const endFrame = await renderKeyframeJpeg(frames.toSrc, frames.toTransform);
+      const startFrame = await renderPhotoJpeg(frames.fromSrc);
+      const endFrame = await renderPhotoJpeg(frames.toSrc);
       await backend.generateAnimation({ generationId, prompt, startFrame, endFrame });
     } catch (error) {
       const existing = get().generations[generationId];
@@ -1433,80 +1312,6 @@ function launchGeneration(
   })();
 
   return generationId;
-}
-
-/** The segment path shared by "Generate animation" and a retry: prompt and frames from the clip. */
-function startSegmentGeneration(
-  set: Setter,
-  get: () => EditorState,
-  clipId: string,
-  fromKeyframeId: string,
-  toKeyframeId: string,
-): string | null {
-  const { clips, assets } = get();
-  const clip = clips.find((c) => c.id === clipId);
-  if (!clip) return null;
-  const segment = findSegment(clip, fromKeyframeId, toKeyframeId);
-  if (!segment) return null;
-
-  const prompt = (clip.prompts[fromKeyframeId] ?? '').trim();
-  if (!prompt) return null;
-
-  const asset = assets[clip.assetId];
-  if (!asset) return null;
-
-  const from = clip.keyframes.find((k) => k.id === fromKeyframeId);
-  const to = clip.keyframes.find((k) => k.id === toKeyframeId);
-  return launchGeneration(
-    set,
-    get,
-    { kind: 'segment', clipId, fromKeyframeId, toKeyframeId },
-    prompt,
-    {
-      fromSrc: asset.src,
-      fromTransform: from?.transform ?? transformAt(clip, segment.startMs),
-      toSrc: asset.src,
-      toTransform: to?.transform ?? transformAt(clip, segment.endMs),
-    },
-  );
-}
-
-/** A finished segment render: put the video where the KF→KF segment was. */
-function landSegmentResult(
-  set: Setter,
-  get: () => EditorState,
-  generation: Generation,
-  target: Extract<GenerationTarget, { kind: 'segment' }>,
-  outputPath: string,
-): void {
-  const source = get().clips.find((c) => c.id === target.clipId);
-  const asset: MediaAsset = {
-    id: makeId('asset'),
-    name: `ai-${generation.id}.mp4`,
-    kind: 'video',
-    path: outputPath,
-    src: backend.assetSrc(outputPath),
-    sizeBytes: 0,
-    // Higgsfield rendered exactly the segment it was given, so that is the whole file.
-    durationMs: source
-      ? findSegment(source, target.fromKeyframeId, target.toKeyframeId)?.durationMs
-      : undefined,
-  };
-
-  set((s) => {
-    const clips = replaceSegment(s.clips, target.clipId, target.fromKeyframeId, target.toKeyframeId, {
-      assetId: asset.id,
-      name: asset.name,
-      prompt: generation.prompt,
-    });
-    const generated = clips.find((c) => c.assetId === asset.id);
-    return {
-      assets: { ...s.assets, [asset.id]: asset },
-      clips,
-      selection: generated ? { kind: 'clip', clipId: generated.id } : s.selection,
-    };
-  });
-  get().pushToast({ tone: 'ok', title: 'Animation ready', detail: generation.prompt });
 }
 
 /**
@@ -1603,10 +1408,6 @@ function maybeAdvanceAnimateQueue(set: Setter, get: () => EditorState, generatio
   get().advanceAnimateQueue();
 }
 
-function startOf(clips: Clip[], clipId: string): number {
-  return clips.find((c) => c.id === clipId)?.startMs ?? 0;
-}
-
 function message(error: unknown): string {
   if (error instanceof Error) return error.message;
   return typeof error === 'string' ? error : JSON.stringify(error);
@@ -1636,31 +1437,9 @@ export function buildExportSpec(
       const asset = assets[clip.assetId];
       const common = { name: clip.name, startMs: clip.startMs, durationMs: clip.durationMs };
       if (clip.kind === 'photo') {
-        return {
-          ...common,
-          kind: 'photo',
-          path: asset?.path ?? '',
-          keyframes: (clip.keyframes.length > 0
-            ? clip.keyframes
-            : [{ timeMs: 0, transform: transformAt(clip, 0) }]
-          ).map((k) => ({
-            timeMs: k.timeMs,
-            scale: k.transform.scale,
-            x: k.transform.x,
-            y: k.transform.y,
-            rotationDeg: k.transform.rotation,
-            opacity: k.transform.opacity,
-          })),
-        };
+        return { ...common, kind: 'photo', path: asset?.path ?? '' };
       }
       return { ...common, kind: 'video', path: asset?.path ?? '', trimStartMs: clip.trimStartMs };
     }),
   };
-}
-
-/** Segments of the currently selected clip, for the timeline and inspector. */
-export function selectedSegments(state: EditorState) {
-  const id = selectedClipId(state.selection);
-  const clip = id ? state.clips.find((c) => c.id === id) : undefined;
-  return clip ? segmentsOf(clip) : [];
 }

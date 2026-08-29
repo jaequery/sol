@@ -1,5 +1,5 @@
 //! End-to-end exercise of the client against a local stub of the documented Higgsfield
-//! API: upload both keyframes, submit the prompt, poll until done, download the result.
+//! API: upload both frames, submit the prompt, poll until done, download the result.
 //!
 //! Every URL, header and JSON key the stub asserts on comes from
 //! <https://docs.higgsfield.ai> and its OpenAPI document, so this file doubles as the
@@ -52,7 +52,7 @@ async fn uploads_submits_polls_and_downloads_a_generated_clip() {
             .get()
             .expect("base url is set before any request");
         match (req.method.as_str(), req.path.as_str()) {
-            // 1. a presigned upload, one per keyframe
+            // 1. a presigned upload, one per frame
             ("POST", "/files/generate-upload-url") => Response::json(
                 200,
                 &format!(
@@ -242,7 +242,9 @@ async fn a_queued_request_is_cancelled_through_the_api() {
 #[tokio::test]
 async fn an_already_hosted_frame_is_passed_through_without_an_upload() {
     let server = MockServer::start(|req: &Request, _| match req.path.as_str() {
-        "/minimax/hailuo-02/standard/image-to-video" => Response::json(200, r#"{"request_id":"r1"}"#),
+        "/minimax/hailuo-02/standard/image-to-video" => {
+            Response::json(200, r#"{"request_id":"r1"}"#)
+        }
         _ => Response::json(500, r#"{"detail":"nothing else should be called"}"#),
     });
     let client = Client::new(config(&server)).expect("client");

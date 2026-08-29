@@ -87,7 +87,7 @@ export function FilmWizard() {
           name: source.name,
           reason:
             kind === 'video'
-              ? "a film's three keyframes are photos — a video cannot be one of them"
+              ? 'a film is made from three photos — a video cannot be one of them'
               : `not a photo. Photos are: ${PHOTO_EXTS.join(', ')}`,
         });
         continue;
@@ -233,7 +233,7 @@ export function FilmWizard() {
               }}
             >
               <b>Drop three photos here</b>
-              They become the film's keyframes, in this order
+              The film's transitions run between them, in this order
               <button type="button" className="btn btn--ghost" onClick={() => void choosePhotos()}>
                 Choose photos
               </button>

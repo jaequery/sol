@@ -1,6 +1,6 @@
 [package]
 name = "solcut"
-description = "SolCut — a simplified CapCut-style editor with one timeline and AI keyframe animation."
+description = "SolCut — a simplified CapCut-style editor with one timeline and AI photo-to-photo transitions."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -2,10 +2,9 @@
 
 A simplified CapCut-style video editor for the desktop, built with **Tauri 2**.
 
-One timeline. Drop photos and videos onto it side by side. Put keyframes on a photo to set
-how it is framed over time, then describe the motion between two of them in words —
-**Higgsfield** renders that segment as a real video clip and drops it back onto the
-timeline in place of the still.
+One timeline. Drop photos and videos onto it side by side. Select the cut between two
+photos and describe the motion in words — **Higgsfield** renders a real video transition
+from one still into the other and drops it onto the timeline at that cut.
 
 ## What it does
 
@@ -22,11 +21,11 @@ timeline in place of the still.
   sound: drag it along the lane to place it, drag its edges to trim it, set its volume or
   mute it in the inspector. Audible lanes are mixed under the film on export; a sound that
   outlasts the last clip is cut at the film's end, never padded.
-- **2D keyframes on photos.** Scale, position, rotation and opacity, interpolated between
-  keyframes and previewed live as you scrub.
-- **Prompt-driven AI segments.** Select the gap between two keyframes, describe the motion,
-  and the two keyframe framings are rendered to stills and sent to Higgsfield as the first
-  and last frame of the generation. The finished MP4 replaces that segment.
+- **Prompt-driven AI transitions.** A ✦ chip stands on every cut between two photos —
+  touching, or across a gap dragged open between them. Select it, describe the motion (or
+  leave the default), and the two photos are rendered to stills and sent to Higgsfield as
+  the first and last frame of the generation. The finished MP4 lands at the cut; the
+  photos themselves are the anchor frames, so nothing else needs setting up.
 - **A film from three photos — three images in, one .mp4 out.** **✦ New film from 3
   photos** — in the title bar and in the empty timeline — opens a panel that takes exactly
   three photos, puts them in order, and offers a prompt per transition already filled in.
@@ -35,8 +34,7 @@ timeline in place of the still.
   they render. When both are in, the film **puts itself on the timeline** — the two clips
   in order, badged AI and playable — and the panel offers **Export film**. See
   [the flow](#three-photos-to-an-mp4) below.
-- **MP4 export** of the whole timeline via ffmpeg, keyframe motion and audio lanes
-  included.
+- **MP4 export** of the whole timeline via ffmpeg, audio lanes included.
 
 ## Running it
 
@@ -81,7 +79,7 @@ and its [OpenAPI document](https://docs.higgsfield.ai/docs/openapi.json):
 | Base URL | `https://api.higgsfield.ai` |
 | Auth | `Authorization: Key {key_id}:{key_secret}` — the documented `authKey` scheme, never a bearer token |
 | Credential check | `POST /files/generate-upload-url`, which authenticates without generating or charging anything |
-| Keyframe upload | the same call, then a presigned `PUT` that never sees the credential |
+| Frame upload | the same call, then a presigned `PUT` that never sees the credential |
 | Submit | `POST /minimax/hailuo-02/standard/image-to-video` with `{prompt, image_url, end_image_url}` |
 | Poll | the `status_url` from the submit response, backing off 2s → 10s |
 | Result | `video.url` on a `completed` request |
@@ -92,16 +90,16 @@ point new integrations at `Authorization`, which is what this client sends.
 The base URL and the model endpoint are editable in the same dialog, so another documented
 model — or an API revision — can be pointed at without shipping a new build. The dialog
 suggests the endpoints that take both a first *and* a last frame, which is what a SolCut
-segment is; MiniMax Hailuo-02 is the default because that pair — plus a prompt — is its
-whole documented contract. (Higgsfield's own DoP endpoints declare the same two frame
+transition needs; MiniMax Hailuo-02 is the default because that pair — plus a prompt — is
+its whole documented contract. (Higgsfield's own DoP endpoints declare the same two frame
 fields but belong to a single-image, motion-preset product, and the live API rejects
 two-frame submissions to them; settings saved by earlier builds that still point at the
 old DoP default are moved forward automatically.)
 
 ## Three photos to an .mp4
 
-The shortest path through SolCut. The three photos **are** the film's keyframes — the film
-is nothing but the AI transitions between them, so no still is ever held on screen.
+The shortest path through SolCut. The film is nothing but the AI transitions between the
+three photos, so no still is ever held on screen.
 
 1. **✦ New film from 3 photos**, from the title bar or the empty timeline.
 2. **Drop or choose exactly three photos.** A fourth, or a video, is left out by name with
@@ -150,9 +148,9 @@ With no credential in the environment it says so and passes, so it is safe in a 
 ```
 src/                     React + TypeScript editor
   types/project.ts       the data model
-  lib/timeline.ts        pure timeline maths — placement, interpolation, segment replacement
+  lib/timeline.ts        pure timeline maths — placement, cuts, transitions
   lib/film.ts            pure film orchestration — three photos, two AI transitions
-  lib/frames.ts          rendering a keyframe to a still for the API
+  lib/frames.ts          rendering a photo to a still for the API
   lib/backend.ts         the only place that talks to Tauri
   state/store.ts         zustand store
   components/            title bar, media bin, preview, inspector, timeline, film wizard,
@@ -166,14 +164,11 @@ docs/state-matrix.md     every UI state, its trigger, and its way out
 ```
 
 The two crates under `src-tauri/crates/` are deliberately free of Tauri and GUI
-dependencies: the interesting logic (API envelope handling, keyframe→ffmpeg expression
+dependencies: the interesting logic (API envelope handling, ffmpeg filter-graph and argv
 building) is then testable on any machine, including CI without a GTK toolchain.
 
 ## Known limits
 
-- **Photo scale is 1.0–4.0.** `zoompan` cannot zoom out past the frame, so scaling a photo
-  below "cover" — which would show empty background — is not part of the model. The editor
-  and the exporter agree on this.
 - **A video can only be trimmed once its length is known.** The length is read from the
   file's metadata a moment after import; until it arrives the clip can be shortened but not
   lengthened, because nothing yet proves there are more frames to show. An audio track
@@ -192,13 +187,13 @@ building) is then testable on any machine, including CI without a GTK toolchain.
   but export needs the desktop app, which resolves real paths.
 - **The model decides the clip length.** No Higgsfield endpoint takes a free-form duration
   — the default Hailuo-02 operation has no duration parameter at all, and the others
-  publish fixed choices — so the segment's own length is what the timeline keeps, not
+  publish fixed choices — so the file's own length is what the timeline keeps, not
   something the request asks for.
 - **A film goes onto the track once.** It lands the moment its last transition is in, and
   is then an ordinary pair of clips: move, trim or delete them as you like. Retrying a leg
   afterwards updates the film's own record but never lays down a second copy.
 - **Progress is queued-or-rendering.** The request status endpoint reports a state, not a
   percentage, so the bar only moves when the API volunteers one.
-- **Keyframes are uploaded, not inlined.** Every model parameter that takes an image takes
+- **Stills are uploaded, not inlined.** Every model parameter that takes an image takes
   a URL, so each still is PUT to Higgsfield's presigned storage first. Uploaded inputs are
   tagged `retention=temporary`, and outputs are kept for at least seven days.

@@ -1,12 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
-  addKeyframe,
   audioEndMs,
   audioTrack,
   clipAt,
-  cssTransform,
   endOfPrevious,
-  findSegment,
   formatDuration,
   formatTimecode,
   insertClips,
@@ -14,41 +11,28 @@ import {
   insertIndexAtTime,
   layout,
   moveAudio,
-  moveKeyframe,
   packClips,
   photoClip,
   placeClip,
   insertTransitionClip,
   photoCuts,
-  removeKeyframe,
-  replaceSegment,
   replaceTransitionClip,
   resetIds,
   resizeAudio,
   resizeClip,
   resizeClipInList,
-  segmentsOf,
-  setPrompt,
   snapStartMs,
   snapTargets,
   startOfIndex,
   setTransitionDuration,
   timelineEndMs,
   trackEndMs,
-  transformAt,
   transitionStaleness,
   truncateName,
-  updateKeyframe,
   videoClip,
   type GeneratedTransition,
 } from './timeline';
-import {
-  IDENTITY_TRANSFORM,
-  MAX_PHOTO_DURATION_MS,
-  MAX_SCALE,
-  MIN_CLIP_DURATION_MS,
-  type Clip,
-} from '../types/project';
+import { MAX_PHOTO_DURATION_MS, MIN_CLIP_DURATION_MS, type Clip } from '../types/project';
 
 beforeEach(resetIds);
 
@@ -101,111 +85,6 @@ describe('layout', () => {
   });
 });
 
-describe('keyframes', () => {
-  it('adds keyframes in time order however they are placed', () => {
-    let clip = photo();
-    clip = addKeyframe(clip, 4000);
-    clip = addKeyframe(clip, 1000);
-    expect(clip.keyframes.map((k) => k.timeMs)).toEqual([1000, 4000]);
-  });
-
-  it('clamps a keyframe to the clip and re-keys rather than stacking', () => {
-    let clip = photo(6000);
-    clip = addKeyframe(clip, -500);
-    clip = addKeyframe(clip, 99_000);
-    expect(clip.keyframes.map((k) => k.timeMs)).toEqual([0, 6000]);
-
-    clip = addKeyframe(clip, 0, { ...IDENTITY_TRANSFORM, scale: 2 });
-    expect(clip.keyframes).toHaveLength(2);
-    expect(clip.keyframes[0].transform.scale).toBe(2);
-  });
-
-  it('inherits the interpolated framing at the moment it is added', () => {
-    let clip = photo(4000);
-    clip = addKeyframe(clip, 0, { ...IDENTITY_TRANSFORM, scale: 1 });
-    clip = addKeyframe(clip, 4000, { ...IDENTITY_TRANSFORM, scale: 3 });
-    clip = addKeyframe(clip, 2000);
-    expect(clip.keyframes[1].transform.scale).toBeCloseTo(2, 5);
-  });
-
-  it('clamps transforms to what the export can actually render', () => {
-    let clip = addKeyframe(photo(), 0);
-    clip = updateKeyframe(clip, clip.keyframes[0].id, { scale: 99, opacity: 5 });
-    expect(clip.keyframes[0].transform.scale).toBe(MAX_SCALE);
-    expect(clip.keyframes[0].transform.opacity).toBe(1);
-
-    clip = updateKeyframe(clip, clip.keyframes[0].id, { scale: 0.1 });
-    expect(clip.keyframes[0].transform.scale).toBe(1);
-  });
-
-  it('keeps the list sorted when a keyframe is dragged past another', () => {
-    let clip = addKeyframe(addKeyframe(photo(), 1000), 4000);
-    const first = clip.keyframes[0].id;
-    clip = moveKeyframe(clip, first, 5000);
-    expect(clip.keyframes.map((k) => k.timeMs)).toEqual([4000, 5000]);
-  });
-
-  it('drops the prompt that belonged to a deleted keyframe', () => {
-    let clip = addKeyframe(addKeyframe(photo(), 0), 3000);
-    const [a, b] = clip.keyframes;
-    clip = setPrompt(clip, a.id, 'dolly in');
-    clip = removeKeyframe(clip, a.id);
-    expect(clip.prompts).toEqual({});
-    expect(clip.keyframes.map((k) => k.id)).toEqual([b.id]);
-  });
-});
-
-describe('segments', () => {
-  it('exposes one segment per gap between keyframes', () => {
-    let clip = photo(9000);
-    clip = addKeyframe(clip, 1000);
-    clip = addKeyframe(clip, 4200);
-    clip = addKeyframe(clip, 7000);
-
-    const segments = segmentsOf(clip);
-    expect(segments).toHaveLength(2);
-    expect(segments[0]).toMatchObject({ startMs: 1000, endMs: 4200, durationMs: 3200 });
-    expect(findSegment(clip, segments[0].fromKeyframeId, segments[0].toKeyframeId)).not.toBeNull();
-  });
-
-  it('has no segments until there are two keyframes', () => {
-    expect(segmentsOf(photo())).toEqual([]);
-    expect(segmentsOf(addKeyframe(photo(), 0))).toEqual([]);
-  });
-});
-
-describe('transformAt', () => {
-  it('is the identity when there are no keyframes', () => {
-    expect(transformAt(photo(), 1234)).toEqual(IDENTITY_TRANSFORM);
-  });
-
-  it('interpolates linearly between two keyframes', () => {
-    let clip = photo(4000);
-    clip = addKeyframe(clip, 0, { ...IDENTITY_TRANSFORM, scale: 1, x: 0 });
-    clip = addKeyframe(clip, 4000, { ...IDENTITY_TRANSFORM, scale: 2, x: 10 });
-
-    expect(transformAt(clip, 0).scale).toBeCloseTo(1, 5);
-    expect(transformAt(clip, 2000).scale).toBeCloseTo(1.5, 5);
-    expect(transformAt(clip, 2000).x).toBeCloseTo(5, 5);
-    expect(transformAt(clip, 4000).scale).toBeCloseTo(2, 5);
-  });
-
-  it('holds the end values outside the keyframed range', () => {
-    let clip = photo(8000);
-    clip = addKeyframe(clip, 2000, { ...IDENTITY_TRANSFORM, scale: 1.5 });
-    clip = addKeyframe(clip, 4000, { ...IDENTITY_TRANSFORM, scale: 2 });
-
-    expect(transformAt(clip, 0).scale).toBeCloseTo(1.5, 5);
-    expect(transformAt(clip, 8000).scale).toBeCloseTo(2, 5);
-  });
-
-  it('renders as a css transform the preview can apply', () => {
-    expect(cssTransform({ scale: 1.5, x: -3, y: 2, rotation: 4, opacity: 1 })).toBe(
-      'translate(-3%, 2%) scale(1.5) rotate(4deg)',
-    );
-  });
-});
-
 describe('insertion', () => {
   it('inserts dropped clips at a boundary and ripples what was there along', () => {
     const [a, c] = packClips([photo(1000), photo(3000)]);
@@ -234,89 +113,6 @@ describe('insertion', () => {
     expect(insertIndexAt(clips, 0.4)).toBe(1);
     expect(insertIndexAt(clips, 0.99)).toBe(2);
     expect(insertIndexAt([], 0.5)).toBe(0);
-  });
-});
-
-describe('replaceSegment', () => {
-  function clipWithThreeKeyframes(): Clip {
-    let clip = photo(6000);
-    clip = addKeyframe(clip, 1000);
-    clip = addKeyframe(clip, 4200);
-    clip = addKeyframe(clip, 6000);
-    return clip;
-  }
-
-  const generated = { assetId: 'asset_ai', name: 'ai-segment-01.mp4', prompt: 'slow dolly-in' };
-
-  it('splits the photo into before, the generated clip, and after', () => {
-    const clip = clipWithThreeKeyframes();
-    const [kf1, kf2] = clip.keyframes;
-    const result = replaceSegment([clip], clip.id, kf1.id, kf2.id, generated);
-
-    expect(result.map((c) => [c.kind, c.durationMs])).toEqual([
-      ['photo', 1000],
-      ['video', 3200],
-      ['photo', 1800],
-    ]);
-    expect(trackEndMs(result)).toBe(trackEndMs([clip]));
-  });
-
-  it('marks the generated clip as AI and remembers its prompt and source', () => {
-    const clip = clipWithThreeKeyframes();
-    const [kf1, kf2] = clip.keyframes;
-    const ai = replaceSegment([clip], clip.id, kf1.id, kf2.id, generated)[1];
-
-    expect(ai.kind).toBe('video');
-    expect(ai.assetId).toBe('asset_ai');
-    expect(ai.ai).toEqual({ prompt: 'slow dolly-in', sourceAssetId: 'asset_photo' });
-  });
-
-  it('rebases the keyframes of the trailing photo to its own start', () => {
-    const clip = clipWithThreeKeyframes();
-    const [kf1, kf2] = clip.keyframes;
-    const tail = replaceSegment([clip], clip.id, kf1.id, kf2.id, generated)[2];
-    expect(tail.keyframes.map((k) => k.timeMs)).toEqual([0, 1800]);
-  });
-
-  it('replaces the clip outright when the segment covers all of it', () => {
-    let clip = photo(4000);
-    clip = addKeyframe(clip, 0);
-    clip = addKeyframe(clip, 4000);
-    const [kf1, kf2] = clip.keyframes;
-
-    const result = replaceSegment([clip], clip.id, kf1.id, kf2.id, generated);
-    expect(result).toHaveLength(1);
-    expect(result[0].kind).toBe('video');
-    expect(result[0].durationMs).toBe(4000);
-  });
-
-  it('leaves the other clips on the track untouched and in order', () => {
-    const before = videoClip({ id: 'v1', name: 'intro.mp4' }, 2000);
-    const clip = clipWithThreeKeyframes();
-    const after = videoClip({ id: 'v2', name: 'outro.mp4' }, 2000);
-    const [kf1, kf2] = clip.keyframes;
-
-    const result = replaceSegment([before, clip, after], clip.id, kf1.id, kf2.id, generated);
-    expect(result[0].id).toBe(before.id);
-    expect(result[result.length - 1].id).toBe(after.id);
-    expect(result).toHaveLength(5);
-  });
-
-  it('keeps the prompt with whichever half still owns that keyframe', () => {
-    let clip = clipWithThreeKeyframes();
-    const [kf1, kf2, kf3] = clip.keyframes;
-    clip = setPrompt(clip, kf2.id, 'second segment prompt');
-
-    const result = replaceSegment([clip], clip.id, kf1.id, kf2.id, generated);
-    expect(result[2].prompts[kf2.id]).toBe('second segment prompt');
-    expect(result[0].prompts[kf3.id]).toBeUndefined();
-  });
-
-  it('is a no-op for an unknown clip or a zero-length segment', () => {
-    const clip = clipWithThreeKeyframes();
-    const [kf1] = clip.keyframes;
-    expect(replaceSegment([clip], 'nope', kf1.id, kf1.id, generated)).toHaveLength(1);
-    expect(replaceSegment([clip], clip.id, kf1.id, kf1.id, generated)).toEqual([clip]);
   });
 });
 
@@ -451,7 +247,7 @@ describe('snapping', () => {
 });
 
 describe('resizing a clip', () => {
-  it('changes a photo\u2019s duration from the tail', () => {
+  it('changes a photo’s duration from the tail', () => {
     const clip = resizeClip(photo(6000), 'end', 2500);
     expect(clip.durationMs).toBe(8500);
     expect(resizeClip(clip, 'end', -3000).durationMs).toBe(5500);
@@ -465,36 +261,6 @@ describe('resizing a clip', () => {
     expect(after.trimStartMs).toBe(0);
   });
 
-  it('keeps a photo\u2019s keyframes inside it, pinning the ones that fall outside', () => {
-    let clip = photo(6000);
-    clip = addKeyframe(clip, 0, { ...IDENTITY_TRANSFORM, scale: 1 });
-    clip = addKeyframe(clip, 6000, { ...IDENTITY_TRANSFORM, scale: 3 });
-    clip = setPrompt(clip, clip.keyframes[0].id, 'dolly in');
-
-    const shorter = resizeClip(clip, 'end', -3000);
-    expect(shorter.durationMs).toBe(3000);
-    expect(shorter.keyframes.map((k) => k.timeMs)).toEqual([0, 3000]);
-    // The framing the user set for the end is still the framing at the new end.
-    expect(shorter.keyframes[1].transform.scale).toBe(3);
-    expect(shorter.prompts[shorter.keyframes[0].id]).toBe('dolly in');
-  });
-
-  it('slides a photo\u2019s keyframes with the content when the head moves', () => {
-    // Sitting at 4 s, so there is room in front of it to pull the head back into.
-    let clip = photo(6000, 4000);
-    clip = addKeyframe(clip, 1000);
-    clip = addKeyframe(clip, 5000);
-
-    const trimmed = resizeClip(clip, 'start', 2000);
-    expect([trimmed.startMs, trimmed.durationMs]).toEqual([6000, 4000]);
-    // 1000 fell off the front and pinned to 0; 5000 travelled to 3000.
-    expect(trimmed.keyframes.map((k) => k.timeMs)).toEqual([0, 3000]);
-
-    const grown = resizeClip(clip, 'start', -1000);
-    expect([grown.startMs, grown.durationMs]).toEqual([3000, 7000]);
-    expect(grown.keyframes.map((k) => k.timeMs)).toEqual([2000, 6000]);
-  });
-
   it('cannot pull a head back past 0:00, or past the clip in front of it', () => {
     // Against the start of the timeline there is nothing in front to reveal.
     const first = photo(6000);
@@ -504,20 +270,6 @@ describe('resizing a clip', () => {
     const clip = photo(6000, 4000);
     const stopped = resizeClip(clip, 'start', -5000, undefined, 3000);
     expect([stopped.startMs, stopped.durationMs]).toEqual([3000, 7000]);
-  });
-
-  it('collapses keyframes that come to rest on the same instant, keeping the last', () => {
-    let clip = photo(6000);
-    clip = addKeyframe(clip, 4000, { ...IDENTITY_TRANSFORM, scale: 2 });
-    clip = addKeyframe(clip, 5000, { ...IDENTITY_TRANSFORM, scale: 3 });
-    clip = setPrompt(clip, clip.keyframes[0].id, 'gone with it');
-
-    const shorter = resizeClip(clip, 'end', -3000);
-    expect(shorter.durationMs).toBe(3000);
-    expect(shorter.keyframes).toHaveLength(1);
-    expect(shorter.keyframes[0].transform.scale).toBe(3);
-    // The prompt hung off a keyframe that no longer exists, so it went too.
-    expect(shorter.prompts).toEqual({});
   });
 
   it('will not pull a video past the end of its source', () => {
@@ -534,7 +286,7 @@ describe('resizing a clip', () => {
     expect(resizeClip(clip, 'end', -1500).durationMs).toBe(2500);
   });
 
-  it('walks a video\u2019s in-point when its head is trimmed, and back again', () => {
+  it('walks a video’s in-point when its head is trimmed, and back again', () => {
     const clip = videoClip({ id: 'v', name: 'surf.mp4' }, 9000);
     const trimmed = resizeClip(clip, 'start', 2000, 9000);
     expect([trimmed.trimStartMs, trimmed.durationMs]).toEqual([2000, 7000]);
@@ -630,8 +382,8 @@ describe('cuts & transitions', () => {
       name: 'ai-tr.mp4',
       prompt: 'smooth cinematic motion',
       durationMs,
-      from: { clipId: a.id, assetId: a.assetId, transform: transformAt(a, a.durationMs) },
-      to: { clipId: b.id, assetId: b.assetId, transform: transformAt(b, 0) },
+      from: { clipId: a.id, assetId: a.assetId },
+      to: { clipId: b.id, assetId: b.assetId },
     };
   }
 
@@ -805,7 +557,7 @@ describe('cuts & transitions', () => {
       return { clips, a, b: clips[2], t: clips[1] };
     }
 
-    it('is fresh while the pair and their framings match what was rendered', () => {
+    it('is fresh while the pair still matches what was rendered', () => {
       const { clips, t } = landed();
       expect(transitionStaleness(clips, t.id)).toBe('fresh');
     });
@@ -817,17 +569,6 @@ describe('cuts & transitions', () => {
 
       const swappedAsset = { ...clips[0], assetId: 'asset_other' };
       expect(transitionStaleness([swappedAsset, t, b], t.id)).toBe('stale');
-    });
-
-    it('goes stale when a neighbour’s relevant framing drifts, but shrugs off noise', () => {
-      const { clips, a, b, t } = landed();
-      const reframed = addKeyframe(a, a.durationMs, { ...IDENTITY_TRANSFORM, scale: 2 });
-      expect(transitionStaleness([reframed, t, b], t.id)).toBe('stale');
-
-      // A drift far below the epsilon is slider noise, not a reason to flag a re-spend.
-      const noisy = addKeyframe(a, a.durationMs, { ...IDENTITY_TRANSFORM, scale: 1 + 1e-7 });
-      expect(transitionStaleness([noisy, t, b], t.id)).toBe('fresh');
-      expect(transitionStaleness(clips, t.id)).toBe('fresh');
     });
 
     it('is orphaned when a neighbour is missing or not a photo', () => {

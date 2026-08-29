@@ -3,7 +3,7 @@
  *
  * Only the two genuinely non-UI edges are stubbed: the Tauri bridge (`lib/backend`) and
  * canvas/media decoding (`lib/frames`), neither of which jsdom provides. Everything in
- * between — the store, the timeline, the inspector, the segment maths — is the real thing.
+ * between — the store, the timeline, the inspector, the cut maths — is the real thing.
  * The Rust side of the same flow is covered by `cargo test -p solcut-higgsfield`.
  */
 
@@ -12,9 +12,9 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { buildExportSpec, useEditor } from './state/store';
-import { addKeyframe, layout } from './lib/timeline';
+import { layout } from './lib/timeline';
 import { defaultFilmPrompt } from './lib/film';
-import { DEFAULT_TRANSITION_PROMPT, IDENTITY_TRANSFORM } from './types/project';
+import { DEFAULT_TRANSITION_PROMPT } from './types/project';
 import * as backend from './lib/backend';
 import type { GenerateInput, GenerationUpdate } from './lib/backend';
 
@@ -57,12 +57,11 @@ vi.mock('./lib/backend', () => ({
 }));
 
 // Canvas rendering and media probing are browser capabilities jsdom lacks. The stub keeps
-// the two keyframe stills distinguishable so the request can be asserted on.
+// the two stills distinguishable so the request can be asserted on.
 vi.mock('./lib/frames', () => ({
   FRAME_WIDTH: 1280,
   FRAME_HEIGHT: 720,
-  renderKeyframeJpeg: async (src: string, transform: { scale: number }) =>
-    `data:image/jpeg;base64,frame-of-${src}-at-scale-${transform.scale}`,
+  renderPhotoJpeg: async (src: string) => `data:image/jpeg;base64,frame-of-${src}`,
   probeVideoDurationMs: async (_src: string, fallback: number) => fallback,
   probeAudioDurationMs: async (_src: string, fallback: number) => fallback,
 }));
@@ -127,196 +126,6 @@ describe('acceptance', () => {
     expect(screen.queryByText('Drop photos, videos and audio here')).not.toBeInTheDocument();
   });
 
-  it('2 — two keyframes can be added to a photo clip', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await dropOnTimeline([file('sunset.jpg', 'image/jpeg')]);
-
-    await user.click(await screen.findByRole('button', { name: 'sunset.jpg photo clip' }));
-    const addKeyframe = screen.getByRole('button', { name: 'Add keyframe at playhead' });
-
-    await user.click(addKeyframe);
-    act(() => useEditor.getState().setPlayhead(3200));
-    await user.click(screen.getByRole('button', { name: 'Add keyframe at playhead' }));
-
-    expect(screen.getByRole('button', { name: 'Keyframe 1 at 00:00.00' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Keyframe 2 at 00:03.20' })).toBeInTheDocument();
-    expect(useEditor.getState().clips[0].keyframes).toHaveLength(2);
-  });
-
-  it('3 — a prompt can be typed for the segment between two keyframes', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await setUpTwoKeyframes(user);
-
-    await user.click(
-      screen.getByRole('button', { name: 'Segment from keyframe 1 to keyframe 2' }),
-    );
-
-    const prompt = await screen.findByLabelText(/describe the motion between these two keyframes/i);
-    await user.type(prompt, 'slow dolly-in over the water');
-
-    expect(prompt).toHaveValue('slow dolly-in over the water');
-    expect(screen.getByRole('button', { name: /generate animation/i })).toBeEnabled();
-  });
-
-  it('3b — generate stays disabled, with a reason, until the prompt says something', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await setUpTwoKeyframes(user);
-    await user.click(
-      screen.getByRole('button', { name: 'Segment from keyframe 1 to keyframe 2' }),
-    );
-
-    expect(screen.getByRole('button', { name: /generate animation/i })).toBeDisabled();
-    expect(screen.getByText('Describe the motion first.')).toBeInTheDocument();
-    expect(generateAnimation).not.toHaveBeenCalled();
-  });
-
-  it('4 — submitting sends the prompt and both rendered keyframes to the backend', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await setUpTwoKeyframes(user);
-
-    await user.click(
-      screen.getByRole('button', { name: 'Segment from keyframe 1 to keyframe 2' }),
-    );
-    await user.type(
-      await screen.findByLabelText(/describe the motion/i),
-      'slow dolly-in over the water',
-    );
-    // Give the two keyframes different framing so the stills are distinguishable.
-    act(() => {
-      const state = useEditor.getState();
-      const clip = state.clips[0];
-      useEditor.setState({
-        selection: { kind: 'keyframe', clipId: clip.id, keyframeId: clip.keyframes[1].id },
-      });
-      state.updateSelectedKeyframe({ scale: 1.6 });
-      useEditor.setState({
-        selection: {
-          kind: 'segment',
-          clipId: clip.id,
-          fromKeyframeId: clip.keyframes[0].id,
-          toKeyframeId: clip.keyframes[1].id,
-        },
-      });
-    });
-
-    await user.click(screen.getByRole('button', { name: /generate animation/i }));
-
-    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
-    const sent = generateAnimation.mock.calls[0][0];
-
-    expect(sent.prompt).toBe('slow dolly-in over the water');
-    expect(sent.startFrame).toContain('data:image/jpeg;base64,');
-    expect(sent.endFrame).toContain('data:image/jpeg;base64,');
-    expect(sent.startFrame).not.toEqual(sent.endFrame);
-    expect(sent.endFrame).toContain('scale-1.6');
-    expect(sent.generationId).toBeTruthy();
-  });
-
-  it('4b — the segment shows queued, then live progress, while the editor stays usable', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    const id = await runGeneration(user);
-
-    expect(await screen.findByText('Queued')).toBeInTheDocument();
-
-    act(() =>
-      emitGenerationUpdate({
-        generationId: id,
-        status: 'running',
-        progress: 0.46,
-        elapsedSecs: 12,
-        slow: false,
-      }),
-    );
-
-    expect(await screen.findByText('Rendering 46%')).toBeInTheDocument();
-    // Nothing is blocked while it renders.
-    expect(screen.getByRole('button', { name: 'sunset.jpg photo clip' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: /cancel/i })).toBeEnabled();
-  });
-
-  it('5 — the finished clip replaces the segment and is playable', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    const id = await runGeneration(user);
-
-    act(() =>
-      emitGenerationUpdate({
-        generationId: id,
-        status: 'succeeded',
-        progress: 1,
-        elapsedSecs: 60,
-        slow: false,
-        outputPath: '/home/u/.cache/solcut/generated/out.mp4',
-      }),
-    );
-
-    // It lands on the same single track, where the segment was.
-    const generated = await screen.findByRole('button', { name: /ai-.*\.mp4 video clip/i });
-    expect(generated).toBeInTheDocument();
-    expect(within(generated).getByText('✦ AI')).toBeInTheDocument();
-
-    const clips = useEditor.getState().clips;
-    const ai = clips.find((c) => c.ai);
-    expect(ai).toBeDefined();
-    expect(ai!.kind).toBe('video');
-    expect(ai!.durationMs).toBe(3200);
-    expect(ai!.ai!.prompt).toBe('slow dolly-in over the water');
-    // The whole timeline is still the same length — the segment was replaced, not appended.
-    expect(clips.reduce((sum, c) => sum + c.durationMs, 0)).toBe(5000);
-
-    // And it is what the preview plays.
-    act(() => useEditor.getState().setPlayhead(1000));
-    const video = await screen.findByTestId('preview-video');
-    expect(video).toHaveAttribute('src', 'asset:///home/u/.cache/solcut/generated/out.mp4');
-  });
-
-  it('a failed generation explains itself and keeps the prompt for a retry', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    const id = await runGeneration(user);
-
-    act(() =>
-      emitGenerationUpdate({
-        generationId: id,
-        status: 'failed',
-        progress: 0,
-        elapsedSecs: 4,
-        slow: false,
-        error: { title: 'Rate limited', message: 'rate limited', retryable: true },
-      }),
-    );
-
-    const alert = await screen.findByRole('alert');
-    expect(within(alert).getByText('Rate limited')).toBeInTheDocument();
-    expect(within(alert).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
-
-    const clip = useEditor.getState().clips[0];
-    expect(Object.values(clip.prompts)).toContain('slow dolly-in over the water');
-  });
-
-  it('a long-running generation says so instead of leaving the user guessing', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    const id = await runGeneration(user);
-
-    act(() =>
-      emitGenerationUpdate({
-        generationId: id,
-        status: 'running',
-        progress: 0.62,
-        elapsedSecs: 107,
-        slow: true,
-      }),
-    );
-
-    expect(await screen.findByText('Taking longer than usual')).toBeInTheDocument();
-  });
-
   it('an unsupported file is named and does not stop the rest of the drop', async () => {
     render(<App />);
     await dropOnTimeline([file('sunset.jpg', 'image/jpeg'), file('notes.tiff', '')]);
@@ -326,15 +135,6 @@ describe('acceptance', () => {
     expect(useEditor.getState().clips).toHaveLength(1);
   });
 
-  it('the AI card explains why it is unusable with only one keyframe', async () => {
-    const user = userEvent.setup();
-    render(<App />);
-    await dropOnTimeline([file('sunset.jpg', 'image/jpeg')]);
-    await user.click(await screen.findByRole('button', { name: 'sunset.jpg photo clip' }));
-    await user.click(screen.getByRole('button', { name: 'Add keyframe at playhead' }));
-
-    expect(screen.getByText('Add a second keyframe to define a segment.')).toBeInTheDocument();
-  });
 });
 
 describe('AI transitions between photos', () => {
@@ -346,21 +146,10 @@ describe('AI transitions between photos', () => {
     expect(useEditor.getState().clips.map((c) => c.kind)).toEqual(['photo', 'photo']);
   });
 
-  it('2 — a chip tap only selects; Generate sends A-end and B-start with the default prompt', async () => {
+  it('2 — a chip tap only selects; Generate sends A then B with the default prompt', async () => {
     const user = userEvent.setup();
     render(<App />);
     await dropPhotoPair();
-
-    // Give the left photo's end framing a distinct scale so the stills are tellable apart.
-    act(() => {
-      const s = useEditor.getState();
-      const a = s.clips[0];
-      useEditor.setState({
-        clips: s.clips.map((c) =>
-          c.id === a.id ? addKeyframe(c, a.durationMs, { ...IDENTITY_TRANSFORM, scale: 1.6 }) : c,
-        ),
-      });
-    });
 
     await user.click(screen.getByRole('button', { name: CUT_CHIP }));
     // Selecting is free: nothing is sent until the big button.
@@ -371,9 +160,11 @@ describe('AI transitions between photos', () => {
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
     const sent = generateAnimation.mock.calls[0][0];
     expect(sent.prompt).toBe(DEFAULT_TRANSITION_PROMPT);
-    // Each side of the cut goes out framed as its own clip had it.
-    expect(sent.startFrame).toMatch(/-at-scale-1\.6$/);
-    expect(sent.endFrame).toMatch(/-at-scale-1$/);
+    // Each side of the cut goes out as its own photo's still.
+    const srcOf = (name: string) =>
+      Object.values(useEditor.getState().assets).find((a) => a.name === name)?.src;
+    expect(sent.startFrame).toBe(`data:image/jpeg;base64,frame-of-${srcOf('sunset.jpg')}`);
+    expect(sent.endFrame).toBe(`data:image/jpeg;base64,frame-of-${srcOf('cliff.png')}`);
 
     // The cut has no width on the track, so the chip itself is the progress surface.
     const id = Object.keys(useEditor.getState().generations)[0];
@@ -568,20 +359,19 @@ describe('AI transitions between photos', () => {
     expect(second.target).toMatchObject({ kind: 'cut', afterClipId: d.id, beforeClipId: e.id });
   });
 
-  it('7 — a reframed neighbour marks it stale; Regenerate uses the new framing', async () => {
+  it('7 — a replaced neighbour marks it stale; Regenerate uses the current neighbours', async () => {
     const user = userEvent.setup();
     render(<App />);
     const id = await runCutGeneration(user);
     await succeed(id);
 
-    // The right photo's first frame is re-framed after the render landed.
+    // The right photo is swapped for a different clip after the render landed — a split,
+    // a re-import, or a reorder all read the same way: not the clip it was made from.
     act(() => {
       const s = useEditor.getState();
       const b = s.clips[2];
       useEditor.setState({
-        clips: s.clips.map((c) =>
-          c.id === b.id ? addKeyframe(c, 0, { ...IDENTITY_TRANSFORM, scale: 2 }) : c,
-        ),
+        clips: s.clips.map((c) => (c.id === b.id ? { ...c, id: 'clip_replacement' } : c)),
       });
     });
     expect(await screen.findByText('⟳ SOURCES CHANGED')).toBeInTheDocument();
@@ -590,8 +380,12 @@ describe('AI transitions between photos', () => {
     generateAnimation.mockClear();
     await user.click(await screen.findByRole('button', { name: /regenerate transition/i }));
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
-    // The NEW neighbour framing went out, not the one the old render was made from.
-    expect(generateAnimation.mock.calls[0][0].endFrame).toMatch(/-at-scale-2$/);
+    // The still of whatever stands there NOW went out.
+    const srcOf = (name: string) =>
+      Object.values(useEditor.getState().assets).find((a) => a.name === name)?.src;
+    expect(generateAnimation.mock.calls[0][0].endFrame).toBe(
+      `data:image/jpeg;base64,frame-of-${srcOf('cliff.png')}`,
+    );
 
     const regen = Object.values(useEditor.getState().generations).find((g) => g.status === 'queued')!;
     await succeed(regen.id, '/home/u/.cache/solcut/generated/tr2.mp4');
@@ -599,6 +393,24 @@ describe('AI transitions between photos', () => {
     // Swapped in place: same shape, and the staleness tag is gone.
     expect(useEditor.getState().clips.map((c) => c.kind)).toEqual(['photo', 'video', 'photo']);
     expect(screen.queryByText('⟳ SOURCES CHANGED')).not.toBeInTheDocument();
+  });
+
+  it('a long-running generation says so instead of leaving the user guessing', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const id = await runCutGeneration(user);
+
+    act(() =>
+      emitGenerationUpdate({
+        generationId: id,
+        status: 'running',
+        progress: 0.62,
+        elapsedSecs: 107,
+        slow: true,
+      }),
+    );
+
+    expect(await screen.findByText('Taking longer than usual')).toBeInTheDocument();
   });
 
   it('8 — removing a neighbour photo mid-flight cancels the render', async () => {
@@ -1170,7 +982,7 @@ describe('the 3-photo film wizard', () => {
   function stillOf(name: string): string {
     const asset = Object.values(useEditor.getState().assets).find((a) => a.name === name);
     expect(asset, `${name} is in the media bin`).toBeTruthy();
-    return `frame-of-${asset?.src}-at-`;
+    return `frame-of-${asset?.src}`;
   }
 
   /** The request that answers for one leg — never arrival order, which is a race. */
@@ -1225,7 +1037,7 @@ describe('the 3-photo film wizard', () => {
     expect(generateFilm()).toBeEnabled();
   });
 
-  it('a video cannot be one of the three keyframes, and is told so', async () => {
+  it('a video cannot be one of the three photos, and is told so', async () => {
     const user = userEvent.setup();
     await openWizard(user);
 
@@ -1237,7 +1049,7 @@ describe('the 3-photo film wizard', () => {
 
     expect(
       screen.getByText(
-        "surf.mp4 — a film's three keyframes are photos — a video cannot be one of them",
+        'surf.mp4 — a film is made from three photos — a video cannot be one of them',
       ),
     ).toBeInTheDocument();
     expect(screen.getByText('2 of 3 photos chosen — add 1 more.')).toBeInTheDocument();
@@ -1505,27 +1317,6 @@ describe('the 3-photo film wizard', () => {
     expect(useEditor.getState().clips).toHaveLength(2);
   });
 });
-
-async function setUpTwoKeyframes(user: ReturnType<typeof userEvent.setup>) {
-  await dropOnTimeline([file('sunset.jpg', 'image/jpeg')]);
-  await user.click(await screen.findByRole('button', { name: 'sunset.jpg photo clip' }));
-  await user.click(screen.getByRole('button', { name: 'Add keyframe at playhead' }));
-  act(() => useEditor.getState().setPlayhead(3200));
-  await user.click(screen.getByRole('button', { name: 'Add keyframe at playhead' }));
-}
-
-/** Get as far as a queued generation, and return its id. */
-async function runGeneration(user: ReturnType<typeof userEvent.setup>): Promise<string> {
-  await setUpTwoKeyframes(user);
-  await user.click(screen.getByRole('button', { name: 'Segment from keyframe 1 to keyframe 2' }));
-  await user.type(
-    await screen.findByLabelText(/describe the motion/i),
-    'slow dolly-in over the water',
-  );
-  await user.click(screen.getByRole('button', { name: /generate animation/i }));
-  await waitFor(() => expect(generateAnimation).toHaveBeenCalled());
-  return Object.keys(useEditor.getState().generations)[0];
-}
 
 // ---- AI transitions
 
