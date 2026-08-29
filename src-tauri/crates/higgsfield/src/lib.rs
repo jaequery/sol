@@ -31,10 +31,22 @@ use std::path::Path;
 use std::time::Duration;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.higgsfield.ai";
-/// The Higgsfield "DoP" video model. It is the one documented endpoint that takes both a
-/// first *and* a last frame under `image_url`/`end_image_url`, which is exactly what a
-/// SolCut segment is.
-pub const DEFAULT_ENDPOINT: &str = "/higgsfield-ai/dop/standard";
+/// The default model endpoint: MiniMax Hailuo-02, a documented image-to-video operation
+/// whose contract is exactly a SolCut segment — a first frame under `image_url`, a last
+/// frame under `end_image_url`, and a prompt for the motion between them, nothing else
+/// required.
+///
+/// It was [`LEGACY_DEFAULT_ENDPOINT`] (Higgsfield's own "DoP") before. dop's published
+/// schema declares the same two frame fields, but the live endpoint is the API face of a
+/// single-image, motion-preset product — its product docs have no start→end-frame mode,
+/// and the API gives no way to list the preset ids it is built around — and it rejects
+/// this app's two-frame requests with a body-level 422 its schema does not predict. The
+/// dop endpoints can still be typed into Settings.
+pub const DEFAULT_ENDPOINT: &str = "/minimax/hailuo-02/standard/image-to-video";
+/// The default endpoint of earlier builds. Every save writes the whole config, so a
+/// settings file from one of them carries this literal even when the user never chose a
+/// model; `settings::load` in the desktop shell moves it forward to [`DEFAULT_ENDPOINT`].
+pub const LEGACY_DEFAULT_ENDPOINT: &str = "/higgsfield-ai/dop/standard";
 /// Where a presigned upload URL is minted. See the "File uploads" guide.
 pub const UPLOAD_URL_PATH: &str = "/files/generate-upload-url";
 
@@ -117,6 +129,12 @@ impl Config {
     /// hint the dialog shows both describe the credential that actually goes on the wire —
     /// a combined string left in the key-id field would otherwise mask the tail of the
     /// *secret* and show it as the key id.
+    ///
+    /// It also carries [`LEGACY_DEFAULT_ENDPOINT`] forward to [`DEFAULT_ENDPOINT`]:
+    /// settings files always store a concrete endpoint, so "never chose a model" and
+    /// "chose the then-default" are the same bytes, and the old default rejects every
+    /// request this editor can make. The other dop endpoints are left alone — typing one
+    /// is unambiguously a choice.
     pub fn normalized(mut self) -> Self {
         match self.credential() {
             Some((id, secret)) => {
@@ -130,6 +148,9 @@ impl Config {
         }
         self.base_url = self.base_url.trim().to_string();
         self.endpoint = self.endpoint.trim().to_string();
+        if self.endpoint == LEGACY_DEFAULT_ENDPOINT {
+            self.endpoint = DEFAULT_ENDPOINT.to_string();
+        }
         self
     }
 
@@ -202,8 +223,8 @@ fn decode_data_url(url: &str) -> Result<(String, Vec<u8>)> {
 /// One "animate from this frame to that frame" request.
 ///
 /// There is deliberately no duration here: no documented endpoint takes a free-form
-/// length. The models publish fixed choices (dop has none at all), and the editor fits
-/// whatever comes back into the segment it replaces.
+/// length. The models publish fixed choices (the default hailuo-02 operation has none at
+/// all), and the editor fits whatever comes back into the segment it replaces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateRequest {
     pub prompt: String,
@@ -527,11 +548,47 @@ fn detail_of(body: &str) -> String {
         Ok(value) => match value.get("detail") {
             Some(Value::String(s)) => s.clone(),
             // Validation errors put a list of problems in `detail`.
+            Some(Value::Array(problems)) => validation_messages(problems)
+                .unwrap_or_else(|| preview(&Value::Array(problems.clone()).to_string())),
             Some(other) => preview(&other.to_string()),
             None => preview(body),
         },
         Err(_) => preview(body),
     }
+}
+
+/// A validation list reduced to what was actually wrong: `field: message` per entry.
+///
+/// Each entry of a FastAPI/pydantic 422 also carries `input` — the rejected value echoed
+/// back, which for a submission is the whole body including two long image URLs. Dumping
+/// the raw list put that echo (serialised first, keys being sorted) in front of `msg`,
+/// and the length cap then cut off exactly the part that said what was invalid. So: keep
+/// `loc` and `msg`, drop the rest.
+fn validation_messages(problems: &[Value]) -> Option<String> {
+    let lines: Vec<String> = problems
+        .iter()
+        .filter_map(|problem| {
+            let msg = problem.get("msg").and_then(Value::as_str)?;
+            let field = problem
+                .get("loc")
+                .and_then(Value::as_array)
+                .map(|loc| {
+                    loc.iter()
+                        // Skip the constant "body" prefix and numeric list indexes —
+                        // "motions.id" reads better than "body.motions.0.id".
+                        .filter_map(Value::as_str)
+                        .filter(|part| *part != "body")
+                        .collect::<Vec<_>>()
+                        .join(".")
+                })
+                .filter(|field| !field.is_empty());
+            Some(match field {
+                Some(field) => format!("{field}: {msg}"),
+                None => msg.to_string(),
+            })
+        })
+        .collect();
+    (!lines.is_empty()).then(|| preview(&lines.join("; ")))
 }
 
 fn preview(body: &str) -> String {
@@ -675,7 +732,7 @@ mod tests {
     fn the_defaults_are_the_documented_api() {
         let c = Config::default();
         assert_eq!(c.base_url, "https://api.higgsfield.ai");
-        assert_eq!(c.endpoint, "/higgsfield-ai/dop/standard");
+        assert_eq!(c.endpoint, "/minimax/hailuo-02/standard/image-to-video");
         assert_eq!(
             AUTH_SCHEME, "Key",
             "the documented scheme is `Key id:secret`, not a bearer token"
@@ -690,12 +747,41 @@ mod tests {
         };
         assert_eq!(
             c.submit_url(),
-            "https://api.test/higgsfield-ai/dop/standard"
+            "https://api.test/minimax/hailuo-02/standard/image-to-video"
         );
         assert_eq!(
             c.url(UPLOAD_URL_PATH),
             "https://api.test/files/generate-upload-url"
         );
+    }
+
+    /// The regression behind "error when generating a transition": earlier builds stored
+    /// `/higgsfield-ai/dop/standard` the moment a key was saved, chosen or not, and that
+    /// endpoint rejects the two-frame requests this editor makes with a body-level 422.
+    #[test]
+    fn the_legacy_default_endpoint_follows_the_default_forward() {
+        let stale = Config {
+            endpoint: LEGACY_DEFAULT_ENDPOINT.into(),
+            ..cfg()
+        }
+        .normalized();
+        assert_eq!(stale.endpoint, DEFAULT_ENDPOINT);
+        assert_eq!(stale.api_key_id, "id", "the credential is untouched");
+    }
+
+    #[test]
+    fn any_other_endpoint_is_a_choice_and_kept() {
+        for chosen in [
+            "/higgsfield-ai/dop/turbo",
+            "/veo3.1/first-last-frame-to-video",
+        ] {
+            let config = Config {
+                endpoint: chosen.into(),
+                ..cfg()
+            }
+            .normalized();
+            assert_eq!(config.endpoint, chosen);
+        }
     }
 
     #[test]
@@ -731,6 +817,23 @@ mod tests {
         assert!(
             body.get("params").is_none() && body.get("model").is_none(),
             "no envelope and no model field: the model is the endpoint"
+        );
+    }
+
+    #[test]
+    fn the_default_endpoint_names_both_frames_and_declares_no_seed() {
+        let body = build_body(
+            DEFAULT_ENDPOINT,
+            "slow dolly-in",
+            "https://cdn.test/a.jpg",
+            Some("https://cdn.test/b.jpg"),
+            Some(7),
+        );
+        assert_eq!(body["image_url"], "https://cdn.test/a.jpg");
+        assert_eq!(body["end_image_url"], "https://cdn.test/b.jpg");
+        assert!(
+            body.get("seed").is_none(),
+            "hailuo-02 declares no seed, and an undeclared field risks a 422"
         );
     }
 
@@ -815,6 +918,57 @@ mod tests {
             detail_of("<html>bad gateway</html>"),
             "<html>bad gateway</html>"
         );
+    }
+
+    /// The regression behind "Generation failed" cards that showed nothing but URLs: a
+    /// 422's entries echo the whole submitted body under `input`, and serialising the
+    /// raw list put ~230 characters of image URL in front of `msg` — which the length
+    /// cap then cut off. What must survive is the message; what must go is the echo.
+    #[test]
+    fn a_validation_list_surfaces_the_message_not_the_echoed_input() {
+        let url = format!(
+            "https://cdn.test/{}/{}.jpeg",
+            "a".repeat(80),
+            "b".repeat(40)
+        );
+        let body = json!({
+            "detail": [{
+                "type": "value_error",
+                "loc": ["body"],
+                "msg": "Value error, end frame is not supported by this model",
+                "input": {"end_image_url": url, "image_url": url, "prompt": "drift"}
+            }]
+        });
+        let detail = detail_of(&body.to_string());
+        assert_eq!(
+            detail,
+            "Value error, end frame is not supported by this model"
+        );
+        assert!(
+            !detail.contains("cdn.test"),
+            "the input echo is dropped: {detail}"
+        );
+    }
+
+    #[test]
+    fn every_validation_problem_is_named_with_its_field() {
+        let body = json!({
+            "detail": [
+                {"type": "missing", "loc": ["body", "duration"], "msg": "Field required", "input": {}},
+                {"type": "missing", "loc": ["body", "motions", 0, "id"], "msg": "Field required", "input": {}}
+            ]
+        });
+        assert_eq!(
+            detail_of(&body.to_string()),
+            "duration: Field required; motions.id: Field required",
+            "the constant `body` prefix and list indexes are noise"
+        );
+    }
+
+    #[test]
+    fn a_validation_list_without_messages_still_shows_something() {
+        let detail = detail_of(r#"{"detail":[{"loc":["body","seed"],"type":"int_type"}]}"#);
+        assert!(detail.contains("seed"), "{detail}");
     }
 
     #[test]
