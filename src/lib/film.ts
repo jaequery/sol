@@ -1,8 +1,8 @@
 /**
  * A film: three photos, two AI transitions, one run.
  *
- * The photos *are* the keyframes — the film is nothing but the transitions between them
- * (photo 1 → 2, photo 2 → 3), concatenated. That makes a film a small ordered job rather
+ * The film is nothing but the transitions between the photos (photo 1 → 2, photo 2 → 3),
+ * concatenated. That makes a film a small ordered job rather
  * than a timeline edit, and this module is its whole model: what each leg is, what state it
  * is in, what the film as a whole therefore is, and — once every leg has landed — what goes
  * onto the track.

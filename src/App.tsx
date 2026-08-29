@@ -98,8 +98,6 @@ function useKeyboardShortcuts() {
       if (e.code === 'Space') {
         e.preventDefault();
         store.togglePlay();
-      } else if (e.key === 'k') {
-        store.addKeyframeAtPlayhead();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
         store.deleteSelection();
       } else if (e.key === 'Escape') {

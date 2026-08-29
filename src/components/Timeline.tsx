@@ -11,10 +11,8 @@ import {
   placeClip,
   resizeAudio,
   resizeClipInList,
-  segmentsOf,
   snapStartMs,
   snapTargets,
-  sortKeyframes,
   startOfIndex,
   timelineEndMs,
   transitionStaleness,
@@ -29,8 +27,6 @@ const MIN_CLIP_PX = 14;
  * to grab for a reorder. Below it the handles step aside and zooming in brings them back.
  */
 const MIN_HANDLE_CLIP_PX = 32;
-/** Below this, keyframe diamonds would overlap, so they collapse into a cluster chip. */
-const MIN_KEYFRAME_GAP_PX = 14;
 /** Under this much movement a press is still a click, so selecting a clip stays easy. */
 const DRAG_THRESHOLD_PX = 4;
 /** Arrow-key steps on a clip or an edge handle, for editing without a mouse. */
@@ -64,7 +60,7 @@ type AudioDrag = {
   moved: boolean;
 };
 
-/** The single track: clips, their keyframes, the segments between them, and the playhead. */
+/** The single track: clips, the cuts between them, and the playhead. */
 export function Timeline() {
   const clips = useEditor((s) => s.clips);
   const audioTracks = useEditor((s) => s.audioTracks);
@@ -79,7 +75,6 @@ export function Timeline() {
   const addFiles = useEditor((s) => s.addFiles);
   const addPaths = useEditor((s) => s.addPaths);
   const addAudioViaDialog = useEditor((s) => s.addAudioViaDialog);
-  const addKeyframeAtPlayhead = useEditor((s) => s.addKeyframeAtPlayhead);
   const splitAtPlayhead = useEditor((s) => s.splitAtPlayhead);
   const deleteSelection = useEditor((s) => s.deleteSelection);
   const moveClipTo = useEditor((s) => s.moveClipTo);
@@ -165,17 +160,6 @@ export function Timeline() {
   const placed = useMemo(() => layout(previewClips), [previewClips]);
   const total = timelineEndMs(previewClips, previewAudio);
   const width = Math.max(toPx(total), 320);
-
-  const selectedClipId =
-    selection.kind === 'none' || selection.kind === 'audio' || selection.kind === 'cut'
-      ? null
-      : selection.clipId;
-  const selectedClip = clips.find((c) => c.id === selectedClipId);
-  const canKeyframe = selectedClip?.kind === 'photo';
-
-  const activeGenerations = Object.values(generations).filter(
-    (g) => g.status === 'queued' || g.status === 'running' || g.status === 'failed',
-  );
 
   // Chips live on the preview list so they ride along with a drag or resize in progress.
   const cuts = useMemo(() => photoCuts(previewClips), [previewClips]);
@@ -432,16 +416,6 @@ export function Timeline() {
         </button>
         <button
           type="button"
-          className={`tool tool--wide ${canKeyframe ? 'tool--on' : ''}`}
-          aria-label="Add keyframe at playhead"
-          onClick={addKeyframeAtPlayhead}
-          disabled={!canKeyframe}
-          title={canKeyframe ? undefined : 'Select a photo clip first'}
-        >
-          ◆ Add keyframe
-        </button>
-        <button
-          type="button"
           className="tool tool--wide"
           aria-label="Add audio track"
           title="Add a sound file on its own track, starting at the playhead"
@@ -546,10 +520,8 @@ export function Timeline() {
                     asset={assets[clip.assetId]}
                     staleness={clip.transition ? transitionStaleness(previewClips, clip.id) : undefined}
                     toPx={toPx}
-                    pxPerSecond={pxPerSecond}
                     selection={selection}
                     drag={drag?.clipId === clip.id ? drag : null}
-                    onSelect={select}
                     onSelectClip={onSelectClip}
                     onDragStart={beginDrag}
                     onMoveKey={onMoveKey}
@@ -587,15 +559,6 @@ export function Timeline() {
                     />
                   );
                 })}
-
-                {activeGenerations.map((generation) => (
-                  <GenerationOverlay
-                    key={generation.id}
-                    generation={generation}
-                    clips={previewClips}
-                    toPx={toPx}
-                  />
-                ))}
 
                 <div className="playhead" style={{ left: toPx(playheadMs) }} />
               </div>
@@ -780,10 +743,8 @@ function TimelineClip({
   asset,
   staleness,
   toPx,
-  pxPerSecond,
   selection,
   drag,
-  onSelect,
   onSelectClip,
   onDragStart,
   onMoveKey,
@@ -795,25 +756,17 @@ function TimelineClip({
   /** Only for transition clips: whether their sources still match. */
   staleness?: TransitionStaleness;
   toPx: (ms: number) => number;
-  pxPerSecond: number;
   selection: Selection;
   /** The drag that has hold of *this* clip, if any. */
   drag: ClipDrag | null;
-  onSelect: (s: Selection) => void;
   onSelectClip: (clipId: string) => void;
   onDragStart: (e: React.PointerEvent, kind: ClipDrag['kind'], clip: Clip, edge: ClipEdge) => void;
   onMoveKey: (e: React.KeyboardEvent, clip: Clip) => void;
   onResizeKey: (e: React.KeyboardEvent, clipId: string, edge: ClipEdge) => void;
 }) {
   const width = Math.max(toPx(clip.durationMs), MIN_CLIP_PX);
-  const selected =
-    selection.kind !== 'none' &&
-    selection.kind !== 'audio' &&
-    selection.kind !== 'cut' &&
-    selection.clipId === clip.id;
+  const selected = selection.kind === 'clip' && selection.clipId === clip.id;
   const offline = !asset;
-  const keyframes = sortKeyframes(clip.keyframes);
-  const segments = segmentsOf(clip);
   const roomy = width > 70;
   const resizable = width >= MIN_HANDLE_CLIP_PX;
   const moving = drag !== null && drag.kind === 'move' && drag.moved;
@@ -828,20 +781,6 @@ function TimelineClip({
   ]
     .filter(Boolean)
     .join(' ');
-
-  // Collapse diamonds that would sit on top of each other at this zoom.
-  const visibleKeyframes: typeof keyframes = [];
-  let hidden = 0;
-  let lastPx = -Infinity;
-  for (const kf of keyframes) {
-    const px = toPx(kf.timeMs);
-    if (px - lastPx >= MIN_KEYFRAME_GAP_PX) {
-      visibleKeyframes.push(kf);
-      lastPx = px;
-    } else {
-      hidden += 1;
-    }
-  }
 
   return (
     <div
@@ -896,70 +835,6 @@ function TimelineClip({
             onClick={(e) => e.stopPropagation()}
           />
         ))}
-
-      {clip.kind === 'photo' && (
-        <div className="kflane">
-          {keyframes.length === 0 && roomy && (
-            <span className="kflane__hint">no keyframes</span>
-          )}
-
-          {segments.map((segment, index) => {
-            const isSelected =
-              selection.kind === 'segment' &&
-              selection.clipId === clip.id &&
-              selection.fromKeyframeId === segment.fromKeyframeId;
-            const prompt = clip.prompts[segment.fromKeyframeId];
-            return (
-              <button
-                key={segment.fromKeyframeId}
-                type="button"
-                className={`segment ${isSelected ? 'segment--selected' : ''}`}
-                aria-label={`Segment from keyframe ${index + 1} to keyframe ${index + 2}`}
-                style={{ left: toPx(segment.startMs), width: Math.max(toPx(segment.durationMs), 6) }}
-                onClick={() =>
-                  onSelect({
-                    kind: 'segment',
-                    clipId: clip.id,
-                    fromKeyframeId: segment.fromKeyframeId,
-                    toKeyframeId: segment.toKeyframeId,
-                  })
-                }
-              >
-                {prompt && isSelected && pxPerSecond > 20 && (
-                  <span className="segment__pill">“{prompt}”</span>
-                )}
-              </button>
-            );
-          })}
-
-          {visibleKeyframes.map((kf) => {
-            const index = keyframes.indexOf(kf);
-            const isSelected =
-              selection.kind === 'keyframe' &&
-              selection.clipId === clip.id &&
-              selection.keyframeId === kf.id;
-            return (
-              <button
-                key={kf.id}
-                type="button"
-                className={`kf ${isSelected ? 'kf--selected' : ''}`}
-                aria-label={`Keyframe ${index + 1} at ${formatTimecode(kf.timeMs)}`}
-                style={{ left: toPx(kf.timeMs) }}
-                onClick={() => onSelect({ kind: 'keyframe', clipId: clip.id, keyframeId: kf.id })}
-              />
-            );
-          })}
-
-          {hidden > 0 && (
-            <span
-              className="segment__pill"
-              style={{ left: 'auto', right: 4, bottom: 4, transform: 'none' }}
-            >
-              +{hidden}
-            </span>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -1039,55 +914,3 @@ function CutChip({
   );
 }
 
-/** The hatched placeholder that holds a segment's place while Higgsfield renders it. */
-function GenerationOverlay({
-  generation,
-  clips,
-  toPx,
-}: {
-  generation: Generation;
-  clips: Clip[];
-  toPx: (ms: number) => number;
-}) {
-  // A cut generation's progress lives on its chip; only segments get a track overlay.
-  const target = generation.target;
-  if (target.kind !== 'segment') return null;
-
-  const placed = layout(clips).find((p) => p.clip.id === target.clipId);
-  if (!placed) return null;
-
-  const segment = segmentsOf(placed.clip).find((s) => s.fromKeyframeId === target.fromKeyframeId);
-  if (!segment) return null;
-
-  const failed = generation.status === 'failed';
-  const label = failed
-    ? 'Failed'
-    : generation.status === 'queued'
-      ? 'Queued'
-      : `Rendering ${Math.round(generation.progress * 100)}%`;
-
-  return (
-    <div
-      className={`genclip ${failed ? 'genclip--error' : ''}`}
-      role="status"
-      style={{
-        left: toPx(placed.startMs + segment.startMs),
-        width: Math.max(toPx(segment.durationMs), 40),
-      }}
-    >
-      {label}
-      {!failed && (
-        <span className="genclip__bar">
-          <i style={{ width: `${Math.max(generation.progress * 100, 4)}%` }} />
-        </span>
-      )}
-      <span className="genclip__sub">
-        {failed
-          ? (generation.error?.title ?? 'error')
-          : generation.slow
-            ? 'taking longer than usual'
-            : formatDuration(segment.durationMs)}
-      </span>
-    </div>
-  );
-}

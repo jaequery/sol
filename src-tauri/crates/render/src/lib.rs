@@ -9,22 +9,9 @@
 //! part like any other — black picture, silent bed, same encoder settings — which is what
 //! lets the concat stay a stream copy.
 
-pub mod expr;
-
-use expr::{is_constant, num, piecewise_linear, Point};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
-
-/// The photo transform range the editor offers. `zoompan` cannot zoom below the frame, so
-/// scaling under 1.0 (which would show empty background) is not part of the model.
-pub const MIN_SCALE: f32 = 1.0;
-pub const MAX_SCALE: f32 = 4.0;
-
-/// Supersampling factor for photo motion. `zoompan` snaps its window to whole pixels, so
-/// panning at the output size visibly stair-steps; doing the move at 2x and scaling down
-/// hides it.
-const SUPERSAMPLE: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
@@ -60,32 +47,6 @@ impl From<std::io::Error> for RenderError {
 
 pub type Result<T> = std::result::Result<T, RenderError>;
 
-/// A photo's 2D framing at one instant. `x`/`y` are percentages of the canvas so the same
-/// numbers survive a change of export resolution.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Keyframe {
-    pub time_ms: u32,
-    pub scale: f32,
-    pub x: f32,
-    pub y: f32,
-    pub rotation_deg: f32,
-    pub opacity: f32,
-}
-
-impl Default for Keyframe {
-    fn default() -> Self {
-        Self {
-            time_ms: 0,
-            scale: 1.0,
-            x: 0.0,
-            y: 0.0,
-            rotation_deg: 0.0,
-            opacity: 1.0,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -93,11 +54,8 @@ impl Default for Keyframe {
     rename_all_fields = "camelCase"
 )]
 pub enum Source {
-    /// A still, animated by its keyframes.
-    Photo {
-        path: PathBuf,
-        keyframes: Vec<Keyframe>,
-    },
+    /// A still, held for the clip's duration.
+    Photo { path: PathBuf },
     /// A video — including a clip Higgsfield generated — played from `trim_start_ms`.
     Video { path: PathBuf, trim_start_ms: u32 },
 }
@@ -199,89 +157,28 @@ impl Progress {
 
 // ---------------------------------------------------------------- filter graphs
 
-/// The filter chain that animates one photo across its keyframes.
-///
-/// Only the filters that actually do something are included: a photo with no motion is a
-/// plain scale-and-pad, which encodes far faster and cannot go wrong.
-pub fn photo_filter(spec: &ExportSpec, keyframes: &[Keyframe], duration_secs: f32) -> String {
+/// The filter chain that renders one photo: scaled to *cover* the export frame, cropped to
+/// it, and held still for the clip's duration.
+pub fn photo_filter(spec: &ExportSpec) -> String {
     let (w, h) = (spec.width, spec.height);
-    let (sw, sh) = (w * SUPERSAMPLE, h * SUPERSAMPLE);
-    let frames = ((duration_secs * spec.fps as f32).round() as u32).max(1);
-
-    let kf: Vec<Keyframe> = if keyframes.is_empty() {
-        vec![Keyframe::default()]
-    } else {
-        let mut k = keyframes.to_vec();
-        k.sort_by_key(|a| a.time_ms);
-        k
-    };
-
-    let pts = |f: fn(&Keyframe) -> f32| -> Vec<Point> {
-        kf.iter()
-            .map(|k| Point {
-                t: k.time_ms as f32 / 1000.0,
-                v: f(k),
-            })
-            .collect()
-    };
-
-    let scale_pts: Vec<Point> = pts(|k| k.scale.clamp(MIN_SCALE, MAX_SCALE));
-    let x_pts = pts(|k| k.x);
-    let y_pts = pts(|k| k.y);
-    let rot_pts = pts(|k| k.rotation_deg);
-    let op_pts = pts(|k| k.opacity.clamp(0.0, 1.0));
-
-    // Cover the frame first, so every later filter works on a known-size image.
-    let mut chain = vec![format!(
-        "scale={sw}:{sh}:force_original_aspect_ratio=increase,crop={sw}:{sh},setsar=1"
-    )];
-
-    let moves =
-        !is_constant(&scale_pts, 1.0) || !is_constant(&x_pts, 0.0) || !is_constant(&y_pts, 0.0);
-    if moves {
-        // zoompan counts output frames, so time is `on/fps`.
-        let time = format!("(on/{})", spec.fps);
-        let z = piecewise_linear(&scale_pts, &time);
-        // Panning the image right by dx means moving the crop window left by dx.
-        let dx = piecewise_linear(&scaled(&x_pts, sw as f32 / 100.0), &time);
-        let dy = piecewise_linear(&scaled(&y_pts, sh as f32 / 100.0), &time);
-        chain.push(format!(
-            "zoompan=z='{z}':x='(iw-iw/zoom)/2-({dx})':y='(ih-ih/zoom)/2-({dy})':d=1:s={sw}x{sh}:fps={fps}",
-            fps = spec.fps
-        ));
-        // zoompan restarts its frame counter per input frame unless it is fed one image;
-        // trim keeps the clip at exactly the requested length either way.
-        chain.push(format!("trim=end_frame={frames}"));
-    }
-
-    if !is_constant(&rot_pts, 0.0) {
-        let a = piecewise_linear(&rot_pts, "t");
-        chain.push(format!("rotate=a='({a})*PI/180':ow=iw:oh=ih:c=black"));
-    }
-
-    if !is_constant(&op_pts, 1.0) {
-        // The result is composited on black, so fading is a straight RGB multiply.
-        let a = piecewise_linear(&op_pts, "t");
-        chain.push("format=rgb24".to_string());
-        chain.push(format!(
-            "geq=r='r(X,Y)*({a})':g='g(X,Y)*({a})':b='b(X,Y)*({a})'"
-        ));
-    }
-
-    chain.push(format!("scale={w}:{h}"));
-    chain.push(format!("fps={}", spec.fps));
-    chain.push("format=yuv420p".to_string());
-    chain.join(",")
+    format!(
+        "scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,\
+         fps={fps},format=yuv420p",
+        fps = spec.fps
+    )
 }
 
-fn scaled(points: &[Point], factor: f32) -> Vec<Point> {
-    points
-        .iter()
-        .map(|p| Point {
-            t: p.t,
-            v: p.v * factor,
-        })
-        .collect()
+/// ffmpeg's argument parser is locale-independent and wants a plain decimal; make sure
+/// we never emit scientific notation or a bare `-`.
+fn num(v: f32) -> String {
+    let v = if v.is_finite() { v } else { 0.0 };
+    let s = format!("{:.6}", v);
+    let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
+    if s.is_empty() || s == "-" || s == "-0" {
+        "0".to_string()
+    } else {
+        s
+    }
 }
 
 /// The filter chain that fits a video into the export frame without cropping it.
@@ -308,12 +205,12 @@ pub fn normalize_args(
     let duration = num(clip.duration_secs());
 
     let filter = match &clip.source {
-        Source::Photo { path, keyframes } => {
+        Source::Photo { path } => {
             args.extend(["-loop".into(), "1".into()]);
             args.extend(["-framerate".into(), spec.fps.to_string()]);
             args.extend(["-t".into(), duration.clone()]);
             args.extend(["-i".into(), path.display().to_string()]);
-            photo_filter(spec, keyframes, clip.duration_secs())
+            photo_filter(spec)
         }
         Source::Video {
             path,
@@ -751,102 +648,32 @@ mod tests {
         }
     }
 
-    fn kf(time_ms: u32, scale: f32, x: f32, y: f32) -> Keyframe {
-        Keyframe {
-            time_ms,
-            scale,
-            x,
-            y,
-            ..Keyframe::default()
-        }
+    #[test]
+    fn a_photo_is_covered_cropped_and_held_still() {
+        let f = photo_filter(&spec());
+        assert!(f.contains("force_original_aspect_ratio=increase"), "{f}");
+        assert!(f.contains("crop=640:360"), "{f}");
+        assert!(f.contains("fps=30"), "{f}");
+        assert!(f.contains("format=yuv420p"), "{f}");
     }
 
     #[test]
-    fn a_still_photo_gets_no_motion_filters() {
-        let f = photo_filter(
-            &spec(),
-            &[kf(0, 1.0, 0.0, 0.0), kf(2000, 1.0, 0.0, 0.0)],
-            2.0,
+    fn emits_plain_decimals_ffmpeg_can_parse() {
+        assert_eq!(num(1.0), "1", "whole numbers lose their .0");
+        assert_eq!(num(1.5), "1.5");
+        assert_eq!(num(0.000001), "0.000001", "six decimals survive");
+        assert_eq!(
+            num(1.0e-7),
+            "0",
+            "anything finer rounds to zero, never to 1e-7"
         );
-        assert!(!f.contains("zoompan"), "no movement means no zoompan: {f}");
-        assert!(!f.contains("rotate"), "{f}");
-        assert!(!f.contains("geq"), "{f}");
-        assert!(f.contains("scale=640:360"), "{f}");
-    }
-
-    #[test]
-    fn a_scaling_photo_gets_zoompan_driven_by_the_frame_counter() {
-        let f = photo_filter(
-            &spec(),
-            &[kf(0, 1.0, 0.0, 0.0), kf(2000, 1.5, 0.0, 0.0)],
-            2.0,
+        assert_eq!(num(-0.0), "0", "ffmpeg has no use for a signed zero");
+        assert_eq!(
+            num(f32::NAN),
+            "0",
+            "a non-finite value never reaches the arguments"
         );
-        assert!(f.contains("zoompan"), "{f}");
-        assert!(
-            f.contains("(on/30)"),
-            "zoompan interpolates over output frames: {f}"
-        );
-        assert!(f.contains("d=1"), "{f}");
-    }
-
-    #[test]
-    fn panning_converts_percentages_into_supersampled_pixels() {
-        // x = +10% of a 640px canvas at 2x supersampling = 128px of window offset.
-        let f = photo_filter(
-            &spec(),
-            &[kf(0, 1.2, 0.0, 0.0), kf(1000, 1.2, 10.0, 0.0)],
-            1.0,
-        );
-        assert!(f.contains("128"), "expected 10% of 1280px: {f}");
-        assert!(
-            f.contains("(iw-iw/zoom)/2-("),
-            "panning moves the crop window: {f}"
-        );
-    }
-
-    #[test]
-    fn scale_is_clamped_to_what_zoompan_can_express() {
-        let f = photo_filter(
-            &spec(),
-            &[kf(0, 0.2, 0.0, 0.0), kf(1000, 99.0, 0.0, 0.0)],
-            1.0,
-        );
-        assert!(f.contains(&num(MAX_SCALE)), "clamped at the top: {f}");
-        assert!(!f.contains("0.2"), "clamped at the bottom: {f}");
-    }
-
-    #[test]
-    fn rotation_is_converted_to_radians() {
-        let mut a = Keyframe::default();
-        let mut b = Keyframe {
-            time_ms: 1000,
-            ..Keyframe::default()
-        };
-        a.rotation_deg = 0.0;
-        b.rotation_deg = 90.0;
-        let f = photo_filter(&spec(), &[a, b], 1.0);
-        assert!(f.contains("rotate=a='"), "{f}");
-        assert!(f.contains("*PI/180"), "{f}");
-    }
-
-    #[test]
-    fn opacity_only_appears_when_it_varies() {
-        let solid = photo_filter(&spec(), &[Keyframe::default()], 1.0);
-        assert!(!solid.contains("geq"), "{solid}");
-
-        let fading = photo_filter(
-            &spec(),
-            &[
-                Keyframe::default(),
-                Keyframe {
-                    time_ms: 1000,
-                    opacity: 0.0,
-                    ..Keyframe::default()
-                },
-            ],
-            1.0,
-        );
-        assert!(fading.contains("geq="), "{fading}");
+        assert!(!num(1.0e-7).contains('e'));
     }
 
     #[test]
@@ -864,7 +691,6 @@ mod tests {
             duration_ms: 2500,
             source: Source::Photo {
                 path: "/tmp/a.jpg".into(),
-                keyframes: vec![],
             },
         };
         let args = normalize_args(&spec(), &clip, false, Path::new("/tmp/out.mp4"));
@@ -916,7 +742,6 @@ mod tests {
             duration_ms: 1000,
             source: Source::Photo {
                 path: "/tmp/a.jpg".into(),
-                keyframes: vec![],
             },
         };
         let video = ExportClip {
@@ -952,7 +777,6 @@ mod tests {
             duration_ms,
             source: Source::Photo {
                 path: "/tmp/a.jpg".into(),
-                keyframes: vec![],
             },
         }
     }
@@ -1144,7 +968,6 @@ mod tests {
             duration_ms: 1000,
             source: Source::Photo {
                 path: "/tmp/a.jpg".into(),
-                keyframes: vec![],
             },
         });
         let err = r
@@ -1171,11 +994,7 @@ mod wire_format {
             "clips": [
                 {
                     "name": "sunset.jpg", "startMs": 500, "durationMs": 6000, "kind": "photo",
-                    "path": "/tmp/sunset.jpg",
-                    "keyframes": [
-                        {"timeMs": 0, "scale": 1.0, "x": 0.0, "y": 0.0, "rotationDeg": 0.0, "opacity": 1.0},
-                        {"timeMs": 3200, "scale": 1.4, "x": -3.0, "y": 2.0, "rotationDeg": 0.0, "opacity": 1.0}
-                    ]
+                    "path": "/tmp/sunset.jpg"
                 },
                 {
                     "name": "surf.mp4", "startMs": 8000, "durationMs": 9000, "kind": "video",
@@ -1199,12 +1018,10 @@ mod wire_format {
             ]
         );
 
-        let Source::Photo { keyframes, .. } = &spec.clips[0].source else {
+        let Source::Photo { path } = &spec.clips[0].source else {
             panic!("first clip is a photo");
         };
-        assert_eq!(keyframes.len(), 2);
-        assert_eq!(keyframes[1].time_ms, 3200);
-        assert_eq!(keyframes[1].x, -3.0);
+        assert_eq!(path, Path::new("/tmp/sunset.jpg"));
 
         let Source::Video { trim_start_ms, .. } = &spec.clips[1].source else {
             panic!("second clip is a video");
@@ -1231,8 +1048,8 @@ mod wire_format {
         let json = r#"{
             "width": 640, "height": 360, "fps": 30,
             "clips": [
-                {"name": "a.jpg", "durationMs": 1000, "kind": "photo", "path": "/tmp/a.jpg", "keyframes": []},
-                {"name": "b.jpg", "durationMs": 1000, "kind": "photo", "path": "/tmp/b.jpg", "keyframes": []}
+                {"name": "a.jpg", "durationMs": 1000, "kind": "photo", "path": "/tmp/a.jpg"},
+                {"name": "b.jpg", "durationMs": 1000, "kind": "photo", "path": "/tmp/b.jpg"}
             ]
         }"#;
         let spec: ExportSpec = serde_json::from_str(json).expect("parses");
@@ -1242,5 +1059,22 @@ mod wire_format {
             vec![TimelinePart::Clip(0), TimelinePart::Clip(1)],
             "no positions means no gaps"
         );
+    }
+
+    /// A spec from an editor that still sends fields this crate no longer models — the
+    /// removed per-photo animation track included — parses, with the extras ignored.
+    #[test]
+    fn a_spec_with_fields_from_an_older_editor_still_parses() {
+        let json = r#"{
+            "width": 640, "height": 360, "fps": 30,
+            "clips": [
+                {
+                    "name": "a.jpg", "durationMs": 1000, "kind": "photo", "path": "/tmp/a.jpg",
+                    "legacyAnimation": [{"timeMs": 0, "scale": 1.0}]
+                }
+            ]
+        }"#;
+        let spec: ExportSpec = serde_json::from_str(json).expect("unknown fields are ignored");
+        assert!(matches!(spec.clips[0].source, Source::Photo { .. }));
     }
 }

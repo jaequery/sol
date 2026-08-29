@@ -1,12 +1,10 @@
 /**
- * Rendering a keyframe to a still.
+ * Rendering a photo to a still.
  *
- * Higgsfield animates between two images, so "the photo as keyframe 1 frames it" and "the
- * photo as keyframe 2 frames it" have to be baked into actual pixels before the request
- * goes out. That is exactly what the preview already draws, done once onto a canvas.
+ * Higgsfield animates between two images, so each photo has to be baked into actual pixels
+ * before the request goes out. That is exactly what the preview already draws — the photo
+ * scaled to cover the frame — done once onto a canvas.
  */
-
-import type { Transform2D } from '../types/project';
 
 export const FRAME_WIDTH = 1280;
 export const FRAME_HEIGHT = 720;
@@ -22,15 +20,14 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 /**
- * Draw `src` with `transform` applied and return it as a JPEG data URL.
+ * Draw `src` and return it as a JPEG data URL.
  *
- * The source is scaled to *cover* the frame first, matching both the preview's `object-fit`
- * and the export filter's `force_original_aspect_ratio=increase`, so what the user sees is
+ * The source is scaled to *cover* the frame, matching both the preview's `object-fit` and
+ * the export filter's `force_original_aspect_ratio=increase`, so what the user sees is
  * what the API is asked to animate.
  */
-export async function renderKeyframeJpeg(
+export async function renderPhotoJpeg(
   src: string,
-  transform: Transform2D,
   width = FRAME_WIDTH,
   height = FRAME_HEIGHT,
 ): Promise<string> {
@@ -40,7 +37,7 @@ export async function renderKeyframeJpeg(
   canvas.height = height;
 
   const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('this browser cannot render keyframes to an image');
+  if (!ctx) throw new Error('this browser cannot render photos to an image');
 
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, width, height);
@@ -49,14 +46,13 @@ export async function renderKeyframeJpeg(
   const drawWidth = image.naturalWidth * cover;
   const drawHeight = image.naturalHeight * cover;
 
-  ctx.save();
-  ctx.globalAlpha = Math.max(0, Math.min(1, transform.opacity));
-  // Percentages of the canvas, so the numbers mean the same thing at any export size.
-  ctx.translate(width / 2 + (transform.x / 100) * width, height / 2 + (transform.y / 100) * height);
-  ctx.rotate((transform.rotation * Math.PI) / 180);
-  ctx.scale(transform.scale, transform.scale);
-  ctx.drawImage(image, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight);
-  ctx.restore();
+  ctx.drawImage(
+    image,
+    (width - drawWidth) / 2,
+    (height - drawHeight) / 2,
+    drawWidth,
+    drawHeight,
+  );
 
   return canvas.toDataURL('image/jpeg', 0.9);
 }

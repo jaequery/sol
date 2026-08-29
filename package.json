@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "A simplified CapCut-style video editor: one timeline, AI keyframe animation via Higgsfield.",
+  "description": "A simplified CapCut-style video editor: one timeline, AI photo-to-photo transitions via Higgsfield.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

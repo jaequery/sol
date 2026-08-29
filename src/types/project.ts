@@ -46,25 +46,6 @@ export interface AudioTrack {
   muted: boolean;
 }
 
-/**
- * A photo's 2D framing. `x`/`y` are percentages of the canvas so they survive a change of
- * export resolution; `scale` is a multiple of "cover the frame".
- */
-export interface Transform2D {
-  scale: number;
-  x: number;
-  y: number;
-  rotation: number;
-  opacity: number;
-}
-
-export interface Keyframe {
-  id: string;
-  /** Milliseconds from the start of the clip. */
-  timeMs: number;
-  transform: Transform2D;
-}
-
 export type GenerationStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 
 export interface GenerationError {
@@ -74,25 +55,22 @@ export interface GenerationError {
 }
 
 /**
- * One side of a generated transition: which clip stood there, what media it showed, and the
- * exact framing that was baked into the frame sent to Higgsfield. Kept on the finished clip
- * so a later edit to either neighbour can be detected (staleness) and regenerated from.
+ * One side of a generated transition: which clip stood there and what media it showed —
+ * the photo itself is the frame sent to Higgsfield. Kept on the finished clip so a later
+ * edit to either neighbour can be detected (staleness) and regenerated from.
  */
 export interface TransitionSource {
   clipId: string;
   assetId: string;
-  transform: Transform2D;
 }
 
 /**
- * What a generation is for: the segment between two keyframes of one photo, the cut
- * between two adjacent photos, or one leg of a three-photo film. Success routes on this — a
- * segment result replaces the segment, a cut result is inserted at the cut (or swapped over
- * `replacesClipId` when it is a regeneration of an existing transition clip), and a film
- * leg's result is parked in film state until every leg is in.
+ * What a generation is for: the cut between two adjacent photos, or one leg of a
+ * three-photo film. Success routes on this — a cut result is inserted at the cut (or
+ * swapped over `replacesClipId` when it is a regeneration of an existing transition clip),
+ * and a film leg's result is parked in film state until every leg is in.
  */
 export type GenerationTarget =
-  | { kind: 'segment'; clipId: string; fromKeyframeId: string; toKeyframeId: string }
   | {
       kind: 'cut';
       afterClipId: string;
@@ -128,7 +106,6 @@ export type GenerationOf<K extends GenerationTarget['kind']> = Generation & {
   target: Extract<GenerationTarget, { kind: K }>;
 };
 
-export type SegmentGeneration = GenerationOf<'segment'>;
 export type CutGeneration = GenerationOf<'cut'>;
 
 /**
@@ -153,10 +130,6 @@ export interface Clip {
   durationMs: number;
   /** Videos only: where playback starts inside the source. */
   trimStartMs: number;
-  /** Photos only. Always sorted by `timeMs`. */
-  keyframes: Keyframe[];
-  /** Prompt for the segment that *starts* at each keyframe, keyed by that keyframe's id. */
-  prompts: Record<string, string>;
   /** Present when this clip is a Higgsfield result rather than imported media. */
   ai?: {
     prompt: string;
@@ -177,15 +150,6 @@ export interface Clip {
 /** Which end of a clip a resize drag has hold of. */
 export type ClipEdge = 'start' | 'end';
 
-/** A gap between two consecutive keyframes — the thing a prompt is attached to. */
-export interface Segment {
-  fromKeyframeId: string;
-  toKeyframeId: string;
-  startMs: number;
-  endMs: number;
-  durationMs: number;
-}
-
 export interface PlacedClip {
   clip: Clip;
   startMs: number;
@@ -195,22 +159,8 @@ export interface PlacedClip {
 export type Selection =
   | { kind: 'none' }
   | { kind: 'clip'; clipId: string }
-  | { kind: 'keyframe'; clipId: string; keyframeId: string }
-  | { kind: 'segment'; clipId: string; fromKeyframeId: string; toKeyframeId: string }
   | { kind: 'cut'; afterClipId: string; beforeClipId: string }
   | { kind: 'audio'; trackId: string };
-
-export const IDENTITY_TRANSFORM: Transform2D = {
-  scale: 1,
-  x: 0,
-  y: 0,
-  rotation: 0,
-  opacity: 1,
-};
-
-/** Matches `solcut_render::{MIN_SCALE, MAX_SCALE}` — zoompan cannot zoom out past the frame. */
-export const MIN_SCALE = 1;
-export const MAX_SCALE = 4;
 
 export const DEFAULT_PHOTO_DURATION_MS = 5000;
 export const DEFAULT_VIDEO_DURATION_MS = 5000;

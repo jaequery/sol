@@ -47,7 +47,7 @@ vi.mock('../lib/backend', () => ({
 vi.mock('../lib/frames', () => ({
   FRAME_WIDTH: 1280,
   FRAME_HEIGHT: 720,
-  renderKeyframeJpeg: async (src: string) => `data:image/jpeg;base64,still-of-${src}`,
+  renderPhotoJpeg: async (src: string) => `data:image/jpeg;base64,still-of-${src}`,
   probeVideoDurationMs: async (_src: string, fallback: number) => fallback,
 }));
 
@@ -198,42 +198,6 @@ describe('a finished leg', () => {
     );
   });
 
-  it('keeps a same-clip generation on its old path — straight onto the timeline', async () => {
-    // The other half of the union still behaves exactly as it did.
-    const { addFiles } = useEditor.getState();
-    await addFiles([new File(['binary'], 'sunset.jpg', { type: 'image/jpeg' })]);
-
-    const clip = useEditor.getState().clips[0];
-    useEditor.setState({ selection: { kind: 'clip', clipId: clip.id } });
-    useEditor.getState().addKeyframeAtPlayhead();
-    useEditor.getState().setPlayhead(3200);
-    useEditor.getState().addKeyframeAtPlayhead();
-
-    const keyframes = useEditor.getState().clips[0].keyframes;
-    useEditor.setState({
-      selection: {
-        kind: 'segment',
-        clipId: clip.id,
-        fromKeyframeId: keyframes[0].id,
-        toKeyframeId: keyframes[1].id,
-      },
-    });
-    useEditor.getState().setSegmentPrompt('slow dolly-in over the water');
-    await useEditor.getState().startGeneration();
-
-    const generationId = Object.keys(useEditor.getState().generations)[0];
-    emit({
-      generationId,
-      status: 'succeeded',
-      progress: 1,
-      elapsedSecs: 60,
-      slow: false,
-      outputPath: '/cache/segment.mp4',
-    });
-
-    expect(useEditor.getState().clips.find((c) => c.ai)).toMatchObject({ kind: 'video', durationMs: 3200 });
-    expect(useEditor.getState().film).toBeNull();
-  });
 });
 
 describe('the finished film onto the timeline', () => {

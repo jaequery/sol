@@ -113,10 +113,10 @@ pub struct GenerateInput {
     /// Chosen by the frontend so it can match events to the segment that asked for them.
     pub generation_id: String,
     pub prompt: String,
-    /// `data:image/jpeg;base64,…` of the photo framed as the first keyframe. The client
+    /// `data:image/jpeg;base64,…` of the photo the motion starts from. The client
     /// uploads it and passes the resulting public URL, which is all the API accepts.
     pub start_frame: String,
-    /// The same for the second keyframe, when there is one.
+    /// The same for the photo the motion ends on, when there is one.
     pub end_frame: Option<String>,
 }
 
