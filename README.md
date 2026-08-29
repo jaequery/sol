@@ -82,7 +82,7 @@ and its [OpenAPI document](https://docs.higgsfield.ai/docs/openapi.json):
 | Auth | `Authorization: Key {key_id}:{key_secret}` — the documented `authKey` scheme, never a bearer token |
 | Credential check | `POST /files/generate-upload-url`, which authenticates without generating or charging anything |
 | Keyframe upload | the same call, then a presigned `PUT` that never sees the credential |
-| Submit | `POST /higgsfield-ai/dop/standard` with `{prompt, image_url, end_image_url}` |
+| Submit | `POST /minimax/hailuo-02/standard/image-to-video` with `{prompt, image_url, end_image_url}` |
 | Poll | the `status_url` from the submit response, backing off 2s → 10s |
 | Result | `video.url` on a `completed` request |
 
@@ -91,8 +91,12 @@ point new integrations at `Authorization`, which is what this client sends.
 
 The base URL and the model endpoint are editable in the same dialog, so another documented
 model — or an API revision — can be pointed at without shipping a new build. The dialog
-suggests the endpoints that take a first frame; DoP is the default because it is the one
-that also takes a *last* frame, which is what a SolCut segment is.
+suggests the endpoints that take both a first *and* a last frame, which is what a SolCut
+segment is; MiniMax Hailuo-02 is the default because that pair — plus a prompt — is its
+whole documented contract. (Higgsfield's own DoP endpoints declare the same two frame
+fields but belong to a single-image, motion-preset product, and the live API rejects
+two-frame submissions to them; settings saved by earlier builds that still point at the
+old DoP default are moved forward automatically.)
 
 ## Three photos to an .mp4
 
@@ -187,8 +191,9 @@ building) is then testable on any machine, including CI without a GTK toolchain.
 - **Browser drops have no filesystem path.** `pnpm dev` in a browser can import and edit,
   but export needs the desktop app, which resolves real paths.
 - **The model decides the clip length.** No Higgsfield endpoint takes a free-form duration
-  — DoP has no duration parameter at all, and the others publish fixed choices — so the
-  segment's own length is what the timeline keeps, not something the request asks for.
+  — the default Hailuo-02 operation has no duration parameter at all, and the others
+  publish fixed choices — so the segment's own length is what the timeline keeps, not
+  something the request asks for.
 - **A film goes onto the track once.** It lands the moment its last transition is in, and
   is then an ordinary pair of clips: move, trim or delete them as you like. Retrying a leg
   afterwards updates the film's own record but never lays down a second copy.

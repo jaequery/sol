@@ -22,7 +22,7 @@ pub struct SettingsView {
     pub api_key_id_hint: String,
     pub has_secret: bool,
     pub base_url: String,
-    /// The model endpoint, e.g. `/higgsfield-ai/dop/standard`.
+    /// The model endpoint, e.g. `/minimax/hailuo-02/standard/image-to-video`.
     pub endpoint: String,
 }
 
@@ -103,6 +103,9 @@ pub fn load(dir: &Path) -> Config {
         .ok()
         .and_then(|raw| serde_json::from_str::<Config>(&raw).ok())
         .unwrap_or_default()
+        // `normalized` also moves the legacy default endpoint forward — a file written
+        // by an earlier build pinned the then-default whether or not a model was ever
+        // chosen, and the old default rejects every request this editor can make.
         .normalized()
 }
 
@@ -247,6 +250,41 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "the credential file is owner-only");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The regression behind "error when generating a transition": settings saved by an
+    /// earlier build pinned `/higgsfield-ai/dop/standard` — stored as a literal the
+    /// moment a key was saved, chosen or not — and that endpoint 422s the two-frame
+    /// requests this app makes. Loading must carry those files to the working default.
+    #[test]
+    fn a_stored_legacy_default_endpoint_follows_the_default_forward() {
+        let dir = std::env::temp_dir().join(format!("solcut-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let legacy = Config {
+            endpoint: solcut_higgsfield::LEGACY_DEFAULT_ENDPOINT.into(),
+            ..configured()
+        };
+        save(&dir, &legacy).expect("save");
+
+        let loaded = load(&dir);
+        assert_eq!(loaded.endpoint, solcut_higgsfield::DEFAULT_ENDPOINT);
+        assert_eq!(loaded.api_key_id, "hf_live_abcdef7fa2", "the credential is untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn any_other_stored_endpoint_is_a_choice_and_kept() {
+        let dir = std::env::temp_dir().join(format!("solcut-chosen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let chosen = Config {
+            endpoint: "/higgsfield-ai/dop/turbo".into(),
+            ..configured()
+        };
+        save(&dir, &chosen).expect("save");
+        assert_eq!(load(&dir).endpoint, "/higgsfield-ai/dop/turbo");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

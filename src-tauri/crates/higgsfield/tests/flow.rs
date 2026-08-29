@@ -65,7 +65,7 @@ async fn uploads_submits_polls_and_downloads_a_generated_clip() {
             ("PUT", "/storage/presigned") => Response::json(200, "{}"),
 
             // 2. the submission
-            ("POST", "/higgsfield-ai/dop/standard") => Response::json(
+            ("POST", "/minimax/hailuo-02/standard/image-to-video") => Response::json(
                 200,
                 &format!(
                     r#"{{"status":"queued",
@@ -137,7 +137,7 @@ async fn uploads_submits_polls_and_downloads_a_generated_clip() {
         );
     });
 
-    server.with_first("/higgsfield-ai/dop/standard", |req| {
+    server.with_first("/minimax/hailuo-02/standard/image-to-video", |req| {
         assert_eq!(req.header("authorization"), Some("Key test-id:test-secret"));
         let body = req.json();
         assert_eq!(body["prompt"], "slow dolly-in over the water");
@@ -202,7 +202,7 @@ async fn a_queued_request_is_cancelled_through_the_api() {
     let server = MockServer::start(move |req: &Request, _| {
         let base = handler_base.get().expect("base url");
         match (req.method.as_str(), req.path.as_str()) {
-            ("POST", "/higgsfield-ai/dop/standard") => Response::json(
+            ("POST", "/minimax/hailuo-02/standard/image-to-video") => Response::json(
                 200,
                 &format!(
                     r#"{{"status":"queued","request_id":"r1","cancel_url":"{base}/requests/r1/cancel"}}"#
@@ -242,7 +242,7 @@ async fn a_queued_request_is_cancelled_through_the_api() {
 #[tokio::test]
 async fn an_already_hosted_frame_is_passed_through_without_an_upload() {
     let server = MockServer::start(|req: &Request, _| match req.path.as_str() {
-        "/higgsfield-ai/dop/standard" => Response::json(200, r#"{"request_id":"r1"}"#),
+        "/minimax/hailuo-02/standard/image-to-video" => Response::json(200, r#"{"request_id":"r1"}"#),
         _ => Response::json(500, r#"{"detail":"nothing else should be called"}"#),
     });
     let client = Client::new(config(&server)).expect("client");
@@ -259,7 +259,7 @@ async fn an_already_hosted_frame_is_passed_through_without_an_upload() {
 
     assert_eq!(
         server.paths(),
-        ["POST /higgsfield-ai/dop/standard".to_string()],
+        ["POST /minimax/hailuo-02/standard/image-to-video".to_string()],
         "no presigned upload is minted for an image that already has a URL"
     );
 }
@@ -324,12 +324,19 @@ async fn a_403_is_reported_as_missing_credits_rather_than_a_bad_key() {
     assert_eq!(err.title(), "Out of credits");
 }
 
+/// A pydantic 422 echoes the whole submitted body back under `input` — two long image
+/// URLs here — and the card used to show that echo, truncated, instead of the message.
+/// The message is what has to reach the user.
 #[tokio::test]
-async fn a_rejected_body_quotes_the_validation_detail() {
+async fn a_rejected_body_quotes_the_validation_message_not_the_echoed_urls() {
     let server = MockServer::start(|req: &Request, _| match req.path.as_str() {
-        "/higgsfield-ai/dop/standard" => Response::json(
+        "/minimax/hailuo-02/standard/image-to-video" => Response::json(
             422,
-            r#"{"detail":[{"loc":["body","image_url"],"msg":"field required"}]}"#,
+            &format!(
+                r#"{{"detail":[{{"type":"missing","loc":["body","image_url"],"msg":"Field required",
+                     "input":{{"end_image_url":"https://cdn.test/{long}/echoed.jpeg","prompt":"drift"}}}}]}}"#,
+                long = "e".repeat(120),
+            ),
         ),
         _ => Response::json(
             200,
@@ -352,7 +359,7 @@ async fn a_rejected_body_quotes_the_validation_detail() {
         panic!("expected an HTTP error, got {err:?}");
     };
     assert_eq!(*status, 422);
-    assert!(body.contains("image_url"), "{body}");
+    assert_eq!(body, "image_url: Field required");
     assert!(
         !err.is_retryable(),
         "a rejected body is not fixed by retrying"

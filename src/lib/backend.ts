@@ -15,7 +15,7 @@ export interface SettingsView {
   apiKeyIdHint: string;
   hasSecret: boolean;
   baseUrl: string;
-  /** The model endpoint, e.g. `/higgsfield-ai/dop/standard`. */
+  /** The model endpoint, e.g. `/minimax/hailuo-02/standard/image-to-video`. */
   endpoint: string;
 }
 
@@ -72,19 +72,22 @@ const DESKTOP_ONLY = 'This needs the SolCut desktop app — run it with `pnpm ta
 
 /** Kept in step with `solcut_higgsfield::DEFAULT_BASE_URL` / `DEFAULT_ENDPOINT`. */
 export const DEFAULT_BASE_URL = 'https://api.higgsfield.ai';
-export const DEFAULT_ENDPOINT = '/higgsfield-ai/dop/standard';
+export const DEFAULT_ENDPOINT = '/minimax/hailuo-02/standard/image-to-video';
 
 /**
- * Documented endpoints that take a first frame — and, for all but the veo ones, a last
- * frame too. Offered as suggestions in Settings so pointing at another model does not
- * mean reading the API reference first.
+ * Documented endpoints whose contract is a SolCut segment: a first frame, a last frame
+ * (`image_url`/`end_image_url`, or the veo pair's own names) and a prompt, with nothing
+ * else required. Offered as suggestions in Settings so pointing at another model does
+ * not mean reading the API reference first; anything else can still be typed in.
+ *
+ * Deliberately absent: the kling operations (their schema takes no last frame at all, so
+ * a "transition" would never land on the second photo) and the `higgsfield-ai/dop` trio,
+ * whose live endpoints are the API face of a single-image motion-preset product and
+ * reject two-frame submissions in a way their published schema does not predict.
  */
 export const KNOWN_ENDPOINTS = [
-  '/higgsfield-ai/dop/standard',
-  '/higgsfield-ai/dop/turbo',
-  '/higgsfield-ai/dop/lite',
+  '/minimax/hailuo-02/standard/image-to-video',
   '/minimax/hailuo-02/pro/image-to-video',
-  '/kling-video/v2.5-turbo/pro/image-to-video',
   '/veo3.1/first-last-frame-to-video',
   '/veo3.1/fast/first-last-frame-to-video',
 ];
