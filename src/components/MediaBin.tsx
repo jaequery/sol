@@ -51,7 +51,7 @@ export function MediaBin() {
         {empty && problems.length === 0 && (
           <div className="bin__empty">
             <b>No media yet</b>
-            Drop photos and videos anywhere, or{' '}
+            Drop photos, videos and audio on the timeline, or{' '}
             <button
               type="button"
               onClick={importViaDialog}

@@ -496,10 +496,6 @@ input {
 .card__body {
   padding: 11px;
 }
-.card--disabled {
-  opacity: 0.5;
-}
-
 .field-row {
   display: flex;
   align-items: center;

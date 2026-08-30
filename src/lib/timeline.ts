@@ -17,6 +17,7 @@ import {
   type Clip,
   type ClipEdge,
   type PlacedClip,
+  type Selection,
   type TransitionSource,
 } from '../types/project';
 
@@ -78,6 +79,30 @@ export function clipAt(clips: Clip[], timeMs: number): { placed: PlacedClip; loc
     return { placed: last, localMs: last.clip.durationMs };
   }
   return null;
+}
+
+/**
+ * Whether `splitAtPlayhead` would actually cut something.
+ *
+ * A split needs the playhead *strictly inside* a clip: on a boundary, in a gap, before the
+ * first clip or past the last one there is no cut to make. The ✂ button reads this so it
+ * cannot offer an edit the store will silently refuse — and the store reads it too, so the
+ * button's promise and the action's rule are one statement rather than two that drift.
+ */
+export function canSplitAt(clips: Clip[], timeMs: number): boolean {
+  const hit = clipAt(clips, timeMs);
+  return hit !== null && hit.localMs > 0 && hit.localMs < hit.placed.clip.durationMs;
+}
+
+/**
+ * Whether `deleteSelection` has anything to delete.
+ *
+ * A cut is a place, not a thing — there is nothing there to remove — so the 🗑 button and
+ * the Delete key both stay dark on one, rather than lighting up for an edit that does
+ * nothing.
+ */
+export function canDeleteSelection(selection: Selection): boolean {
+  return selection.kind === 'clip' || selection.kind === 'audio';
 }
 
 function clamp(v: number, min: number, max: number): number {

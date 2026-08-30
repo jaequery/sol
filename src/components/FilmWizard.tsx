@@ -61,6 +61,21 @@ export function FilmWizard() {
   const [failure, setFailure] = useState<string | null>(null);
   const [hot, setHot] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [wasOpen, setWasOpen] = useState(open);
+
+  // The panel is hidden by an early return, not unmounted, so its local state outlives a
+  // close. Reopening after a failed Generate used to show the last attempt's error box as
+  // if it had just happened. This is React's own "adjust state when something changes"
+  // pattern: done during render, so the stale error is never painted even for a frame, and
+  // above the early return, so the hook order never changes.
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    // The picks and prompts are the user's own work; only what the *last run* said goes.
+    if (open) {
+      setFailure(null);
+      setRejected([]);
+    }
+  }
 
   if (!open) return null;
 
@@ -70,10 +85,16 @@ export function FilmWizard() {
   // The film puts itself on the track the moment its last leg is in; until that has
   // happened there is nothing to export, so the offer waits for it rather than leading
   // the user into an export of somebody else's timeline.
-  const onTimeline = film ? isFilmAssembled(film) : false;
+  // The film's clips as they stand *now*. `assembledClipIds` is written once and never
+  // cleared, so it records that a film was laid down — not that it is still on the track.
+  // Reading it directly left "Export film" live over a timeline the user had emptied, above
+  // a callout that cheerfully said "0 transitions · 0.0s".
   const filmClips = film?.assembledClipIds
     ? clips.filter((c) => film.assembledClipIds?.includes(c.id))
     : [];
+  const onTimeline = filmClips.length > 0;
+  /** Assembled once, but its clips have since been deleted or split apart. */
+  const filmGone = film ? isFilmAssembled(film) && !onTimeline : false;
 
   /** Take what the picker or the drop offered, and say out loud what was not taken. */
   function offer(sources: FilmPhotoSource[]) {
@@ -202,7 +223,7 @@ export function FilmWizard() {
               </div>
             )}
 
-            {progress.status === 'succeeded' && !onTimeline && (
+            {progress.status === 'succeeded' && !onTimeline && !filmGone && (
               <p className="hint">Both transitions are in — putting them on the timeline…</p>
             )}
 
@@ -211,7 +232,9 @@ export function FilmWizard() {
                 ? 'One film at a time — this one is still rendering. Keep editing while it does; the transitions land on the timeline together, once both are in.'
                 : onTimeline
                   ? 'One film at a time — export it, keep editing it on the track, or start over to make another.'
-                  : 'One film at a time — retry the transition that did not land, or start over. The film goes onto the timeline by itself once both are in.'}
+                  : filmGone
+                    ? 'This film is no longer on the timeline. Start over to make another.'
+                    : 'One film at a time — retry the transition that did not land, or start over. The film goes onto the timeline by itself once both are in.'}
             </p>
           </>
         ) : (
