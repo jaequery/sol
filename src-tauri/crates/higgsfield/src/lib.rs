@@ -47,6 +47,15 @@ pub const DEFAULT_ENDPOINT: &str = "/minimax/hailuo-02/standard/image-to-video";
 /// settings file from one of them carries this literal even when the user never chose a
 /// model; `settings::load` in the desktop shell moves it forward to [`DEFAULT_ENDPOINT`].
 pub const LEGACY_DEFAULT_ENDPOINT: &str = "/higgsfield-ai/dop/standard";
+/// The defaults of the *first* build, which spoke the envelope API: it POSTed
+/// `{"params": {...}}` to `/v1/image2video` on the platform host. That endpoint still
+/// exists and still wants the envelope, so the flat bodies this editor sends today are
+/// rejected with exactly `422: params: Field required` — on every attempt. A settings
+/// file written back then stores both literals whether or not the user ever chose
+/// anything, so they follow the defaults forward the same way
+/// [`LEGACY_DEFAULT_ENDPOINT`] does.
+pub const FIRST_BUILD_ENDPOINT: &str = "/v1/image2video";
+pub const FIRST_BUILD_BASE_URL: &str = "https://platform.higgsfield.ai";
 /// Where a presigned upload URL is minted. See the "File uploads" guide.
 pub const UPLOAD_URL_PATH: &str = "/files/generate-upload-url";
 
@@ -130,11 +139,14 @@ impl Config {
     /// a combined string left in the key-id field would otherwise mask the tail of the
     /// *secret* and show it as the key id.
     ///
-    /// It also carries [`LEGACY_DEFAULT_ENDPOINT`] forward to [`DEFAULT_ENDPOINT`]:
-    /// settings files always store a concrete endpoint, so "never chose a model" and
-    /// "chose the then-default" are the same bytes, and the old default rejects every
-    /// request this editor can make. The other dop endpoints are left alone — typing one
-    /// is unambiguously a choice.
+    /// It also carries the stale defaults of earlier builds forward: settings files
+    /// always store a concrete endpoint, so "never chose a model" and "chose the
+    /// then-default" are the same bytes, and both old defaults reject every request this
+    /// editor can make — [`LEGACY_DEFAULT_ENDPOINT`] with a body-level 422, and
+    /// [`FIRST_BUILD_ENDPOINT`] (whose file also pinned [`FIRST_BUILD_BASE_URL`]) with
+    /// `422: params: Field required`, because it wants the envelope shape the first
+    /// build spoke. The other dop endpoints are left alone — typing one is unambiguously
+    /// a choice.
     pub fn normalized(mut self) -> Self {
         match self.credential() {
             Some((id, secret)) => {
@@ -150,6 +162,15 @@ impl Config {
         self.endpoint = self.endpoint.trim().to_string();
         if self.endpoint == LEGACY_DEFAULT_ENDPOINT {
             self.endpoint = DEFAULT_ENDPOINT.to_string();
+        }
+        if self.endpoint == FIRST_BUILD_ENDPOINT {
+            self.endpoint = DEFAULT_ENDPOINT.to_string();
+            // The same file pinned the platform host — the then-default beside the
+            // then-default endpoint. A base URL stored next to any *other* endpoint was
+            // typed, and stays.
+            if self.base_url == FIRST_BUILD_BASE_URL {
+                self.base_url = DEFAULT_BASE_URL.to_string();
+            }
         }
         self
     }
@@ -767,6 +788,56 @@ mod tests {
         .normalized();
         assert_eq!(stale.endpoint, DEFAULT_ENDPOINT);
         assert_eq!(stale.api_key_id, "id", "the credential is untouched");
+    }
+
+    /// The regression behind "animation generation always fails with a 422": the first
+    /// build spoke the envelope API — `{"params": {...}}` to `/v1/image2video` on
+    /// `platform.higgsfield.ai` — and stored both literals the moment a key was saved.
+    /// That endpoint answers today's flat bodies with `422: params: Field required`, on
+    /// every attempt, so both stale defaults must follow the working defaults forward.
+    #[test]
+    fn the_first_builds_defaults_follow_the_defaults_forward() {
+        let stale = Config {
+            base_url: FIRST_BUILD_BASE_URL.into(),
+            endpoint: FIRST_BUILD_ENDPOINT.into(),
+            ..cfg()
+        }
+        .normalized();
+        assert_eq!(stale.endpoint, DEFAULT_ENDPOINT);
+        assert_eq!(stale.base_url, DEFAULT_BASE_URL);
+        assert_eq!(stale.api_key_id, "id", "the credential is untouched");
+    }
+
+    #[test]
+    fn a_typed_base_url_survives_the_first_build_endpoint_migration() {
+        let config = Config {
+            base_url: "https://proxy.example".into(),
+            endpoint: FIRST_BUILD_ENDPOINT.into(),
+            ..cfg()
+        }
+        .normalized();
+        assert_eq!(
+            config.endpoint, DEFAULT_ENDPOINT,
+            "the envelope endpoint can never serve this editor's requests"
+        );
+        assert_eq!(
+            config.base_url, "https://proxy.example",
+            "a base URL beside a non-default endpoint was typed, and stays"
+        );
+    }
+
+    #[test]
+    fn the_platform_host_beside_a_chosen_endpoint_is_kept() {
+        // The official SDKs use the platform host for the documented API, so beside a
+        // working endpoint it is a choice, not a first-build leftover.
+        let config = Config {
+            base_url: FIRST_BUILD_BASE_URL.into(),
+            endpoint: "/higgsfield-ai/dop/turbo".into(),
+            ..cfg()
+        }
+        .normalized();
+        assert_eq!(config.base_url, FIRST_BUILD_BASE_URL);
+        assert_eq!(config.endpoint, "/higgsfield-ai/dop/turbo");
     }
 
     #[test]

@@ -277,6 +277,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The regression behind "animation generation always fails with a 422": the first
+    /// build stored `/v1/image2video` on the platform host — the envelope API it spoke —
+    /// and that endpoint rejects today's flat bodies with `params: Field required` on
+    /// every attempt. Loading such a file must land on the working defaults, credential
+    /// intact, without waiting for the user to re-save settings.
+    #[test]
+    fn a_settings_file_from_the_first_build_loads_onto_the_working_api() {
+        let dir = std::env::temp_dir().join(format!("solcut-first-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Byte-for-byte what the first build wrote: its field names, its `model` knob,
+        // and both of its defaults pinned whether or not the user ever chose them.
+        std::fs::write(
+            dir.join(FILE),
+            r#"{"api_key":"old-id","api_secret":"old-secret","base_url":"https://platform.higgsfield.ai","model":"dop","endpoint":"/v1/image2video"}"#,
+        )
+        .unwrap();
+
+        let loaded = load(&dir);
+        assert_eq!(loaded.endpoint, solcut_higgsfield::DEFAULT_ENDPOINT);
+        assert_eq!(loaded.base_url, solcut_higgsfield::DEFAULT_BASE_URL);
+        assert_eq!(loaded.api_key_id, "old-id");
+        assert_eq!(loaded.api_key_secret, "old-secret");
+        assert!(loaded.is_configured());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn any_other_stored_endpoint_is_a_choice_and_kept() {
         let dir = std::env::temp_dir().join(format!("solcut-chosen-{}", std::process::id()));

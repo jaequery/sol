@@ -544,3 +544,61 @@ async fn the_credential_travels_only_in_the_authorization_header() {
         );
     });
 }
+
+/// The regression behind "animation generation always fails with a 422": a settings file
+/// written by the first build still aims submissions at `/v1/image2video`, the envelope
+/// operation that answers today's flat bodies with `422: params: Field required`. A
+/// client built from those stored bytes must submit to the working model endpoint — and
+/// keep doing so on every attempt, because the shell reloads settings per request.
+#[tokio::test]
+async fn a_first_build_settings_file_submits_to_the_working_endpoint_every_time() {
+    let base = shared_base();
+    let handler_base = Arc::clone(&base);
+
+    let server = MockServer::start(move |req: &Request, _| {
+        let base = handler_base.get().expect("base url");
+        match (req.method.as_str(), req.path.as_str()) {
+            ("POST", "/files/generate-upload-url") => Response::json(
+                200,
+                &format!(
+                    r#"{{"public_url":"{base}/cdn/frame.jpeg","upload_url":"{base}/storage/presigned"}}"#
+                ),
+            ),
+            ("PUT", "/storage/presigned") => Response::json(200, "{}"),
+            ("POST", "/minimax/hailuo-02/standard/image-to-video") => Response::json(
+                200,
+                &format!(
+                    r#"{{"status":"queued","request_id":"r-ok",
+                         "status_url":"{base}/requests/r-ok/status"}}"#
+                ),
+            ),
+            // What the live API does to a flat body at the first build's endpoint.
+            ("POST", "/v1/image2video") => Response::json(
+                422,
+                r#"{"detail":[{"type":"missing","loc":["body","params"],"msg":"Field required","input":{}}]}"#,
+            ),
+            _ => Response::json(500, r#"{"detail":"unexpected request"}"#),
+        }
+    });
+    base.set(server.base_url()).expect("set once");
+
+    // The first build's field names and stored endpoint, with the stub's address
+    // standing in for a typed base URL so the requests stay local.
+    let stored = format!(
+        r#"{{"api_key":"test-id","api_secret":"test-secret","base_url":"{}","model":"dop","endpoint":"/v1/image2video"}}"#,
+        server.base_url()
+    );
+    let config: Config = serde_json::from_str(&stored).expect("first-build settings");
+    let client = Client::new(config).expect("client");
+
+    for attempt in 1..=3 {
+        let accepted = client.submit(&request()).await.expect("submit");
+        assert_eq!(accepted.request_id, "r-ok", "attempt {attempt} is accepted");
+    }
+
+    assert!(
+        !server.paths().iter().any(|p| p.contains("/v1/image2video")),
+        "no request reaches the envelope endpoint: {:?}",
+        server.paths()
+    );
+}
