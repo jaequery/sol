@@ -88,21 +88,39 @@ function usePlaybackClock() {
   }, [playing, advance]);
 }
 
+/** Anything that consumes a keypress itself — a shortcut must not talk over it. */
+const INTERACTIVE = 'button, a[href], input, select, textarea, [role="button"], [contenteditable]';
+
 function useKeyboardShortcuts() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
-      if (target && ['INPUT', 'TEXTAREA'].includes(target.tagName)) return;
-
       const store = useEditor.getState();
+
+      // Escape first, and before the typing guard: the fields it has to rescue the user
+      // from are exactly the ones that guard would skip. It closes one layer — the
+      // innermost — rather than every dialog at once. Escape is Cancel here: an unsaved
+      // credential is discarded, the same as the dialog's own Cancel button does.
+      if (e.key === 'Escape') {
+        if (store.exportState) useEditor.setState({ exportState: null });
+        else if (store.settingsOpen) store.closeSettings();
+        else if (store.filmWizardOpen) store.closeFilmWizard();
+        return;
+      }
+
+      // A scrim is over the app: the timeline underneath is not what the user is typing at.
+      // The film panel is deliberately *not* in this list — it is non-modal by design, so
+      // the editor stays usable while a film renders.
+      if (store.settingsOpen || store.exportState) return;
+
+      if (target?.closest(INTERACTIVE)) return;
+
       if (e.code === 'Space') {
         e.preventDefault();
         store.togglePlay();
       } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        e.preventDefault();
         store.deleteSelection();
-      } else if (e.key === 'Escape') {
-        store.closeSettings();
-        store.closeFilmWizard();
       }
     };
     window.addEventListener('keydown', onKeyDown);

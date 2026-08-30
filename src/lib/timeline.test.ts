@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   audioEndMs,
   audioTrack,
+  canDeleteSelection,
+  canSplitAt,
   clipAt,
   endOfPrevious,
   formatDuration,
@@ -632,5 +634,37 @@ describe('audio tracks', () => {
     expect(timelineEndMs(clips, [audioTrack(asset, 4000, 8000)])).toBe(12_000);
     expect(timelineEndMs(clips, [audioTrack(asset, 0, 3000)])).toBe(6000);
     expect(audioEndMs([])).toBe(0);
+  });
+});
+
+describe('what the toolbar is allowed to offer', () => {
+  it('a split needs the playhead strictly inside a clip', () => {
+    const clips = [photoClip({ id: 'a', name: 'a.jpg' }, 5000, 0), photoClip({ id: 'b', name: 'b.jpg' }, 5000, 5000)];
+
+    expect(canSplitAt(clips, 2500)).toBe(true);
+    expect(canSplitAt(clips, 7500)).toBe(true);
+
+    // Boundaries cut nothing: one half would be empty.
+    expect(canSplitAt(clips, 0)).toBe(false);
+    expect(canSplitAt(clips, 5000)).toBe(false);
+    expect(canSplitAt(clips, 10_000)).toBe(false);
+
+    // Past the end, and on an empty track.
+    expect(canSplitAt(clips, 12_000)).toBe(false);
+    expect(canSplitAt([], 0)).toBe(false);
+  });
+
+  it('a split in a gap has nothing under the playhead to cut', () => {
+    const spaced = [photoClip({ id: 'a', name: 'a.jpg' }, 2000, 0), photoClip({ id: 'b', name: 'b.jpg' }, 2000, 6000)];
+    expect(canSplitAt(spaced, 4000)).toBe(false);
+    expect(canSplitAt(spaced, 1000)).toBe(true);
+  });
+
+  it('only a clip or a sound is a thing that can be deleted', () => {
+    expect(canDeleteSelection({ kind: 'clip', clipId: 'c1' })).toBe(true);
+    expect(canDeleteSelection({ kind: 'audio', trackId: 't1' })).toBe(true);
+    expect(canDeleteSelection({ kind: 'none' })).toBe(false);
+    // A cut is a place between two clips — there is nothing there to remove.
+    expect(canDeleteSelection({ kind: 'cut', afterClipId: 'a', beforeClipId: 'b' })).toBe(false);
   });
 });

@@ -7,6 +7,7 @@ export function TitleBar() {
   const openSettings = useEditor((s) => s.openSettings);
   const openFilmWizard = useEditor((s) => s.openFilmWizard);
   const runExport = useEditor((s) => s.runExport);
+  const exporting = useEditor((s) => s.exporting);
   const settings = useEditor((s) => s.settings);
 
   const rendering = Object.values(generations).filter(
@@ -42,9 +43,12 @@ export function TitleBar() {
           type="button"
           className="btn btn--primary"
           onClick={() => void runExport()}
-          disabled={clips.length === 0}
+          // One render at a time, and say so: the progress dialog can be dismissed while
+          // ffmpeg is still going, so the button is the only place left to show it.
+          disabled={clips.length === 0 || exporting}
+          title={exporting ? 'A render is already running' : undefined}
         >
-          Export MP4
+          {exporting ? 'Exporting…' : 'Export MP4'}
         </button>
       </div>
     </div>

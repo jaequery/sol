@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { animatableCuts, useEditor } from '../state/store';
 import type { AudioTrack, Clip, ClipEdge, Generation, MediaAsset, Selection } from '../types/project';
 import {
+  canDeleteSelection,
+  canSplitAt,
   formatDuration,
   formatTimecode,
   insertIndexAt,
@@ -182,6 +184,10 @@ export function Timeline() {
     [clips, assets, generations],
   );
   const configured = settings?.configured ?? false;
+  // Both toolbar buttons ask the same pure predicate the store's own guard asks, so the
+  // button can never offer an edit the action will silently refuse.
+  const splittable = canSplitAt(clips, playheadMs);
+  const deletable = canDeleteSelection(selection);
 
   function ratioFromEvent(clientX: number): number {
     const rect = trackRef.current?.getBoundingClientRect();
@@ -402,15 +408,17 @@ export function Timeline() {
   return (
     <div className="timeline">
       <div className="timeline__bar">
-        <button type="button" className="tool tool--on" aria-label="Select tool">
-          ⌖
-        </button>
         <button
           type="button"
           className="tool"
           aria-label="Split at playhead"
+          title={
+            splittable
+              ? 'Cut the clip under the playhead in two'
+              : 'Put the playhead inside a clip to split it'
+          }
           onClick={splitAtPlayhead}
-          disabled={clips.length === 0}
+          disabled={!splittable}
         >
           ✂
         </button>
@@ -443,8 +451,9 @@ export function Timeline() {
           type="button"
           className="tool"
           aria-label="Delete selection"
+          title={deletable ? 'Delete the selected clip or sound' : 'Select a clip or a sound to delete'}
           onClick={deleteSelection}
-          disabled={selection.kind === 'none'}
+          disabled={!deletable}
         >
           🗑
         </button>
@@ -677,6 +686,7 @@ function AudioLane({
           {roomy && <span className="audio-clip__dur">{formatDuration(track.durationMs)}</span>}
         </button>
 
+        {roomy && (
         <button
           type="button"
           className="audio-clip__mute"
@@ -690,6 +700,7 @@ function AudioLane({
         >
           {track.muted ? '🔇' : '🔊'}
         </button>
+        )}
 
         {width >= MIN_HANDLE_CLIP_PX &&
           (['start', 'end'] as const).map((edge) => (

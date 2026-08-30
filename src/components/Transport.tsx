@@ -1,14 +1,18 @@
 import { useEditor } from '../state/store';
-import { formatTimecode, trackEndMs } from '../lib/timeline';
+import { formatTimecode, timelineEndMs } from '../lib/timeline';
 
 export function Transport() {
   const clips = useEditor((s) => s.clips);
+  const audioTracks = useEditor((s) => s.audioTracks);
   const playheadMs = useEditor((s) => s.playheadMs);
   const playing = useEditor((s) => s.playing);
   const togglePlay = useEditor((s) => s.togglePlay);
   const setPlayhead = useEditor((s) => s.setPlayhead);
 
-  const total = trackEndMs(clips);
+  // The whole timeline, audio included — a project that is only a sound is still playable,
+  // and a sound outlasting the last clip still moves the end. Measuring the visual track
+  // alone left ▶ dark on an audio-only project that Space would happily play.
+  const total = timelineEndMs(clips, audioTracks);
 
   return (
     <div className="transport">

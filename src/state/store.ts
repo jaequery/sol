@@ -47,6 +47,7 @@ import {
 } from '../lib/film';
 import {
   audioTrack,
+  canSplitAt,
   clipAt,
   insertClips,
   insertIndexAtTime,
@@ -86,6 +87,13 @@ export interface ExportState {
   fraction: number;
   status: 'running' | 'failed';
   error?: string;
+  /**
+   * Whether running the same export again could plausibly do something different. A render
+   * that died mid-encode is worth another go; a clip with no file on disk will fail the
+   * same pre-check every time, so offering "Try again" there is a button that visibly does
+   * nothing. Mirrors `GenerationError.retryable`.
+   */
+  retryable?: boolean;
 }
 
 /**
@@ -145,6 +153,12 @@ export interface EditorState {
   connectionMessage: { ok: boolean; text: string } | null;
 
   exportState: ExportState | null;
+  /**
+   * A render is in flight. Distinct from `exportState`, which is only what the dialog is
+   * showing: closing the dialog nulls that while ffmpeg keeps going, so the re-entrancy
+   * guard and the Export button both have to read this instead.
+   */
+  exporting: boolean;
   ffmpegAvailable: boolean | null;
   toasts: Toast[];
 
@@ -234,6 +248,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   connectionMessage: null,
 
   exportState: null,
+  exporting: false,
   ffmpegAvailable: null,
   toasts: [],
 
@@ -448,8 +463,8 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   splitAtPlayhead() {
     const { clips, playheadMs } = get();
-    const hit = clipAt(clips, playheadMs);
-    if (!hit || hit.localMs <= 0 || hit.localMs >= hit.placed.clip.durationMs) return;
+    if (!canSplitAt(clips, playheadMs)) return;
+    const hit = clipAt(clips, playheadMs)!;
 
     // Half a transition no longer runs first frame to last, so neither half can honestly
     // claim its sources; both keep `ai` (still generated footage) but drop `transition`.
@@ -899,9 +914,17 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   async loadSettings() {
     try {
-      set({ settings: await backend.getSettings(), ffmpegAvailable: await backend.ffmpegAvailable() });
+      set({ settings: await backend.getSettings() });
     } catch {
       set({ settings: null });
+    }
+    // Probed separately: a missing ffmpeg says nothing about the credential, and folding
+    // both into one `set` meant a rejected probe threw the settings away with it — a
+    // configured app then reported itself unconfigured and gated off every generate path.
+    try {
+      set({ ffmpegAvailable: await backend.ffmpegAvailable() });
+    } catch {
+      set({ ffmpegAvailable: false });
     }
   },
 
@@ -925,8 +948,12 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   async runExport() {
-    const { clips, audioTracks, assets, pushToast } = get();
+    const { clips, audioTracks, assets, pushToast, exporting } = get();
     if (clips.length === 0) return;
+    // One render at a time. The dialog can be dismissed while ffmpeg runs, so `exportState`
+    // is no evidence either way — without this a second click starts a second save dialog
+    // and a second encode of the same timeline.
+    if (exporting) return;
 
     const offline =
       clips.find((c) => !assets[c.assetId]?.path) ??
@@ -937,7 +964,11 @@ export const useEditor = create<EditorState>((set, get) => ({
           stage: 'Export blocked',
           fraction: 0,
           status: 'failed',
-          error: `“${offline.name}” has no file on disk to render. Re-import it from the file picker.`,
+          // Not retryable: re-running hits this same pre-check. Re-importing mints a *new*
+          // asset, so the fix is to put the re-imported file on the track in this clip's
+          // place — which is why the copy says that rather than just "re-import".
+          error: `“${offline.name}” has no file on disk to render. Re-import it and put it back on the track in place of this clip.`,
+          retryable: false,
         },
       });
       return;
@@ -952,10 +983,12 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
     if (!outPath) return;
 
-    set({ exportState: { stage: 'Starting…', fraction: 0, status: 'running' } });
+    set({ exporting: true, exportState: { stage: 'Starting…', fraction: 0, status: 'running' } });
     try {
       const written = await backend.exportTimeline(buildExportSpec(clips, assets, audioTracks), outPath);
-      set({ exportState: null });
+      // Only clear the dialog if it is still *this* run's. Dismissing mid-render and
+      // starting another must not have the first one close the second one's progress.
+      set((s) => ({ exporting: false, exportState: s.exportState?.status === 'running' ? null : s.exportState }));
       pushToast({
         tone: 'ok',
         title: 'Export complete',
@@ -964,7 +997,14 @@ export const useEditor = create<EditorState>((set, get) => ({
       });
     } catch (error) {
       set({
-        exportState: { stage: 'Export failed', fraction: 0, status: 'failed', error: message(error) },
+        exporting: false,
+        exportState: {
+          stage: 'Export failed',
+          fraction: 0,
+          status: 'failed',
+          error: message(error),
+          retryable: true,
+        },
       });
     }
   },

@@ -43,6 +43,7 @@ function ConnectionForm() {
               id="api-key-id"
               type="password"
               autoComplete="off"
+              autoFocus
               value={apiKeyId}
               placeholder={settings?.apiKeyIdHint || 'from cloud.higgsfield.ai'}
               onChange={(e) => setApiKeyId(e.target.value)}

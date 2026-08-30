@@ -11,11 +11,16 @@ export function ExportDialog() {
   return (
     <div className="scrim" role="dialog" aria-modal="true" aria-label="Export">
       <div className="modal">
-        <div className="modal__head">{failed ? '✕ Export failed' : 'Exporting to MP4'}</div>
+        {/* The stage names what actually happened: a pre-flight refusal never rendered
+            anything, so calling it a failed render would be untrue. */}
+        <div className="modal__head">{failed ? `✕ ${state.stage}` : 'Exporting to MP4'}</div>
         <div className="modal__body">
           {failed ? (
             <div className="errbox">
-              <b>{missingFfmpeg ? 'ffmpeg was not found' : 'The render did not finish'}</b>
+              {/* Only the ffmpeg case earns a heading of its own — it is a diagnosis rather
+                  than a restatement, and it carries the install block. Everywhere else the
+                  head above has already said it. */}
+              {missingFfmpeg && <b>ffmpeg was not found</b>}
               {state.error}
               {missingFfmpeg && (
                 <code>
@@ -42,11 +47,17 @@ export function ExportDialog() {
           <button
             type="button"
             className="btn btn--ghost"
+            autoFocus
             onClick={() => useEditor.setState({ exportState: null })}
           >
             Close
           </button>
-          {failed && (
+          {/*
+            Only when running it again could plausibly end differently. A clip with no file
+            on disk fails the same pre-check every time, so offering Try again there is a
+            button that visibly does nothing.
+          */}
+          {failed && state.retryable && (
             <button type="button" className="btn btn--primary" onClick={() => void runExport()}>
               Try again
             </button>
