@@ -30,6 +30,7 @@ export function resetEditor(): void {
     generations: {},
     modelId: DEFAULT_MODEL_ID,
     cutPrompts: {},
+    cutModes: {},
     animateQueue: null,
     animateSubmittingId: null,
     film: null,

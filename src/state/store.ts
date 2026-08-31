@@ -26,6 +26,7 @@ import {
   type FilmGeneration,
   type GenerationError,
   type Selection,
+  type TransitionMode,
   type TransitionSource,
 } from '../types/project';
 import {
@@ -57,6 +58,7 @@ import {
   photoClip,
   photoCuts,
   placeClip,
+  replacePairWithTransition,
   replaceTransitionClip,
   resizeAudio,
   resizeClipInList,
@@ -147,6 +149,8 @@ export interface EditorState {
   filmWizardOpen: boolean;
   /** Prompts typed for cuts that have not generated yet, keyed `${afterClipId}:${beforeClipId}`. */
   cutPrompts: Record<string, string>;
+  /** Insert/replace picked per cut, keyed like `cutPrompts`. A cut with no entry inserts. */
+  cutModes: Record<string, TransitionMode>;
   /** Cuts still waiting their turn in an "Animate all" run. `null` when no run is active. */
   animateQueue: Cut[] | null;
   /** The queue's generation whose submission has not been accepted (no `jobId`) yet. */
@@ -198,8 +202,13 @@ export interface EditorState {
   // ---- generation
   setModel: (modelId: string) => void;
   setCutPrompt: (prompt: string) => void;
+  setCutMode: (mode: TransitionMode) => void;
   setTransitionPrompt: (clipId: string, prompt: string) => void;
-  startCutGeneration: (afterClipId: string, beforeClipId: string) => string | null;
+  startCutGeneration: (
+    afterClipId: string,
+    beforeClipId: string,
+    mode?: TransitionMode,
+  ) => string | null;
   regenerateTransition: (clipId: string) => void;
   retryGeneration: (generationId: string) => void;
   animateAll: () => void;
@@ -246,6 +255,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   film: null,
   filmWizardOpen: false,
   cutPrompts: {},
+  cutModes: {},
   animateQueue: null,
   animateSubmittingId: null,
   importing: 0,
@@ -338,7 +348,7 @@ export const useEditor = create<EditorState>((set, get) => ({
    * is gone would only render as "media offline" and block export.
    */
   removeAsset(assetId) {
-    const { assets, clips, audioTracks, selection, generations, cutPrompts, playheadMs, playing, animateSubmittingId } =
+    const { assets, clips, audioTracks, selection, generations, cutPrompts, cutModes, playheadMs, playing, animateSubmittingId } =
       get();
     const asset = assets[assetId];
     if (!asset) return;
@@ -371,13 +381,12 @@ export const useEditor = create<EditorState>((set, get) => ({
     const kept = Object.fromEntries(
       Object.entries(generations).filter(([, g]) => !generationDoomed(g)),
     );
-    const pruned = prunedAfterEdit(nextClips, kept, cutPrompts);
+    const pruned = prunedAfterEdit(nextClips, kept, cutPrompts, cutModes);
     set({
       assets: nextAssets,
       clips: nextClips,
       audioTracks: nextAudio,
-      generations: pruned.generations,
-      cutPrompts: pruned.cutPrompts,
+      ...pruned,
       selection: selectionDoomed ? { kind: 'none' } : selection,
       playheadMs: Math.min(playheadMs, total),
       playing: total === 0 ? false : playing,
@@ -450,13 +459,13 @@ export const useEditor = create<EditorState>((set, get) => ({
   select: (selection) => set({ selection }),
 
   deleteSelection() {
-    const { selection, clips, audioTracks, generations, cutPrompts } = get();
+    const { selection, clips, audioTracks, generations, cutPrompts, cutModes } = get();
     if (selection.kind === 'clip') {
       const nextClips = clips.filter((c) => c.id !== selection.clipId);
       set({
         clips: nextClips,
         selection: { kind: 'none' },
-        ...prunedAfterEdit(nextClips, generations, cutPrompts),
+        ...prunedAfterEdit(nextClips, generations, cutPrompts, cutModes),
       });
       return;
     }
@@ -494,23 +503,23 @@ export const useEditor = create<EditorState>((set, get) => ({
     };
     const index = clips.findIndex((c) => c.id === clip.id);
     const nextClips = [...clips.slice(0, index), head, tail, ...clips.slice(index + 1)];
-    const { generations, cutPrompts } = get();
+    const { generations, cutPrompts, cutModes } = get();
     set({
       clips: nextClips,
       selection: { kind: 'clip', clipId: tail.id },
-      ...prunedAfterEdit(nextClips, generations, cutPrompts),
+      ...prunedAfterEdit(nextClips, generations, cutPrompts, cutModes),
     });
   },
 
   /** Drag along the track: `startMs` is where the clip should begin, gaps and all. */
   moveClipTo(clipId, startMs) {
-    const { clips, generations, cutPrompts } = get();
+    const { clips, generations, cutPrompts, cutModes } = get();
     const next = placeClip(clips, clipId, startMs);
     if (next === clips) return;
     set({
       clips: next,
       selection: { kind: 'clip', clipId },
-      ...prunedAfterEdit(next, generations, cutPrompts),
+      ...prunedAfterEdit(next, generations, cutPrompts, cutModes),
     });
   },
 
@@ -523,12 +532,12 @@ export const useEditor = create<EditorState>((set, get) => ({
     const next = resizeClipInList(clips, clipId, edge, deltaMs, assets[clip.assetId]?.durationMs);
     if (next === clips) return;
 
-    const { generations, cutPrompts } = get();
+    const { generations, cutPrompts, cutModes } = get();
     set({
       clips: next,
       // The track just got shorter under the playhead, or it did not — either way it stays on it.
       playheadMs: Math.min(playheadMs, timelineEndMs(next, audioTracks)),
-      ...prunedAfterEdit(next, generations, cutPrompts),
+      ...prunedAfterEdit(next, generations, cutPrompts, cutModes),
     });
   },
 
@@ -572,6 +581,13 @@ export const useEditor = create<EditorState>((set, get) => ({
     set((s) => ({ cutPrompts: { ...s.cutPrompts, [key]: prompt } }));
   },
 
+  setCutMode(mode) {
+    const { selection } = get();
+    if (selection.kind !== 'cut') return;
+    const key = cutKey(selection.afterClipId, selection.beforeClipId);
+    set((s) => ({ cutModes: { ...s.cutModes, [key]: mode } }));
+  },
+
   setTransitionPrompt(clipId, prompt) {
     set((s) => ({
       clips: s.clips.map((c) =>
@@ -580,7 +596,11 @@ export const useEditor = create<EditorState>((set, get) => ({
     }));
   },
 
-  startCutGeneration(afterClipId, beforeClipId) {
+  /**
+   * `mode` overrides the cut's own pick — the animate-all queue passes `insert`, because a
+   * replace landing consumes clips and would invalidate the cuts still waiting behind it.
+   */
+  startCutGeneration(afterClipId, beforeClipId, mode) {
     const s = get();
     if (!s.settings?.configured) return null;
     if (!cutEligible(s, afterClipId, beforeClipId)) return null;
@@ -592,7 +612,14 @@ export const useEditor = create<EditorState>((set, get) => ({
       (s.cutPrompts[cutKey(afterClipId, beforeClipId)] ?? '').trim() || DEFAULT_TRANSITION_PROMPT;
     const from: TransitionSource = { clipId: clipA.id, assetId: clipA.assetId };
     const to: TransitionSource = { clipId: clipB.id, assetId: clipB.assetId };
-    const target: GenerationTarget = { kind: 'cut', afterClipId, beforeClipId, from, to };
+    const target: GenerationTarget = {
+      kind: 'cut',
+      afterClipId,
+      beforeClipId,
+      from,
+      to,
+      mode: mode ?? s.cutModes[cutKey(afterClipId, beforeClipId)] ?? 'insert',
+    };
     return launchGeneration(set, get, target, prompt, {
       fromSrc: s.assets[clipA.assetId].src,
       toSrc: s.assets[clipB.assetId].src,
@@ -600,9 +627,11 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   /**
-   * Re-render an existing transition from whatever stands around it NOW — that is what
-   * makes stale → Regenerate correct after a reorder or a replacement. Nothing to do when the
-   * clip is orphaned: there are no longer two photos to span.
+   * Re-render an existing transition. An insert-mode clip renders from whatever photos
+   * stand around it NOW — that is what makes stale → Regenerate correct after a reorder or
+   * a replacement — and has nothing to do when orphaned: there are no longer two photos to
+   * span. A replace-mode clip consumed its photos, so it renders from its recorded source
+   * *assets*, still in the media bin; only a missing asset stops it.
    */
   regenerateTransition(clipId) {
     const s = get();
@@ -611,6 +640,33 @@ export const useEditor = create<EditorState>((set, get) => ({
     const at = placedClips.findIndex((c) => c.id === clipId);
     const clip = at === -1 ? undefined : placedClips[at];
     if (!clip?.transition) return;
+    const alreadyLive = Object.values(s.generations).some(
+      (g) => liveGeneration(g) && g.target.kind === 'cut' && g.target.replacesClipId === clipId,
+    );
+    if (alreadyLive) return;
+
+    if (clip.transition.mode === 'replace') {
+      const { from, to } = clip.transition;
+      const assetA = s.assets[from.assetId];
+      const assetB = s.assets[to.assetId];
+      if (!assetA || !assetB || assetA.missing || assetB.missing) return;
+      const prompt = clip.transition.prompt.trim() || DEFAULT_TRANSITION_PROMPT;
+      // The pair's clip ids are long gone; the landing only reads `replacesClipId`.
+      const target: GenerationTarget = {
+        kind: 'cut',
+        afterClipId: from.clipId,
+        beforeClipId: to.clipId,
+        from,
+        to,
+        replacesClipId: clipId,
+        mode: 'replace',
+      };
+      launchGeneration(set, get, target, prompt, {
+        fromSrc: assetA.src,
+        toSrc: assetB.src,
+      });
+      return;
+    }
 
     const left = placedClips[at - 1];
     const right = placedClips[at + 1];
@@ -618,10 +674,6 @@ export const useEditor = create<EditorState>((set, get) => ({
     const assetA = s.assets[left.assetId];
     const assetB = s.assets[right.assetId];
     if (!assetA || !assetB || assetA.missing || assetB.missing) return;
-    const alreadyLive = Object.values(s.generations).some(
-      (g) => liveGeneration(g) && g.target.kind === 'cut' && g.target.replacesClipId === clipId,
-    );
-    if (alreadyLive) return;
 
     const prompt = clip.transition.prompt.trim() || DEFAULT_TRANSITION_PROMPT;
     const from: TransitionSource = { clipId: left.id, assetId: left.assetId };
@@ -687,7 +739,9 @@ export const useEditor = create<EditorState>((set, get) => ({
       const [head, ...rest] = queue;
       queue = rest;
       if (!cutEligible(get(), head.afterClipId, head.beforeClipId)) continue;
-      const id = get().startCutGeneration(head.afterClipId, head.beforeClipId);
+      // Insert-only, whatever the cut's own pick: a replace landing would consume clips
+      // out from under the cuts still queued behind it.
+      const id = get().startCutGeneration(head.afterClipId, head.beforeClipId, 'insert');
       if (id) {
         set({ animateQueue: rest, animateSubmittingId: id });
         return;
@@ -1168,26 +1222,27 @@ export function animatableCuts(s: Pick<EditorState, 'clips' | 'assets' | 'genera
 }
 
 /**
- * After any edit that removes clips or moves their edges apart: prompts for cuts whose
- * clips are gone go, and so do FAILED cut generations whose pair no longer forms a cut —
- * those have no chip and no card left to dismiss them from, so keeping them would leak
- * invisible state.
+ * After any edit that removes clips or moves their edges apart: prompts and mode picks for
+ * cuts whose clips are gone go, and so do FAILED cut generations whose pair no longer
+ * forms a cut — those have no chip and no card left to dismiss them from, so keeping them
+ * would leak invisible state.
  */
 function prunedAfterEdit(
   clips: Clip[],
   generations: Record<string, Generation>,
   cutPrompts: Record<string, string>,
-): Pick<EditorState, 'generations' | 'cutPrompts'> {
+  cutModes: Record<string, TransitionMode>,
+): Pick<EditorState, 'generations' | 'cutPrompts' | 'cutModes'> {
   const ids = new Set(clips.map((c) => c.id));
   const cuts = new Set(photoCuts(clips).map((c) => cutKey(c.afterClipId, c.beforeClipId)));
 
+  const bothStand = ([key]: [string, unknown]) => {
+    const [a, b] = key.split(':');
+    return ids.has(a) && ids.has(b);
+  };
   return {
-    cutPrompts: Object.fromEntries(
-      Object.entries(cutPrompts).filter(([key]) => {
-        const [a, b] = key.split(':');
-        return ids.has(a) && ids.has(b);
-      }),
-    ),
+    cutPrompts: Object.fromEntries(Object.entries(cutPrompts).filter(bothStand)),
+    cutModes: Object.fromEntries(Object.entries(cutModes).filter(bothStand)),
     generations: Object.fromEntries(
       Object.entries(generations).filter(([, g]) => {
         if (g.status !== 'failed' || g.target.kind !== 'cut') return true;
@@ -1370,10 +1425,15 @@ function launchGeneration(
 }
 
 /**
- * A finished cut render: insert the transition at its cut, or — for a regeneration — swap
- * it over the existing transition clip. The timeline may have been edited mid-render, so
- * the landing is guarded: if the place is gone the clip is never put somewhere wrong, the
- * MP4 stays in the cache, and a toast says what to do instead.
+ * A finished cut render: insert the transition at its cut, stand it in the place of its
+ * two photos (replace mode), or — for a regeneration — swap it over the existing
+ * transition clip. The timeline may have been edited mid-render, so the landing is
+ * guarded: if the place is gone the clip is never put somewhere wrong, the MP4 stays in
+ * the cache, and a toast says what to do instead.
+ *
+ * A replace landing consumes the pair, which is an edit like any other: prompts, mode
+ * picks and failed records for cuts the photos took with them are pruned, and a live
+ * render whose own clips were just consumed is cancelled — nothing is left to land it on.
  */
 function landCutResult(
   set: Setter,
@@ -1397,23 +1457,57 @@ function landCutResult(
     durationMs: DEFAULT_TRANSITION_DURATION_MS,
     from: target.from,
     to: target.to,
+    mode: target.mode,
   };
+  const replacesPair = target.replacesClipId === undefined && target.mode === 'replace';
 
   let landedClipId: string | null = null;
+  const cancelledIds: string[] = [];
   set((s) => {
     const clips =
       target.replacesClipId !== undefined
         ? replaceTransitionClip(s.clips, target.replacesClipId, generated)
-        : insertTransitionClip(s.clips, target.afterClipId, target.beforeClipId, generated);
+        : replacesPair
+          ? replacePairWithTransition(s.clips, target.afterClipId, target.beforeClipId, generated)
+          : insertTransitionClip(s.clips, target.afterClipId, target.beforeClipId, generated);
     if (clips === s.clips) return s;
     const landed = clips.find((c) => c.assetId === asset.id);
     landedClipId = landed?.id ?? null;
+    if (!replacesPair) {
+      return {
+        assets: { ...s.assets, [asset.id]: asset },
+        clips,
+        selection: landed ? { kind: 'clip', clipId: landed.id } : s.selection,
+      };
+    }
+
+    const doomed = new Set([target.afterClipId, target.beforeClipId]);
+    const generations = { ...s.generations };
+    for (const [id, g] of Object.entries(generations)) {
+      if (id === generation.id || g.target.kind !== 'cut' || !liveGeneration(g)) continue;
+      if (
+        doomed.has(g.target.afterClipId) ||
+        doomed.has(g.target.beforeClipId) ||
+        (g.target.replacesClipId !== undefined && doomed.has(g.target.replacesClipId))
+      ) {
+        generations[id] = { ...g, status: 'cancelled' };
+        cancelledIds.push(id);
+      }
+    }
     return {
       assets: { ...s.assets, [asset.id]: asset },
       clips,
       selection: landed ? { kind: 'clip', clipId: landed.id } : s.selection,
+      ...prunedAfterEdit(clips, generations, s.cutPrompts, s.cutModes),
     };
   });
+
+  // Stop paying for renders whose clips were just consumed — and if one of them was the
+  // animate-all queue's in-flight submission, move the queue along past it.
+  for (const id of cancelledIds) {
+    void backend.cancelGeneration(id).catch(() => {});
+    maybeAdvanceAnimateQueue(set, get, id);
+  }
 
   if (landedClipId === null) {
     get().pushToast({

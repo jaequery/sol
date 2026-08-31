@@ -579,6 +579,30 @@ input {
   border-color: var(--accent-line);
   color: var(--ink);
 }
+/* The cut card's insert/replace pick: two plain options, the chosen one in the same
+   accent wash the toolbar's on-states wear. The card's only new control. */
+.mode {
+  display: flex;
+  gap: 6px;
+  margin-top: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.mode__opt {
+  flex: 1;
+  padding: 6px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+  background: var(--sunken);
+  border-radius: var(--r-sm);
+}
+.mode__opt--on {
+  background: var(--accent-dim);
+  border-color: var(--accent-line);
+  color: #cbbcff;
+}
+
 .block-btn {
   width: 100%;
   margin-top: var(--sp-3);
@@ -870,6 +894,33 @@ input {
   color: #fff;
   padding: 3px 5px;
   border-radius: 4px;
+}
+/* A replace-mode transition's face: its two source stills side by side — start left, end
+   right — split by a seam, an arrow on the seam saying one animates into the other. */
+.clip__pair {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+.clip__pair img {
+  position: static;
+  width: 50%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.92;
+}
+.clip__pair img + img {
+  border-left: 1px solid var(--line);
+}
+.clip__pair-arrow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font: 600 var(--fs) / 1 var(--font);
+  font-style: normal;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 }
 /* The two grab bars on a clip's edges. Wide enough to hit, quiet until the clip is hovered. */
 .clip__handle {

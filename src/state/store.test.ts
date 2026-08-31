@@ -1,5 +1,5 @@
 /**
- * The film flow through the real store.
+ * The film and replace-mode cut flows through the real store.
  *
  * Same two stubs as `App.test.tsx` and for the same reason: the Tauri bridge and
  * canvas/media decoding are the only things jsdom cannot provide. The store, `lib/film` and
@@ -8,9 +8,10 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEditor } from './store';
+import { photoClip } from '../lib/timeline';
 import { assembleFilm, defaultFilmPrompt, FILM_SEGMENT_DURATION_MS } from '../lib/film';
 import { DEFAULT_MODEL_ID, type GenerateInput, type GenerationUpdate } from '../lib/backend';
-import type { MediaAsset } from '../types/project';
+import type { Clip, MediaAsset } from '../types/project';
 
 const generateAnimation = vi.fn(async (_input: GenerateInput) => {});
 const cancelGeneration = vi.fn(async (_id: string) => {});
@@ -73,6 +74,10 @@ beforeEach(() => {
     generations: {},
     modelId: DEFAULT_MODEL_ID,
     film: null,
+    cutPrompts: {},
+    cutModes: {},
+    animateQueue: null,
+    animateSubmittingId: null,
     importProblems: [],
     importing: 0,
     toasts: [],
@@ -348,5 +353,167 @@ describe('retry and cancel', () => {
     useEditor.getState().dismissFilm();
 
     expect(useEditor.getState().film).toBeNull();
+  });
+});
+
+describe('replace-mode cut transitions', () => {
+  /** Two photos side by side on the track: a (0–2000) then b (2000–5000). */
+  function pairOnTrack(): [Clip, Clip] {
+    const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 2000, 0);
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 2000);
+    useEditor.setState({ clips: [a, b] });
+    return [a, b];
+  }
+
+  /** A third photo appended at `startMs`, so a landing has something to ripple or dissolve. */
+  function thirdPhoto(startMs: number): Clip {
+    const c = photoClip({ id: 'asset_c', name: 'asset_c.jpg' }, 1000, startMs);
+    useEditor.setState({ clips: [...useEditor.getState().clips, c] });
+    return c;
+  }
+
+  function succeedCut(id: string, outputPath = '/cache/replace.mp4') {
+    emit({ generationId: id, status: 'succeeded', progress: 1, elapsedSecs: 60, slow: false, outputPath });
+  }
+
+  it('lands the finished MP4 in place of both photos and prunes their cut state', () => {
+    const [a, b] = pairOnTrack();
+    thirdPhoto(6000);
+
+    useEditor.setState({ selection: { kind: 'cut', afterClipId: a.id, beforeClipId: b.id } });
+    useEditor.getState().setCutMode('replace');
+    const id = useEditor.getState().startCutGeneration(a.id, b.id);
+    expect(id).toBeTruthy();
+    // The pick was stamped onto the target at launch.
+    expect(useEditor.getState().generations[id!].target).toMatchObject({ kind: 'cut', mode: 'replace' });
+
+    succeedCut(id!);
+
+    const s = useEditor.getState();
+    // The 5 s render covers the pair's 5 s span exactly, so c keeps its 1 s gap.
+    expect(s.clips.map((x) => [x.kind, x.startMs])).toEqual([
+      ['video', 0],
+      ['photo', 6000],
+    ]);
+    const t = s.clips[0];
+    expect(t.transition).toMatchObject({
+      mode: 'replace',
+      from: { assetId: 'asset_a' },
+      to: { assetId: 'asset_b' },
+    });
+    expect(s.selection).toEqual({ kind: 'clip', clipId: t.id });
+    // The mode pick went with its cut, and the photos stay in the bin to re-drag.
+    expect(s.cutModes).toEqual({});
+    expect(s.assets.asset_a).toBeTruthy();
+    expect(s.assets.asset_b).toBeTruthy();
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'ok', title: 'Transition ready' });
+  });
+
+  it('cancels a neighbouring render whose photo the landing consumed', () => {
+    const [a, b] = pairOnTrack();
+    const c = thirdPhoto(5000);
+
+    const idAB = useEditor.getState().startCutGeneration(a.id, b.id, 'replace');
+    const idBC = useEditor.getState().startCutGeneration(b.id, c.id);
+    expect(idAB && idBC).toBeTruthy();
+
+    succeedCut(idAB!);
+
+    const s = useEditor.getState();
+    // b went with the landing, so the b→c render has nothing left to land on.
+    expect(s.generations[idBC!].status).toBe('cancelled');
+    expect(cancelGeneration).toHaveBeenCalledWith(idBC);
+    expect(s.clips.map((x) => x.kind)).toEqual(['video', 'photo']);
+  });
+
+  it('a failed replace render leaves the timeline exactly as it was', () => {
+    const [a, b] = pairOnTrack();
+    const before = useEditor.getState().clips;
+    const id = useEditor.getState().startCutGeneration(a.id, b.id, 'replace');
+
+    emit({
+      generationId: id!,
+      status: 'failed',
+      progress: 0,
+      elapsedSecs: 4,
+      slow: false,
+      error: { title: 'Rate limited', message: 'rate limited', retryable: true },
+    });
+
+    expect(useEditor.getState().clips).toEqual(before);
+    expect(useEditor.getState().generations[id!].status).toBe('failed');
+  });
+
+  it('a pair edited mid-flight gets the toast — nothing placed, no asset minted', () => {
+    const [a, b] = pairOnTrack();
+    const c = thirdPhoto(8000);
+    const id = useEditor.getState().startCutGeneration(a.id, b.id, 'replace');
+
+    // c dragged onto the pair's shared edge while the render runs: no longer a cut.
+    useEditor.getState().moveClipTo(c.id, 2000);
+    const before = useEditor.getState().clips;
+    const assetsBefore = Object.keys(useEditor.getState().assets).sort();
+
+    succeedCut(id!);
+
+    const s = useEditor.getState();
+    expect(s.clips).toEqual(before);
+    expect(Object.keys(s.assets).sort()).toEqual(assetsBefore);
+    expect(s.toasts.at(-1)).toMatchObject({
+      tone: 'error',
+      title: 'Transition finished, but its photos moved',
+    });
+  });
+
+  it('regenerates a replaced transition from its source assets, swapping in place', async () => {
+    const [a, b] = pairOnTrack();
+    const id = useEditor.getState().startCutGeneration(a.id, b.id, 'replace');
+    await submitted(1);
+    succeedCut(id!);
+    const landed = useEditor.getState().clips[0];
+    expect(landed.transition?.mode).toBe('replace');
+
+    generateAnimation.mockClear();
+    useEditor.getState().regenerateTransition(landed.id);
+    await submitted(1);
+
+    // The frames came from the bin assets — there are no neighbouring photos left to read.
+    const sent = generateAnimation.mock.calls[0][0];
+    expect(sent.startFrame).toBe('data:image/jpeg;base64,still-of-asset:///photos/asset_a.jpg');
+    expect(sent.endFrame).toBe('data:image/jpeg;base64,still-of-asset:///photos/asset_b.jpg');
+
+    const regen = Object.values(useEditor.getState().generations).find(
+      (g) => g.status === 'queued' || g.status === 'running',
+    )!;
+    expect(regen.target).toMatchObject({ kind: 'cut', replacesClipId: landed.id, mode: 'replace' });
+    succeedCut(regen.id, '/cache/replace-2.mp4');
+
+    // Swapped over the same clip: id and position kept, new footage behind it.
+    const s = useEditor.getState();
+    expect(s.clips.map((x) => x.id)).toEqual([landed.id]);
+    expect(s.clips[0].startMs).toBe(landed.startMs);
+    expect(s.assets[s.clips[0].assetId].path).toBe('/cache/replace-2.mp4');
+    expect(s.clips[0].transition).toMatchObject({ mode: 'replace' });
+  });
+
+  it('refuses to regenerate once a source asset has left the bin', async () => {
+    const [a, b] = pairOnTrack();
+    const id = useEditor.getState().startCutGeneration(a.id, b.id, 'replace');
+    await submitted(1);
+    succeedCut(id!);
+    const landed = useEditor.getState().clips[0];
+
+    const assets = { ...useEditor.getState().assets };
+    delete assets.asset_a;
+    useEditor.setState({ assets });
+
+    generateAnimation.mockClear();
+    useEditor.getState().regenerateTransition(landed.id);
+
+    // Refused where it was asked: no record was even written, nothing was sent.
+    expect(
+      Object.values(useEditor.getState().generations).some((g) => g.status === 'queued'),
+    ).toBe(false);
+    expect(generateAnimation).not.toHaveBeenCalled();
   });
 });

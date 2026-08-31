@@ -266,7 +266,9 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
   const assets = useEditor((s) => s.assets);
   const generations = useEditor((s) => s.generations);
   const cutPrompts = useEditor((s) => s.cutPrompts);
+  const cutModes = useEditor((s) => s.cutModes);
   const setCutPrompt = useEditor((s) => s.setCutPrompt);
+  const setCutMode = useEditor((s) => s.setCutMode);
   const startCutGeneration = useEditor((s) => s.startCutGeneration);
   const openSettings = useEditor((s) => s.openSettings);
 
@@ -289,6 +291,7 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
   }
 
   const prompt = cutPrompts[`${a.id}:${b.id}`] ?? '';
+  const mode = cutModes[`${a.id}:${b.id}`] ?? 'insert';
   const connected = settings?.configured ?? false;
   const assetA = assets[a.assetId];
   const assetB = assets[b.assetId];
@@ -302,10 +305,29 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
         <p className="hint" style={{ marginTop: 0 }}>
           Higgsfield animates from the last frame of <b>{a.name}</b> to the first frame of{' '}
           <b>{b.name}</b>.
-          {gapMs > 0 && (
+          {gapMs > 0 && mode === 'insert' && (
             <> The finished clip fills the {formatDuration(gapMs)} gap between them.</>
           )}
         </p>
+        <div className="mode" role="radiogroup" aria-label="Where the finished clip goes">
+          {(
+            [
+              ['insert', 'Insert between photos'],
+              ['replace', 'Replace the photos'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={mode === value}
+              className={`mode__opt ${mode === value ? 'mode__opt--on' : ''}`}
+              onClick={() => setCutMode(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <label className="visually-hidden" htmlFor="cut-prompt">
           Describe the transition between the two photos
         </label>
@@ -352,7 +374,9 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
             <p className="hint">
               {offline
                 ? 'A photo on this cut has no media — re-import it first.'
-                : 'No typing needed — leaving this empty uses the default prompt.'}
+                : mode === 'replace'
+                  ? 'The finished clip replaces both photos — they stay in the media bin.'
+                  : 'No typing needed — leaving this empty uses the default prompt.'}
             </p>
           </>
         )}
@@ -362,8 +386,9 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
 }
 
 /**
- * A selected transition clip: what made it, an editable prompt, and one-tap Regenerate
- * that reads whatever photos stand around it now. Staleness is worn, never acted on.
+ * A selected transition clip: what made it, an editable prompt, and one-tap Regenerate —
+ * reading the photos around it now, or, for a replace-mode clip that consumed its photos,
+ * its source assets still in the bin. Staleness is worn, never acted on.
  */
 function TransitionCard({ clip }: { clip: Clip }) {
   const clips = useEditor((s) => s.clips);
@@ -377,7 +402,8 @@ function TransitionCard({ clip }: { clip: Clip }) {
   const transition = clip.transition;
   if (!transition) return null;
 
-  const staleness = transitionStaleness(clips, clip.id);
+  const replaced = transition.mode === 'replace';
+  const staleness = transitionStaleness(clips, clip.id, assets);
   const fromName = assets[transition.from.assetId]?.name ?? 'missing photo';
   const toName = assets[transition.to.assetId]?.name ?? 'missing photo';
 
@@ -432,8 +458,9 @@ function TransitionCard({ clip }: { clip: Clip }) {
         {staleness === 'orphaned' && (
           <div className="callout">
             <b>Source missing</b>
-            This transition no longer sits between two photos, so there is nothing to regenerate
-            it from. It still plays and exports.
+            {replaced
+              ? 'A source photo is no longer in the media bin, so there is nothing to regenerate this from. It still plays and exports.'
+              : 'This transition no longer sits between two photos, so there is nothing to regenerate it from. It still plays and exports.'}
           </div>
         )}
 
@@ -456,8 +483,9 @@ function TransitionCard({ clip }: { clip: Clip }) {
               ⟳ Regenerate transition
             </button>
             <p className="hint">
-              Regenerates from the photos around it as they are now. Trim, drag or delete this
-              clip like any video.
+              {replaced
+                ? 'Regenerates from its two source photos in the media bin, in place. Trim, drag or delete this clip like any video.'
+                : 'Regenerates from the photos around it as they are now. Trim, drag or delete this clip like any video.'}
             </p>
           </>
         )}

@@ -18,6 +18,7 @@ import {
   placeClip,
   insertTransitionClip,
   photoCuts,
+  replacePairWithTransition,
   replaceTransitionClip,
   resetIds,
   resizeAudio,
@@ -535,6 +536,127 @@ describe('cuts & transitions', () => {
       const clips = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
       expect(replaceTransitionClip(clips, 'nope', generatedBetween(a, b))).toBe(clips);
       expect(replaceTransitionClip(clips, a.id, generatedBetween(a, b))).toBe(clips);
+    });
+  });
+
+  describe('replacePairWithTransition', () => {
+    it('removes both photos and stands the clip where the left one started', () => {
+      const [a, b] = pair();
+      // A later photo with a deliberate 1s gap after b — the gap must survive.
+      const d = photoClip({ id: 'asset_d', name: 'd.jpg' }, 1000, 6000);
+      const result = replacePairWithTransition([a, b, d], a.id, b.id, {
+        ...generatedBetween(a, b),
+        mode: 'replace',
+      });
+
+      // The 5 s render covers the pair's 5 s span exactly, so d does not move.
+      expect(result.map((c) => [c.kind, c.startMs])).toEqual([
+        ['video', 0],
+        ['photo', 6000],
+      ]);
+      expect(result.find((c) => c.id === a.id)).toBeUndefined();
+      expect(result.find((c) => c.id === b.id)).toBeUndefined();
+
+      const t = result[0];
+      expect(t.assetId).toBe('asset_tr');
+      expect(t.ai).toEqual({ prompt: 'smooth cinematic motion', sourceAssetId: 'asset_a' });
+      expect(t.transition).toMatchObject({
+        mode: 'replace',
+        from: { clipId: a.id, assetId: 'asset_a' },
+        to: { clipId: b.id, assetId: 'asset_b' },
+      });
+    });
+
+    it('ripples what follows by the difference between the render and the span it replaced', () => {
+      const [a, b] = pair();
+      const d = photoClip({ id: 'asset_d', name: 'd.jpg' }, 1000, 6000);
+      const result = replacePairWithTransition([a, b, d], a.id, b.id, {
+        ...generatedBetween(a, b),
+        durationMs: 3000,
+        mode: 'replace',
+      });
+
+      // A 3 s render over a 5 s span: everything after comes back 2 s, gap shape kept.
+      expect(result.map((c) => [c.kind, c.startMs])).toEqual([
+        ['video', 0],
+        ['photo', 4000],
+      ]);
+    });
+
+    it('consumes a gap dragged open between the pair', () => {
+      const [a, b] = pair();
+      const apart = { ...b, startMs: 4000 };
+      const d = photoClip({ id: 'asset_d', name: 'd.jpg' }, 1000, 8000);
+      const result = replacePairWithTransition([a, apart, d], a.id, b.id, {
+        ...generatedBetween(a, apart),
+        mode: 'replace',
+      });
+
+      // The 5 s render replaces the 7 s span, gap included; d keeps its 1 s of spacing.
+      expect(result.map((c) => [c.kind, c.startMs])).toEqual([
+        ['video', 0],
+        ['photo', 6000],
+      ]);
+    });
+
+    it('leaves clips in front of the pair — and the span before its own start — untouched', () => {
+      const z = photoClip({ id: 'asset_z', name: 'z.jpg' }, 1000, 0);
+      const a = photoClip({ id: 'asset_a', name: 'a.jpg' }, 2000, 1000);
+      const b = photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000, 3000);
+      const result = replacePairWithTransition([z, a, b], a.id, b.id, {
+        ...generatedBetween(a, b),
+        mode: 'replace',
+      });
+
+      expect(result.map((c) => [c.kind, c.startMs])).toEqual([
+        ['photo', 0],
+        ['video', 1000],
+      ]);
+    });
+
+    it('is an identity no-op when the pair no longer forms a cut', () => {
+      const [a, b] = pair();
+      const generated = { ...generatedBetween(a, b), mode: 'replace' as const };
+
+      expect(replacePairWithTransition([b], a.id, b.id, generated)).toEqual([b]);
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 3000, 2000);
+      expect(replacePairWithTransition([a, v], a.id, v.id, generated)).toEqual([a, v]);
+      // A third clip between the pair means they are no longer adjacent — nothing to replace.
+      const between = photoClip({ id: 'asset_x', name: 'x.jpg' }, 1000, 2000);
+      const shifted = { ...b, startMs: 3000 };
+      expect(replacePairWithTransition([a, between, shifted], a.id, b.id, generated)).toEqual([
+        a,
+        between,
+        shifted,
+      ]);
+    });
+  });
+
+  describe('replace-mode staleness', () => {
+    function landedReplace(): Clip {
+      const [a, b] = pair();
+      const clips = replacePairWithTransition([a, b], a.id, b.id, {
+        ...generatedBetween(a, b),
+        mode: 'replace',
+      });
+      return clips[0];
+    }
+
+    it('is fresh while both source assets stand in the bin, whatever its neighbours are', () => {
+      const t = landedReplace();
+      const bin = { asset_a: {}, asset_b: {} };
+      expect(transitionStaleness([t], t.id, bin)).toBe('fresh');
+      // Neighbours say nothing: flanked by a video it would orphan an insert-mode clip.
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 1500, 5000);
+      expect(transitionStaleness([t, v], t.id, bin)).toBe('fresh');
+    });
+
+    it('is orphaned once a source asset left the bin or its file went missing', () => {
+      const t = landedReplace();
+      expect(transitionStaleness([t], t.id, { asset_a: {} })).toBe('orphaned');
+      expect(transitionStaleness([t], t.id, { asset_a: {}, asset_b: { missing: true } })).toBe(
+        'orphaned',
+      );
     });
   });
 

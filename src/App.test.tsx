@@ -92,6 +92,7 @@ beforeEach(() => {
     generations: {},
     modelId: backend.DEFAULT_MODEL_ID,
     cutPrompts: {},
+    cutModes: {},
     animateQueue: null,
     animateSubmittingId: null,
     film: null,
@@ -524,6 +525,112 @@ describe('AI transitions between photos', () => {
     expect(clips[2].ai).toBeTruthy();
     expect(clips[1].transition).toBeUndefined();
     expect(clips[2].transition).toBeUndefined();
+  });
+});
+
+describe('replace-mode transitions', () => {
+  /** Select the pair's cut, pick replace, and press Generate. Returns the generation id. */
+  async function runReplaceGeneration(user: ReturnType<typeof userEvent.setup>): Promise<string> {
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+    await user.click(await screen.findByRole('radio', { name: 'Replace the photos' }));
+    await user.click(screen.getByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalled());
+    return Object.keys(useEditor.getState().generations)[0];
+  }
+
+  it('the cut card offers the choice, defaults to insert, and remembers the pick per cut', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropPhotoPair();
+
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+    const replace = await screen.findByRole('radio', { name: 'Replace the photos' });
+    expect(screen.getByRole('radio', { name: 'Insert between photos' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(replace).toHaveAttribute('aria-checked', 'false');
+
+    await user.click(replace);
+    expect(replace).toHaveAttribute('aria-checked', 'true');
+
+    // Away to a clip and back: the pick is remembered per cut, like its prompt.
+    await user.click(screen.getByRole('button', { name: 'sunset.jpg photo clip' }));
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+    expect(await screen.findByRole('radio', { name: 'Replace the photos' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    // Choosing spends nothing.
+    expect(generateAnimation).not.toHaveBeenCalled();
+  });
+
+  it('success lands the MP4 in place of both photos, wearing both source thumbnails', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const id = await runReplaceGeneration(user);
+    await succeed(id, '/home/u/.cache/solcut/generated/replace.mp4');
+
+    // The two stills left the track; the animated clip holds their whole span.
+    const clips = useEditor.getState().clips;
+    expect(clips.map((c) => [c.kind, c.startMs])).toEqual([['video', 0]]);
+    expect(clips[0].transition).toMatchObject({ mode: 'replace' });
+    expect(screen.queryByRole('button', { name: 'sunset.jpg photo clip' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'cliff.png photo clip' })).not.toBeInTheDocument();
+    // The photos stay in the media bin to re-drag.
+    expect(screen.getByRole('button', { name: 'Remove sunset.jpg' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove cliff.png' })).toBeInTheDocument();
+
+    // Its timeline face: the two source stills side by side, the ✦ AI tag, no video frame.
+    const generated = await screen.findByRole('button', { name: /ai-.*\.mp4 video clip/i });
+    expect(within(generated).getByText('✦ AI')).toBeInTheDocument();
+    const face = screen.getByTestId(`clip-pair-${clips[0].id}`);
+    const stills = face.querySelectorAll('img');
+    const srcOf = (name: string) =>
+      Object.values(useEditor.getState().assets).find((a) => a.name === name)?.src;
+    expect(stills).toHaveLength(2);
+    expect(stills[0].getAttribute('src')).toBe(srcOf('sunset.jpg'));
+    expect(stills[1].getAttribute('src')).toBe(srcOf('cliff.png'));
+    expect(generated.querySelector('video')).toBeNull();
+    // Both sources stand in the bin, so nothing is worn beyond the tag.
+    expect(within(generated).queryByText(/SOURCE/)).not.toBeInTheDocument();
+  });
+
+  it('its inspector card shows From/To and regenerates from the bin assets, in place', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const id = await runReplaceGeneration(user);
+    await succeed(id, '/home/u/.cache/solcut/generated/replace.mp4');
+    const landed = useEditor.getState().clips[0];
+
+    // The landed clip is selected, so its card is showing: From/To read the bin assets.
+    expect(screen.getByText('From').parentElement).toHaveTextContent('sunset.jpg');
+    expect(screen.getByText('To').parentElement).toHaveTextContent('cliff.png');
+
+    generateAnimation.mockClear();
+    await user.click(await screen.findByRole('button', { name: /regenerate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    const srcOf = (name: string) =>
+      Object.values(useEditor.getState().assets).find((a) => a.name === name)?.src;
+    expect(generateAnimation.mock.calls[0][0].startFrame).toBe(
+      `data:image/jpeg;base64,frame-of-${srcOf('sunset.jpg')}`,
+    );
+    expect(generateAnimation.mock.calls[0][0].endFrame).toBe(
+      `data:image/jpeg;base64,frame-of-${srcOf('cliff.png')}`,
+    );
+
+    const regen = Object.values(useEditor.getState().generations).find(
+      (g) => g.status === 'queued',
+    )!;
+    await succeed(regen.id, '/home/u/.cache/solcut/generated/replace-2.mp4');
+
+    // Swapped over the same clip: id and position kept, new footage behind it.
+    const s = useEditor.getState();
+    expect(s.clips.map((c) => c.id)).toEqual([landed.id]);
+    expect(s.clips[0].startMs).toBe(landed.startMs);
+    expect(s.assets[s.clips[0].assetId].path).toBe('/home/u/.cache/solcut/generated/replace-2.mp4');
+    expect(s.clips[0].transition).toMatchObject({ mode: 'replace' });
   });
 });
 
