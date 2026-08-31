@@ -52,6 +52,8 @@ export interface GenerationError {
   title: string;
   message: string;
   retryable: boolean;
+  /** `version+commit` of the backend that produced the report. Absent from builds that predate the stamp. */
+  build?: string;
 }
 
 /**

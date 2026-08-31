@@ -257,13 +257,16 @@ describe('AI transitions between photos', () => {
         progress: 0,
         elapsedSecs: 4,
         slow: false,
-        error: { title: 'Rate limited', message: 'rate limited', retryable: true },
+        error: { title: 'Rate limited', message: 'rate limited', retryable: true, build: '0.1.0+abc123def' },
       });
     });
 
     expect(await screen.findByText('✕ FAILED')).toBeInTheDocument();
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByText('Rate limited')).toBeInTheDocument();
+    // The report names the backend build that produced it — a failure from a stale
+    // process must not read as one from the current build.
+    expect(within(alert).getByText('SolCut backend 0.1.0+abc123def')).toBeInTheDocument();
 
     generateAnimation.mockClear();
     await user.click(within(alert).getByRole('button', { name: 'Retry' }));
@@ -1122,8 +1125,8 @@ describe('the 3-photo film wizard', () => {
     expect(first.prompt).toBe(defaultFilmPrompt(0));
     expect(second.prompt).toBe(defaultFilmPrompt(1));
 
-    // The selector was never touched, so both legs render on the default: Seedance 2.5.
-    expect(first.endpoint).toBe('/bytedance/seedance/v2.5/pro/image-to-video');
+    // The selector was never touched, so both legs render on the default: Hailuo-02.
+    expect(first.endpoint).toBe('/minimax/hailuo-02/standard/image-to-video');
     expect(second.endpoint).toBe(first.endpoint);
 
     // The photos are inputs, not shots: the track stays empty until the film lands.
@@ -1341,20 +1344,20 @@ describe('the 3-photo film wizard', () => {
 });
 
 describe('the per-render model selector', () => {
-  const SEEDANCE = '/bytedance/seedance/v2.5/pro/image-to-video';
+  const HAILUO_STANDARD = '/minimax/hailuo-02/standard/image-to-video';
 
-  it('a render with the selector untouched goes to Seedance 2.5', async () => {
+  it('a render with the selector untouched goes to Hailuo-02 Standard', async () => {
     const user = userEvent.setup();
     render(<App />);
     await dropPhotoPair();
     await user.click(screen.getByRole('button', { name: CUT_CHIP }));
 
     // The control stands on the cut card, already on the default — no pick required.
-    expect(await screen.findByLabelText('Model')).toHaveValue('seedance-2.5');
+    expect(await screen.findByLabelText('Model')).toHaveValue('hailuo-02-standard');
 
     await user.click(screen.getByRole('button', { name: /generate transition/i }));
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
-    expect(generateAnimation.mock.calls[0][0].endpoint).toBe(SEEDANCE);
+    expect(generateAnimation.mock.calls[0][0].endpoint).toBe(HAILUO_STANDARD);
   });
 
   it('a non-default pick is what that render submits', async () => {
@@ -1373,7 +1376,7 @@ describe('the per-render model selector', () => {
     const user = userEvent.setup();
     render(<App />);
     const id = await runCutGeneration(user);
-    expect(generateAnimation.mock.calls[0][0].endpoint).toBe(SEEDANCE);
+    expect(generateAnimation.mock.calls[0][0].endpoint).toBe(HAILUO_STANDARD);
     await succeed(id);
 
     // The landed transition clip is selected, so its card is showing now.

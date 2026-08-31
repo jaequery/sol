@@ -138,7 +138,7 @@ export interface EditorState {
   /**
    * The model the next render uses — a `RenderModel` id, or `custom` for the endpoint
    * Settings stores. Chosen at any render entry point and sent with every request; never
-   * persisted, so a fresh session is back on the default (Seedance 2.5).
+   * persisted, so a fresh session is back on the default (MiniMax Hailuo-02 Standard).
    */
   modelId: string;
   /** The three-photo film currently being made, if there is one. */
