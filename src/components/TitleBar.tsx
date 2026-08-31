@@ -8,7 +8,6 @@ export function TitleBar() {
   const openFilmWizard = useEditor((s) => s.openFilmWizard);
   const runExport = useEditor((s) => s.runExport);
   const exporting = useEditor((s) => s.exporting);
-  const settings = useEditor((s) => s.settings);
 
   const rendering = Object.values(generations).filter(
     (g) => g.status === 'queued' || g.status === 'running',
@@ -26,8 +25,13 @@ export function TitleBar() {
             ◐ {rendering} rendering
           </span>
         )}
+        {/*
+          Deliberately state-blind: the connection's status lives in Settings, and the
+          "connect first" nudge sits on the generate paths themselves (cut card, film
+          wizard), where it can act — not as a persistent branded chip up here.
+        */}
         <button type="button" className="btn btn--ghost" onClick={openSettings}>
-          {settings?.configured ? '✦ Higgsfield' : '✦ Connect Higgsfield'}
+          Settings
         </button>
         {/*
           Always live, even mid-film: a running film has nowhere else to be watched, and the

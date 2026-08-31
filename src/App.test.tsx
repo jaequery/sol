@@ -537,7 +537,7 @@ describe('the Higgsfield connection', () => {
     );
 
     render(<App />);
-    await user.click(await screen.findByRole('button', { name: /Higgsfield/ }));
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
     await user.click(screen.getByRole('button', { name: 'Test connection' }));
 
     await waitFor(() => expect(testConnection).toHaveBeenCalledTimes(1));
@@ -552,7 +552,7 @@ describe('the Higgsfield connection', () => {
     testConnection.mockRejectedValue('No workspace selected. Hint: Run: hf workspace set <workspace_id>');
 
     render(<App />);
-    await user.click(await screen.findByRole('button', { name: /Higgsfield/ }));
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
     await user.click(screen.getByRole('button', { name: 'Test connection' }));
 
     expect(await screen.findByText('Could not connect')).toBeInTheDocument();
@@ -564,7 +564,7 @@ describe('the Higgsfield connection', () => {
     storedSettings = { ...STORED_SETTINGS, configured: false, cliPath: null };
 
     render(<App />);
-    await user.click(await screen.findByRole('button', { name: /Higgsfield/ }));
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
 
     expect(screen.getByText(backend.CLI_INSTALL)).toBeInTheDocument();
     expect(screen.getByText(backend.CLI_LOGIN)).toBeInTheDocument();
@@ -580,7 +580,7 @@ describe('the Higgsfield connection', () => {
 
     render(<App />);
     await waitFor(() => expect(useEditor.getState().settings?.customModel).toBe('wan2_7'));
-    await user.click(screen.getByRole('button', { name: /Higgsfield/ }));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
 
     // Seeded once at mount, the field would still read blank — and saving would
     // silently clear the stored model.

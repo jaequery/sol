@@ -3,7 +3,9 @@ import { CLI_INSTALL, CLI_LOGIN, CLI_WORKSPACE } from '../lib/backend';
 import { useEditor } from '../state/store';
 
 /**
- * The Higgsfield connection dialog.
+ * The Settings dialog — the app's one settings surface, and where the Higgsfield
+ * connection lives (entered from the title bar's Settings button, or any
+ * "Connect Higgsfield" callout).
  *
  * Authentication belongs to the Higgsfield CLI (`higgsfield auth login`), billed to the
  * account's subscription workspace — the app holds no credential at all. So this dialog
@@ -30,9 +32,11 @@ function ConnectionForm() {
   const [customModel, setCustomModel] = useState(settings?.customModel ?? '');
 
   return (
-    <div className="scrim" role="dialog" aria-modal="true" aria-label="Higgsfield connection">
+    <div className="scrim" role="dialog" aria-modal="true" aria-label="Settings">
       <div className="modal">
-        <div className="modal__head">✦ Higgsfield connection</div>
+        <div className="modal__head">Settings</div>
+        {/* The body is the Higgsfield connection — its hints name the CLI themselves,
+            so the head stays a plain "Settings" with no second, redundant heading. */}
         <div className="modal__body">
           {settings?.configured ? (
             <p className="hint" style={{ marginTop: 0 }}>

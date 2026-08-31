@@ -127,8 +127,8 @@ describe('title bar', () => {
     const user = userEvent.setup();
     await mount();
 
-    await user.click(screen.getByRole('button', { name: '✦ Higgsfield' }));
-    expect(screen.getByRole('dialog', { name: 'Higgsfield connection' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
     await user.click(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })[0]);
@@ -428,7 +428,7 @@ describe('settings dialog', () => {
   it('opens focused on its first field, takes an edit, and Cancel closes it', async () => {
     const user = userEvent.setup();
     await mount();
-    await user.click(screen.getByRole('button', { name: '✦ Higgsfield' }));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
 
     const field = screen.getByLabelText('Custom model');
     expect(field).toHaveFocus();
@@ -437,13 +437,13 @@ describe('settings dialog', () => {
     expect(field).toHaveValue('wan2_7');
 
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('dialog', { name: 'Higgsfield connection' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument();
   });
 
   it('Test connection reports back without saving', async () => {
     const user = userEvent.setup();
     await mount();
-    await user.click(screen.getByRole('button', { name: '✦ Higgsfield' }));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
     vi.mocked(backend.testConnection).mockResolvedValue('Connected as ••••7fa2');
 
     await user.click(screen.getByRole('button', { name: 'Test connection' }));
@@ -750,24 +750,24 @@ describe('keyboard', () => {
   it('regression — Escape closes the settings dialog from inside one of its fields', async () => {
     const user = userEvent.setup();
     await mount();
-    await user.click(screen.getByRole('button', { name: '✦ Higgsfield' }));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
     const field = screen.getByLabelText('Custom model');
     await user.click(field);
 
     // The typing guard used to return before the Escape branch, so Escape did nothing in
     // exactly the place it was needed — with the cursor in a dialog's own field.
     await act(async () => fireEvent.keyDown(field, { key: 'Escape' }));
-    expect(screen.queryByRole('dialog', { name: 'Higgsfield connection' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument();
   });
 
   it('regression — Escape closes one layer at a time, innermost first', async () => {
     const user = userEvent.setup();
     await mount();
     await user.click(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })[0]);
-    await user.click(screen.getByRole('button', { name: '✦ Higgsfield' }));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
 
     await act(async () => fireEvent.keyDown(document.body, { key: 'Escape' }));
-    expect(screen.queryByRole('dialog', { name: 'Higgsfield connection' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument();
     // The panel underneath is still open: one press, one layer.
     expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).toBeInTheDocument();
 
@@ -792,7 +792,7 @@ describe('keyboard', () => {
     await mount();
     await dropPhotoPair();
     await user.click(screen.getByRole('button', { name: 'sunset.jpg photo clip' }));
-    await user.click(screen.getByRole('button', { name: '✦ Higgsfield' }));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
 
     // With a scrim over the app, the timeline underneath is not what the user is typing at.
     await act(async () => fireEvent.keyDown(document.body, { key: 'Backspace' }));
@@ -819,11 +819,12 @@ describe('settings loading', () => {
       throw new Error('which: no ffmpeg');
     };
     // Both awaits used to sit in one `set()`, so a rejected probe threw the settings away
-    // with it: the title bar read "✦ Connect Higgsfield" and every generate path gated off.
+    // with it: the app reported a configured machine as unconfigured and every generate
+    // path gated off. (The title bar no longer shows credential state — the Settings
+    // dialog and the generate-path callouts do — so the store is what to assert on.)
     await mount();
 
     expect(useEditor.getState().settings?.configured).toBe(true);
     expect(useEditor.getState().ffmpegAvailable).toBe(false);
-    expect(screen.getByRole('button', { name: '✦ Higgsfield' })).toBeInTheDocument();
   });
 });
