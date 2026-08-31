@@ -47,6 +47,7 @@ import {
   setFilmPrompt,
   type Film,
 } from '../lib/film';
+import { hydrate, markMissing, readProjectFile, toProjectFile } from '../lib/project';
 import {
   audioTrack,
   canSplitAt,
@@ -99,6 +100,15 @@ export interface ExportState {
    */
   retryable?: boolean;
 }
+
+/**
+ * What restoring the stored project found — and therefore whether autosave may start.
+ *
+ * `blocked` is the one that matters: it means something is on disk that this session must
+ * not overwrite. Arming autosave after a restore that *failed* would leave an empty editor
+ * writing over the project it could not read, the moment the user touched anything.
+ */
+export type RestoreOutcome = 'restored' | 'nothing' | 'blocked';
 
 /**
  * One photo the film wizard is holding, before anything has been imported.
@@ -188,6 +198,15 @@ export interface EditorState {
    */
   connectionMessage: { ok: boolean; text: string; title?: string } | null;
 
+  /**
+   * Why the last autosave failed, or `null` while it is working.
+   *
+   * The only thing this feature ever puts on screen. A working autosave shows nothing —
+   * the work simply being there at the next launch is the whole confirmation — but a
+   * *broken* one has to say so, or the user loses everything without ever being told.
+   */
+  saveError: string | null;
+
   exportState: ExportState | null;
   /**
    * A render is in flight. Distinct from `exportState`, which is only what the dialog is
@@ -254,6 +273,10 @@ export interface EditorState {
   placeFilmOnTimeline: () => void;
   dismissFilm: () => void;
 
+  // ---- the saved project
+  restoreProject: () => Promise<RestoreOutcome>;
+  persistProject: () => Promise<void>;
+
   // ---- settings, export, chrome
   loadSettings: () => Promise<void>;
   openSettings: () => void;
@@ -292,6 +315,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   settings: null,
   settingsOpen: false,
   connectionMessage: null,
+
+  saveError: null,
 
   exportState: null,
   exporting: false,
@@ -1046,6 +1071,75 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({ film: null });
   },
 
+  // ------------------------------------------------------------- the saved project
+
+  async restoreProject() {
+    let raw: unknown;
+    try {
+      raw = await backend.loadProject();
+    } catch (error) {
+      // Nothing is on screen and nothing is known about what is on disk. Saving stays off:
+      // writing now would replace a project that may be perfectly good.
+      set({ saveError: message(error) });
+      return 'blocked';
+    }
+
+    const read = readProjectFile(raw);
+    if (read.kind === 'empty') return 'nothing';
+
+    if (read.kind === 'newer') {
+      get().pushToast({
+        tone: 'error',
+        title: 'This project was saved by a newer SolCut',
+        detail: 'It is left untouched and nothing is being saved this session. Update SolCut to open it.',
+      });
+      return 'blocked';
+    }
+
+    if (read.kind === 'unreadable') {
+      // Replaceable, unlike a newer file: this build understands the format and the stored
+      // one is not it, so the next edit overwrites it. That is the only way out.
+      get().pushToast({
+        tone: 'error',
+        title: 'The saved project could not be read',
+        detail: 'Starting empty. Anything you do now replaces it.',
+      });
+      return 'nothing';
+    }
+
+    const s = get();
+    if (s.clips.length > 0 || s.audioTracks.length > 0 || Object.keys(s.assets).length > 0) {
+      // Something landed while the project was being read. That edit is the user's and it
+      // wins — but it is not what is on disk, so nothing is written over the stored
+      // project either. Restarting is what gets it back.
+      get().pushToast({
+        tone: 'error',
+        title: 'The saved project was not restored',
+        detail: 'The editor was already in use. Nothing is being saved this session — restart SolCut to open it.',
+      });
+      return 'blocked';
+    }
+
+    // One `set`: no render ever sees clips whose assets are not in the bin yet.
+    set(hydrate(read.file, { resolveSrc: backend.assetSrc }));
+    void probeRestoredMedia(set, get);
+    return 'restored';
+  },
+
+  async persistProject() {
+    try {
+      await backend.saveProject(toProjectFile(get()));
+      if (get().saveError) set({ saveError: null });
+    } catch (error) {
+      const text = message(error);
+      // Said once, when saving starts failing — not again on every debounce after that.
+      if (!get().saveError) {
+        get().pushToast({ tone: 'error', title: 'The project could not be saved', detail: text });
+      }
+      set({ saveError: text });
+    }
+  },
+
   // ------------------------------------------------------------------ settings & export
 
   async loadSettings() {
@@ -1114,9 +1208,15 @@ export const useEditor = create<EditorState>((set, get) => ({
     // and a second encode of the same timeline.
     if (exporting) return;
 
+    // A restored clip whose file has since gone still *has* a path, so testing the path
+    // alone would wave it through and let ffmpeg die on it mid-render.
+    const unplayable = (assetId: string) => {
+      const asset = assets[assetId];
+      return !asset?.path || asset.missing === true;
+    };
     const offline =
-      clips.find((c) => !assets[c.assetId]?.path) ??
-      audioTracks.find((t) => !t.muted && !assets[t.assetId]?.path);
+      clips.find((c) => unplayable(c.assetId)) ??
+      audioTracks.find((t) => !t.muted && unplayable(t.assetId));
     if (offline) {
       set({
         exportState: {
@@ -1260,6 +1360,56 @@ async function probeDurations(set: Setter, accepted: Imported[]) {
       }));
     }),
   );
+}
+
+/**
+ * Ask the filesystem which restored media is actually still where it was left.
+ *
+ * Runs *after* the project is on screen, deliberately: `import_media` is a synchronous
+ * Tauri command doing a blocking stat per path, so probing first would hold the window
+ * shut while a sleeping drive or an unmounted share woke up. It imports nothing — the
+ * command only reads — so this is a question, not an edit.
+ */
+async function probeRestoredMedia(set: Setter, get: () => EditorState): Promise<void> {
+  const paths = [
+    ...new Set(
+      Object.values(get().assets)
+        .map((asset) => asset.path)
+        .filter(Boolean),
+    ),
+  ];
+
+  let gone: Set<string> = new Set();
+  if (paths.length > 0) {
+    try {
+      const result = await backend.importPaths(paths);
+      const found = new Set((result?.imported ?? []).map((item) => item.path));
+      gone = new Set(paths.filter((path) => !found.has(path)));
+    } catch {
+      // Only the probe failed. The media is probably exactly where it was, and calling all
+      // of it missing would make a working project look broken.
+    }
+  }
+
+  const marked = markMissing(get().assets, gone);
+  // `markMissing` hands back the same object when nothing changed, so a project whose
+  // media is all present does not look like an edit and does not cost a write.
+  if (marked.assets !== get().assets) set({ assets: marked.assets });
+  if (marked.missing.length > 0) reportMissingMedia(get, marked.missing);
+}
+
+/** One toast for everything the restore could not find, however many files that is. */
+function reportMissingMedia(get: () => EditorState, missing: MediaAsset[]): void {
+  const names = missing.map((asset) => asset.name);
+  const shown = names.slice(0, 3).join(', ');
+  const rest = names.length - 3;
+  get().pushToast({
+    tone: 'error',
+    title: `${names.length} ${names.length === 1 ? 'file is' : 'files are'} no longer on disk`,
+    detail: `${rest > 0 ? `${shown} and ${rest} more` : shown} — re-import ${
+      names.length === 1 ? 'it' : 'them'
+    } and put ${names.length === 1 ? 'it' : 'them'} back on the track. Export is blocked until then.`,
+  });
 }
 
 function safeObjectUrl(file: File): string {

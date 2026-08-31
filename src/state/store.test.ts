@@ -32,7 +32,10 @@ vi.mock('../lib/backend', async (importOriginal) => ({
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
   testApiKey: vi.fn(),
-  importPaths: vi.fn(),
+  importPaths: vi.fn(async () => ({ imported: [], rejected: [] })),
+  // Persistence is desktop-only and every suite starts from a fresh, empty project.
+  loadProject: vi.fn(async () => null),
+  saveProject: vi.fn(async () => {}),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
   cancelGeneration: (id: string) => cancelGeneration(id),
   ffmpegAvailable: async () => true,
@@ -90,6 +93,7 @@ beforeEach(() => {
     exportState: null,
     settings: CONNECTED,
     settingsOpen: false,
+    saveError: null,
   });
 });
 

@@ -12,10 +12,11 @@ import { TitleBar } from './components/TitleBar';
 import { Transport } from './components/Transport';
 import { onExportProgress, onGenerationUpdate } from './lib/backend';
 import { nextPlayheadMs } from './lib/preview-sync';
-import { useEditor } from './state/store';
+import { useEditor, type RestoreOutcome } from './state/store';
 
 export function App() {
   useBackendEvents();
+  useProjectPersistence();
   usePlaybackClock();
   useKeyboardShortcuts();
 
@@ -67,6 +68,101 @@ function useBackendEvents() {
       unlisten.forEach((off) => off());
     };
   }, [applyGenerationUpdate, setExportProgress, loadSettings]);
+}
+
+/** How long the editor has to be still before the project is written. */
+const SAVE_DEBOUNCE_MS = 500;
+/**
+ * How long a *continuously* changing timeline may go unwritten.
+ *
+ * Without a ceiling the debounce is pushed back by every mousemove, so a thirty-second
+ * drag would save nothing at all. This is the promise that an edit lands even mid-gesture.
+ */
+const SAVE_MAX_WAIT_MS = 5000;
+
+/**
+ * The saved project: put it back at launch, then keep it written as the timeline changes.
+ *
+ * There is no save action anywhere in the app — this hook is the whole feature. Two rules
+ * carry it:
+ *
+ * 1. **Restore answers before autosave starts.** Arming the subscription first would let
+ *    an empty editor write over a good project before the read came back.
+ * 2. **A `blocked` answer never writes.** If the stored project could not be read, or was
+ *    written by a newer build, this session saves nothing rather than destroying it.
+ */
+function useProjectPersistence() {
+  const restoreProject = useEditor((s) => s.restoreProject);
+  // Survives StrictMode's deliberate mount/unmount/mount, so the restore runs once per
+  // editor rather than twice — the second run would find its own work already on the
+  // timeline and mistake it for the user having got there first.
+  const outcome = useRef<RestoreOutcome | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe: (() => void) | undefined;
+    let writing = false;
+    let again = false;
+    let pendingSince = 0;
+
+    const flush = () => {
+      pendingSince = 0;
+      if (disposed) return;
+      // One write at a time, or two of them race and the older timeline can land last.
+      if (writing) {
+        again = true;
+        return;
+      }
+      writing = true;
+      void useEditor
+        .getState()
+        .persistProject()
+        .finally(() => {
+          writing = false;
+          if (again) {
+            again = false;
+            flush();
+          }
+        });
+    };
+
+    const schedule = () => {
+      const now = Date.now();
+      if (pendingSince === 0) pendingSince = now;
+      clearTimeout(timer);
+      timer = setTimeout(flush, Math.min(SAVE_DEBOUNCE_MS, Math.max(0, pendingSince + SAVE_MAX_WAIT_MS - now)));
+    };
+
+    const arm = (result: RestoreOutcome) => {
+      outcome.current = result;
+      if (disposed || result === 'blocked') return;
+      unsubscribe = useEditor.subscribe((state, prev) => {
+        // Only the document is worth writing. Reference equality is exact here — every
+        // action replaces these immutably — and it is what keeps the playhead, which moves
+        // sixty times a second during playback, from writing the file sixty times a second.
+        if (
+          state.clips === prev.clips &&
+          state.assets === prev.assets &&
+          state.audioTracks === prev.audioTracks &&
+          state.cutPrompts === prev.cutPrompts &&
+          state.cutModes === prev.cutModes
+        ) {
+          return;
+        }
+        schedule();
+      });
+    };
+
+    if (outcome.current !== null) arm(outcome.current);
+    else void restoreProject().then(arm);
+
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+      unsubscribe?.();
+    };
+  }, [restoreProject]);
 }
 
 /**
