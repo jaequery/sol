@@ -25,7 +25,9 @@ from one still into the other and drops it onto the timeline at that cut.
   touching, or across a gap dragged open between them. Select it, describe the motion (or
   leave the default), and the two photos are rendered to stills and sent to Higgsfield as
   the first and last frame of the generation. The finished MP4 lands at the cut; the
-  photos themselves are the anchor frames, so nothing else needs setting up.
+  photos themselves are the anchor frames, so nothing else needs setting up. A **Model**
+  selector on the same card picks which model renders it — **Seedance 2.5** unless another
+  is chosen — and the pick rides with that render alone.
 - **A film from three photos — three images in, one .mp4 out.** **✦ New film from 3
   photos** — in the title bar and in the empty timeline — opens a panel that takes exactly
   three photos, puts them in order, and offers a prompt per transition already filled in.
@@ -80,21 +82,32 @@ and its [OpenAPI document](https://docs.higgsfield.ai/docs/openapi.json):
 | Auth | `Authorization: Key {key_id}:{key_secret}` — the documented `authKey` scheme, never a bearer token |
 | Credential check | `POST /files/generate-upload-url`, which authenticates without generating or charging anything |
 | Frame upload | the same call, then a presigned `PUT` that never sees the credential |
-| Submit | `POST /minimax/hailuo-02/standard/image-to-video` with `{prompt, image_url, end_image_url}` |
+| Submit | `POST` to the model picked on the render card — default `/bytedance/seedance/v2.5/pro/image-to-video` (Seedance 2.5) — with `{prompt, image_url, end_image_url}` (the veo operations use their own frame field names) |
 | Poll | the `status_url` from the submit response, backing off 2s → 10s |
 | Result | `video.url` on a `completed` request |
 
 The API also still accepts the legacy `hf-api-key` / `hf-secret` header pair, but the docs
 point new integrations at `Authorization`, which is what this client sends.
 
-The base URL and the model endpoint are editable in the same dialog, so another documented
-model — or an API revision — can be pointed at without shipping a new build. The dialog
-suggests the endpoints that take both a first *and* a last frame, which is what a SolCut
-transition needs; MiniMax Hailuo-02 is the default because that pair — plus a prompt — is
-its whole documented contract. (Higgsfield's own DoP endpoints declare the same two frame
-fields but belong to a single-image, motion-preset product, and the live API rejects
-two-frame submissions to them; settings saved by earlier builds that still point at the
-old DoP default are moved forward automatically.)
+**Which model renders is picked per render, not in this dialog.** Every place a render
+starts — the cut card, a transition's Regenerate, the film wizard — carries a **Model**
+selector, and whatever it shows when the button is pressed is what that render uses:
+**Seedance 2.5** by default, or MiniMax Hailuo-02 (Standard/Pro) and Veo 3.1 (± Fast),
+the documented operations that take both a first *and* a last frame — which is what a
+SolCut transition needs. The choice travels with the request and is never written to
+disk, so a fresh session is back on the default. One honest caveat: Higgsfield has
+announced Seedance 2.5 but (at the time of writing) not yet published its route in the
+API reference, so the default entry points at the convention-following path above — until
+the route is live on your account, a render on it fails with a named error and switching
+models is one click on the same card.
+
+The base URL and a **custom model endpoint** stay editable in the dialog, so another
+documented model — or an API revision — can be pointed at without shipping a new build:
+the endpoint typed here appears in every Model selector as its **Custom** entry. The
+field suggests the two-frame endpoints above. (Higgsfield's own DoP endpoints declare the
+same two frame fields but belong to a single-image, motion-preset product, and the live
+API rejects two-frame submissions to them; settings saved by earlier builds that still
+point at the old DoP default are moved forward automatically.)
 
 ## Three photos to an .mp4
 

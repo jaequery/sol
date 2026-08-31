@@ -49,6 +49,8 @@ export interface GenerateInput {
   prompt: string;
   startFrame: string;
   endFrame?: string;
+  /** The model endpoint chosen for THIS render — the selector's pick, resolved. */
+  endpoint: string;
 }
 
 export interface GenerationUpdate {
@@ -74,23 +76,75 @@ const DESKTOP_ONLY = 'This needs the SolCut desktop app — run it with `pnpm ta
 export const DEFAULT_BASE_URL = 'https://api.higgsfield.ai';
 export const DEFAULT_ENDPOINT = '/minimax/hailuo-02/standard/image-to-video';
 
+/** One model the per-render selector offers: a label for humans, an endpoint for the API. */
+export interface RenderModel {
+  /** Stable id — what the store holds and a generation records. */
+  id: string;
+  label: string;
+  /** The model endpoint posted to, appended to the base URL. */
+  endpoint: string;
+}
+
 /**
- * Documented endpoints whose contract is a SolCut segment: a first frame, a last frame
- * (`image_url`/`end_image_url`, or the veo pair's own names) and a prompt, with nothing
- * else required. Offered as suggestions in Settings so pointing at another model does
- * not mean reading the API reference first; anything else can still be typed in.
+ * The models the per-render selector offers, in menu order.
  *
- * Deliberately absent: the kling operations (their schema takes no last frame at all, so
- * a "transition" would never land on the second photo) and the `higgsfield-ai/dop` trio,
- * whose live endpoints are the API face of a single-image motion-preset product and
- * reject two-frame submissions in a way their published schema does not predict.
+ * Every entry's contract is a SolCut segment: a first frame, a last frame
+ * (`image_url`/`end_image_url`, or the veo pair's own names) and a prompt, with nothing
+ * else required. Anything else can still be reached through the Custom entry, which sends
+ * whatever endpoint Settings stores.
+ *
+ * Seedance 2.5 leads and is the default. Higgsfield has announced it but (as of
+ * 2026-08-31) not yet published its route in the API reference, so its path here follows
+ * the API's own naming convention (`/bytedance/seedance/v1/…`, `/kling-video/v2.5-turbo/…`)
+ * and a render against an account that does not have it yet fails with a clear error and
+ * the selector right there to pick another model — nothing else in the app is blocked.
+ *
+ * Deliberately absent: seedance v1 and the kling operations (their schemas take no last
+ * frame at all, so a "transition" would never land on the second photo) and the
+ * `higgsfield-ai/dop` trio, whose live endpoints are the API face of a single-image
+ * motion-preset product and reject two-frame submissions in a way their published schema
+ * does not predict.
  */
-export const KNOWN_ENDPOINTS = [
-  '/minimax/hailuo-02/standard/image-to-video',
-  '/minimax/hailuo-02/pro/image-to-video',
-  '/veo3.1/first-last-frame-to-video',
-  '/veo3.1/fast/first-last-frame-to-video',
+export const RENDER_MODELS: RenderModel[] = [
+  { id: 'seedance-2.5', label: 'Seedance 2.5', endpoint: '/bytedance/seedance/v2.5/pro/image-to-video' },
+  { id: 'hailuo-02-standard', label: 'MiniMax Hailuo-02 Standard', endpoint: '/minimax/hailuo-02/standard/image-to-video' },
+  { id: 'hailuo-02-pro', label: 'MiniMax Hailuo-02 Pro', endpoint: '/minimax/hailuo-02/pro/image-to-video' },
+  { id: 'veo-3.1', label: 'Veo 3.1', endpoint: '/veo3.1/first-last-frame-to-video' },
+  { id: 'veo-3.1-fast', label: 'Veo 3.1 Fast', endpoint: '/veo3.1/fast/first-last-frame-to-video' },
 ];
+
+/** What a render uses when the user never touches the selector. */
+export const DEFAULT_MODEL_ID = 'seedance-2.5';
+
+/** The selector entry that sends the endpoint typed into Settings instead of a known model. */
+export const CUSTOM_MODEL_ID = 'custom';
+
+/**
+ * The endpoint a model choice resolves to at render time. `custom` reads the endpoint
+ * Settings stores; an unknown id falls back to the default model rather than sending
+ * nothing, so a stale stored choice can never produce an endpoint-less request.
+ */
+export function modelEndpoint(modelId: string, customEndpoint?: string): string {
+  if (modelId === CUSTOM_MODEL_ID) {
+    const typed = customEndpoint?.trim();
+    if (typed) return typed;
+  }
+  const model = RENDER_MODELS.find((m) => m.id === modelId);
+  const fallback = RENDER_MODELS.find((m) => m.id === DEFAULT_MODEL_ID) ?? RENDER_MODELS[0];
+  return (model ?? fallback).endpoint;
+}
+
+/** The human name for a model choice, for cards that show what is rendering. */
+export function modelLabel(modelId: string): string {
+  if (modelId === CUSTOM_MODEL_ID) return 'Custom endpoint';
+  return RENDER_MODELS.find((m) => m.id === modelId)?.label ?? modelId;
+}
+
+/**
+ * Offered as suggestions on the Settings endpoint box, so pointing at another model does
+ * not mean reading the API reference first; anything else can still be typed in.
+ */
+export const KNOWN_ENDPOINTS = RENDER_MODELS.map((m) => m.endpoint);
 
 export function isDesktop(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;

@@ -35,6 +35,7 @@ function generation(index: number, id: string, patch: Partial<FilmGeneration> = 
       filmSegmentIndex: index,
     },
     prompt: defaultFilmPrompt(index),
+    modelId: 'seedance-2.5',
     status: 'running',
     progress: 0.5,
     elapsedSecs: 10,

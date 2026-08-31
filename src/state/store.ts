@@ -135,6 +135,12 @@ export interface EditorState {
   snapping: boolean;
 
   generations: Record<string, Generation>;
+  /**
+   * The model the next render uses — a `RenderModel` id, or `custom` for the endpoint
+   * Settings stores. Chosen at any render entry point and sent with every request; never
+   * persisted, so a fresh session is back on the default (Seedance 2.5).
+   */
+  modelId: string;
   /** The three-photo film currently being made, if there is one. */
   film: Film | null;
   /** The wizard panel. It outlives the film it starts, and the film outlives it. */
@@ -190,6 +196,7 @@ export interface EditorState {
   advance: (deltaMs: number) => void;
 
   // ---- generation
+  setModel: (modelId: string) => void;
   setCutPrompt: (prompt: string) => void;
   setTransitionPrompt: (clipId: string, prompt: string) => void;
   startCutGeneration: (afterClipId: string, beforeClipId: string) => string | null;
@@ -235,6 +242,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   snapping: true,
 
   generations: {},
+  modelId: backend.DEFAULT_MODEL_ID,
   film: null,
   filmWizardOpen: false,
   cutPrompts: {},
@@ -554,6 +562,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   // ------------------------------------------------------------------ generation
+
+  setModel: (modelId) => set({ modelId }),
 
   setCutPrompt(prompt) {
     const { selection } = get();
@@ -1321,10 +1331,15 @@ function launchGeneration(
 ): string {
   const generationId = makeId('gen');
   claim?.(generationId);
+  // The choice is read at launch, so a render carries the model that was showing when its
+  // button was pressed — switching the selector afterwards changes the next render only.
+  const { modelId, settings } = get();
+  const endpoint = backend.modelEndpoint(modelId, settings?.endpoint);
   const generation: Generation = {
     id: generationId,
     target,
     prompt,
+    modelId,
     status: 'queued',
     progress: 0,
     elapsedSecs: 0,
@@ -1336,7 +1351,7 @@ function launchGeneration(
     try {
       const startFrame = await renderPhotoJpeg(frames.fromSrc);
       const endFrame = await renderPhotoJpeg(frames.toSrc);
-      await backend.generateAnimation({ generationId, prompt, startFrame, endFrame });
+      await backend.generateAnimation({ generationId, prompt, startFrame, endFrame, endpoint });
     } catch (error) {
       const existing = get().generations[generationId];
       if (existing) {

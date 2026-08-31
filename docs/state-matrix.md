@@ -30,7 +30,7 @@ hi-fi walkthrough artifact.
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
 | 13 | **No credential** | Generate clicked with no key ID *and* secret stored | Inline callout in the cut card: "Connect Higgsfield to generate" + Open settings; nothing is sent | Save both halves of the key |
-| 14 | **Settings dialog** | Open settings | Key ID/secret fields (masked, the first one focused), base URL, model endpoint; Test connection reports pass/fail inline | Save / Cancel / Escape — Escape discards, exactly as Cancel does |
+| 14 | **Settings dialog** | Open settings | Key ID/secret fields (masked, the first one focused), base URL, custom model endpoint (what the render cards’ Custom entry sends); Test connection reports pass/fail inline | Save / Cancel / Escape — Escape discards, exactly as Cancel does |
 | 15 | **Queued** | Job accepted by the API | The cut's ✦ chip becomes the progress surface reading ◐ QUEUED; the inspector shows the job id | Cancel |
 | 16 | **Running (partial/slow)** | Poll returns progress | The chip shows a live percentage; **the rest of the app stays fully usable** — you can select other clips, edit the track, start a second generation | Cancel, or wait |
 | 17 | **Slow (> 90 s)** | Still running past the soft threshold | The card adds "Taking longer than usual — you can keep editing"; no spinner-lock, no modal | Cancel, or wait |
@@ -108,7 +108,7 @@ credits and staleness never re-renders on its own.
 |---|---|---|---|---|
 | 46 | **Idle chip** | Two photos sit side by side on the track — edge to edge, or with a gap between them | A small ✦ chip vertically centred on the shared edge, or floating in the middle of the gap (its tooltip names the gap's length); the toolbar shows ✦ Animate all · n when at least one cut is fillable | Tap the chip, or Animate all |
 | 47 | **Chip disabled (media offline)** | A photo on the cut lost its source file | The chip dims with the reason in its tooltip; nothing can be sent for a frame that cannot be rendered | Re-import the photo |
-| 48 | **Cut selected** | Chip tapped | The chip takes the accent ring; the inspector shows the transition card naming both photos, an *optional* prompt (empty means the default `Smooth cinematic motion transition`), suggestion chips, and one ✦ Generate transition button | Generate, type first, or click elsewhere |
+| 48 | **Cut selected** | Chip tapped | The chip takes the accent ring; the inspector shows the transition card naming both photos, an *optional* prompt (empty means the default `Smooth cinematic motion transition`), suggestion chips, a model selector (default Seedance 2.5), and one ✦ Generate transition button | Generate, type first, or click elsewhere |
 | 49 | **No credential** | Cut selected with no key stored | The card's button is replaced by the "Connect Higgsfield to generate" callout; nothing is sent | Save the key in settings |
 | 50 | **Queued** | Generate pressed, job accepted | The chip widens into a dashed mono pill reading ◐ QUEUED — the cut has no width on the track, so the chip itself is the progress surface; the title bar counts the render | Cancel, or wait |
 | 51 | **Running** | Poll returns progress | The pill shows ◐ n% (or elapsed seconds when the API reports no percentage); **the rest of the app stays fully usable** | Cancel, or wait |

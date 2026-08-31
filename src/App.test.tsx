@@ -31,13 +31,13 @@ const STORED_SETTINGS = {
 };
 let storedSettings = { ...STORED_SETTINGS };
 
-vi.mock('./lib/backend', () => ({
+// The real module's pure exports (the model registry above all) come through untouched;
+// only the pieces that would reach for Tauri are stubbed.
+vi.mock('./lib/backend', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/backend')>()),
   isDesktop: () => true,
   assetSrc: (p: string) => `asset://${p}`,
   getSettings: async () => storedSettings,
-  DEFAULT_BASE_URL: 'https://api.higgsfield.ai',
-  DEFAULT_ENDPOINT: '/higgsfield-ai/dop/standard',
-  KNOWN_ENDPOINTS: ['/higgsfield-ai/dop/standard'],
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
   importPaths: vi.fn(),
@@ -92,6 +92,7 @@ beforeEach(() => {
     playheadMs: 0,
     playing: false,
     generations: {},
+    modelId: backend.DEFAULT_MODEL_ID,
     cutPrompts: {},
     animateQueue: null,
     animateSubmittingId: null,
@@ -582,7 +583,7 @@ describe('the Higgsfield connection', () => {
 
     // Seeded once at mount, the field would still read the default — and saving would
     // silently write that default back over the stored endpoint.
-    expect(screen.getByLabelText('Model endpoint')).toHaveValue('/veo3.1/first-last-frame-to-video');
+    expect(screen.getByLabelText('Custom model endpoint')).toHaveValue('/veo3.1/first-last-frame-to-video');
 
     await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(saveSettings).toHaveBeenCalledWith(
@@ -1121,9 +1122,30 @@ describe('the 3-photo film wizard', () => {
     expect(first.prompt).toBe(defaultFilmPrompt(0));
     expect(second.prompt).toBe(defaultFilmPrompt(1));
 
+    // The selector was never touched, so both legs render on the default: Seedance 2.5.
+    expect(first.endpoint).toBe('/bytedance/seedance/v2.5/pro/image-to-video');
+    expect(second.endpoint).toBe(first.endpoint);
+
     // The photos are inputs, not shots: the track stays empty until the film lands.
     expect(useEditor.getState().clips).toHaveLength(0);
     expect(Object.values(useEditor.getState().assets)).toHaveLength(3);
+  });
+
+  it('the model picked in the wizard rides with both legs', async () => {
+    const user = userEvent.setup();
+    await openWizard(user);
+    await dropOnWizard([
+      file('one.jpg', 'image/jpeg'),
+      file('two.jpg', 'image/jpeg'),
+      file('three.jpg', 'image/jpeg'),
+    ]);
+
+    await user.selectOptions(screen.getByLabelText('Model'), 'veo-3.1-fast');
+    await user.click(generateFilm());
+
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(2));
+    expect(payloadForLeg(0).endpoint).toBe('/veo3.1/fast/first-last-frame-to-video');
+    expect(payloadForLeg(1).endpoint).toBe('/veo3.1/fast/first-last-frame-to-video');
   });
 
   it('a leg that fails explains itself and offers a retry, and the app stays usable', async () => {
@@ -1315,6 +1337,71 @@ describe('the 3-photo film wizard', () => {
     // Assembled once: the leg that had already landed does not get a second clip.
     await legLands(first, '/cache/first.mp4');
     expect(useEditor.getState().clips).toHaveLength(2);
+  });
+});
+
+describe('the per-render model selector', () => {
+  const SEEDANCE = '/bytedance/seedance/v2.5/pro/image-to-video';
+
+  it('a render with the selector untouched goes to Seedance 2.5', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+
+    // The control stands on the cut card, already on the default — no pick required.
+    expect(await screen.findByLabelText('Model')).toHaveValue('seedance-2.5');
+
+    await user.click(screen.getByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    expect(generateAnimation.mock.calls[0][0].endpoint).toBe(SEEDANCE);
+  });
+
+  it('a non-default pick is what that render submits', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+
+    await user.selectOptions(await screen.findByLabelText('Model'), 'veo-3.1');
+    await user.click(screen.getByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    expect(generateAnimation.mock.calls[0][0].endpoint).toBe('/veo3.1/first-last-frame-to-video');
+  });
+
+  it('Regenerate carries the same control, and submits its pick', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const id = await runCutGeneration(user);
+    expect(generateAnimation.mock.calls[0][0].endpoint).toBe(SEEDANCE);
+    await succeed(id);
+
+    // The landed transition clip is selected, so its card is showing now.
+    generateAnimation.mockClear();
+    await user.selectOptions(await screen.findByLabelText('Model'), 'hailuo-02-pro');
+    await user.click(screen.getByRole('button', { name: /regenerate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    expect(generateAnimation.mock.calls[0][0].endpoint).toBe(
+      '/minimax/hailuo-02/pro/image-to-video',
+    );
+  });
+
+  it('an endpoint typed into Settings is reachable as the Custom entry', async () => {
+    const user = userEvent.setup();
+    storedSettings = { ...STORED_SETTINGS, endpoint: '/wan-25-preview/image-to-video' };
+    render(<App />);
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+
+    const select = await screen.findByLabelText('Model');
+    expect(
+      within(select).getByRole('option', { name: 'Custom — /wan-25-preview/image-to-video' }),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(select, 'custom');
+    await user.click(screen.getByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    expect(generateAnimation.mock.calls[0][0].endpoint).toBe('/wan-25-preview/image-to-video');
   });
 });
 

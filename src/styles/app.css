@@ -1210,7 +1210,8 @@ input {
   margin-bottom: 5px;
   font-weight: 550;
 }
-.field input {
+.field input,
+.field select {
   width: 100%;
   background: var(--sunken);
   border: 1px solid var(--line);
@@ -1219,7 +1220,11 @@ input {
   font: 500 var(--fs) / 1.2 var(--mono);
   outline: none;
 }
-.field input:focus {
+.field select {
+  color: inherit;
+}
+.field input:focus,
+.field select:focus {
   border-color: var(--accent-line);
 }
 .okbox {
