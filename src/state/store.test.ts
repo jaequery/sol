@@ -23,10 +23,8 @@ vi.mock('../lib/backend', async (importOriginal) => ({
   assetSrc: (p: string) => `asset://${p}`,
   getSettings: async () => ({
     configured: true,
-    apiKeyIdHint: '••••7fa2',
-    hasSecret: true,
-    baseUrl: 'https://api.higgsfield.ai',
-    endpoint: '/higgsfield-ai/dop/standard',
+    cliPath: '/usr/local/bin/higgsfield',
+    customModel: '',
   }),
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
@@ -53,10 +51,8 @@ vi.mock('../lib/frames', () => ({
 
 const CONNECTED = {
   configured: true,
-  apiKeyIdHint: '••••7fa2',
-  hasSecret: true,
-  baseUrl: 'https://api.higgsfield.ai',
-  endpoint: '/higgsfield-ai/dop/standard',
+  cliPath: '/usr/local/bin/higgsfield',
+  customModel: '',
 };
 
 function photo(id: string): MediaAsset {

@@ -53,6 +53,7 @@ pnpm dev            # the UI alone in a browser; desktop-only actions refuse lou
 | Node | 20+ with pnpm 10+ |
 | Rust | stable (1.80+) |
 | ffmpeg + ffprobe | on `PATH` — needed for export only |
+| Higgsfield CLI | `npm i -g @higgsfield/cli`, signed in — needed for AI transitions only |
 | Linux system libraries | `pkg-config`, `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libsoup-3.0-dev`, `libjavascriptcoregtk-4.1-dev` |
 
 On Debian/Ubuntu:
@@ -64,50 +65,46 @@ sudo apt install pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
 
 ### Connecting Higgsfield
 
-Create a credential at [cloud.higgsfield.ai](https://cloud.higgsfield.ai) — it comes as a
-**key ID and a secret**, and both are needed. Open **✦ Connect Higgsfield** in the title
-bar and paste them in; pasting the whole `key_id:key_secret` string into the ID box works
-too, because that is the single-string form Higgsfield's own SDKs take (`HF_KEY`,
-`HF_CREDENTIALS`) and it is split back apart before anything is stored. **Test connection**
-authenticates with whatever is in the dialog's fields, so a key can be proved before it is
-saved. Credentials are stored by the Rust backend in an owner-only file under the app
-config directory and never reach the webview.
+Renders run through the **official Higgsfield CLI**
+([github.com/higgsfield-ai/cli](https://github.com/higgsfield-ai/cli)), signed in to your
+higgsfield.ai account — so generations bill your **subscription's workspace**, not the
+pay-per-token API platform, and the app itself holds no credential at all. In a terminal:
 
-The integration follows the public API at [docs.higgsfield.ai](https://docs.higgsfield.ai)
-and its [OpenAPI document](https://docs.higgsfield.ai/docs/openapi.json):
+```bash
+npm i -g @higgsfield/cli
+higgsfield auth login
+higgsfield workspace set <workspace_id>
+```
+
+**✦ Connect Higgsfield** in the title bar shows whether the CLI was found (looking on
+`PATH` and in the usual npm/Homebrew prefixes), and **Test connection** runs one free,
+read-only CLI call — `higgsfield model list --video` — which proves the binary, the login
+and the billing workspace in one go, and repeats the CLI's own fix when one is missing.
+
+What actually runs, per render:
 
 | | |
 |---|---|
-| Base URL | `https://api.higgsfield.ai` |
-| Auth | `Authorization: Key {key_id}:{key_secret}` — the documented `authKey` scheme, never a bearer token |
-| Credential check | `POST /files/generate-upload-url`, which authenticates without generating or charging anything |
-| Frame upload | the same call, then a presigned `PUT` that never sees the credential |
-| Submit | `POST` to the model picked on the render card — default `/bytedance/seedance/v2.5/pro/image-to-video` (Seedance 2.5) — with `{prompt, image_url, end_image_url}` (the veo operations use their own frame field names) |
-| Poll | the `status_url` from the submit response, backing off 2s → 10s |
-| Result | `video.url` on a `completed` request |
-
-The API also still accepts the legacy `hf-api-key` / `hf-secret` header pair, but the docs
-point new integrations at `Authorization`, which is what this client sends.
+| Submit | `higgsfield generate create <model> --prompt … --start-image … --end-image … --json` — the CLI uploads the two stills itself |
+| Poll | `higgsfield generate get <job_id> --json`, backing off 2s → 10s |
+| Result | the job's `result_url` on completion, downloaded next to the project |
 
 **Which model renders is picked per render, not in this dialog.** Every place a render
 starts — the cut card, a transition's Regenerate, the film wizard — carries a **Model**
 selector, and whatever it shows when the button is pressed is what that render uses:
-**Seedance 2.5** by default, or MiniMax Hailuo-02 (Standard/Pro) and Veo 3.1 (± Fast),
-the documented operations that take both a first *and* a last frame — which is what a
-SolCut transition needs. The choice travels with the request and is never written to
-disk, so a fresh session is back on the default. One honest caveat: Higgsfield has
-announced Seedance 2.5 but (at the time of writing) not yet published its route in the
-API reference, so the default entry points at the convention-following path above — until
-the route is live on your account, a render on it fails with a named error and switching
-models is one click on the same card.
+**Seedance 2.5** by default (`seedance_2_5`, the id Higgsfield's own site opens it with),
+or Seedance 2.0, Seedance 1.5 Pro, Kling v3.0 and Veo 3.1 Lite — models whose CLI
+reference documents both a `--start-image` *and* an `--end-image`, which is what a SolCut
+transition needs. The choice travels with the request and is never written to disk, so a
+fresh session is back on the default. Model ids are checked by the CLI against the live
+catalog, so a model your plan does not carry fails by name — and switching models is one
+click on the same card.
 
-The base URL and a **custom model endpoint** stay editable in the dialog, so another
-documented model — or an API revision — can be pointed at without shipping a new build:
-the endpoint typed here appears in every Model selector as its **Custom** entry. The
-field suggests the two-frame endpoints above. (Higgsfield's own DoP endpoints declare the
-same two frame fields but belong to a single-image, motion-preset product, and the live
-API rejects two-frame submissions to them; settings saved by earlier builds that still
-point at the old DoP default are moved forward automatically.)
+A **custom model** stays editable in the dialog, so any other job type the catalog offers
+(`higgsfield model list --video`) can be pointed at without shipping a new build: the id
+typed here appears in every Model selector as its **Custom** entry. (Settings files saved
+by earlier builds stored API-platform keys and endpoints; they load harmlessly and are
+dropped on the next save.)
 
 ## Three photos to an .mp4
 
@@ -145,16 +142,16 @@ cargo clippy -p solcut-higgsfield -p solcut-render --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-Everything above runs offline against a local stub of the API. To prove a real credential
-against the real thing — one presigned upload URL, nothing generated and nothing charged:
+Everything above runs offline against a stub `higgsfield` executable. To prove the real
+CLI on this machine — one read-only model listing, nothing generated and nothing charged,
+plus a check that the default model `seedance_2_5` is in your account's catalog:
 
 ```bash
-HF_API_KEY_ID=… HF_API_KEY_SECRET=… cargo test -p solcut-higgsfield --test live -- --nocapture
-HF_KEY="key-id:key-secret" cargo test -p solcut-higgsfield --test live -- --nocapture
+cargo test -p solcut-higgsfield --test live -- --nocapture
 ```
 
-With no credential in the environment it says so and passes, so it is safe in a plain
-`cargo test` run.
+With no CLI installed (or one that is not signed in) it says so and passes, so it is safe
+in a plain `cargo test` run.
 
 ## Layout
 
@@ -170,15 +167,16 @@ src/                     React + TypeScript editor
                          dialogs
 src-tauri/
   src/                   Tauri commands, the generation job loop, settings storage
-  crates/higgsfield/     Higgsfield API client — no Tauri or GUI dependencies
+  crates/higgsfield/     Higgsfield CLI wrapper — no Tauri or GUI dependencies
   crates/render/         ffmpeg filter graphs and export — no Tauri or GUI dependencies
 design/                  the approved concept and the hi-fi UX walkthrough
 docs/state-matrix.md     every UI state, its trigger, and its way out
 ```
 
 The two crates under `src-tauri/crates/` are deliberately free of Tauri and GUI
-dependencies: the interesting logic (API envelope handling, ffmpeg filter-graph and argv
-building) is then testable on any machine, including CI without a GTK toolchain.
+dependencies: the interesting logic (CLI invocation and output handling, ffmpeg
+filter-graph and argv building) is then testable on any machine, including CI without a
+GTK toolchain.
 
 ## Known limits
 
@@ -198,15 +196,14 @@ building) is then testable on any machine, including CI without a GTK toolchain.
   with instructions rather than half-rendered.
 - **Browser drops have no filesystem path.** `pnpm dev` in a browser can import and edit,
   but export needs the desktop app, which resolves real paths.
-- **The model decides the clip length.** No Higgsfield endpoint takes a free-form duration
-  — the default Hailuo-02 operation has no duration parameter at all, and the others
-  publish fixed choices — so the file's own length is what the timeline keeps, not
+- **The model decides the clip length.** The models publish fixed duration choices and
+  the CLI defaults them, so the file's own length is what the timeline keeps, not
   something the request asks for.
 - **A film goes onto the track once.** It lands the moment its last transition is in, and
   is then an ordinary pair of clips: move, trim or delete them as you like. Retrying a leg
   afterwards updates the film's own record but never lays down a second copy.
-- **Progress is queued-or-rendering.** The request status endpoint reports a state, not a
-  percentage, so the bar only moves when the API volunteers one.
-- **Stills are uploaded, not inlined.** Every model parameter that takes an image takes
-  a URL, so each still is PUT to Higgsfield's presigned storage first. Uploaded inputs are
-  tagged `retention=temporary`, and outputs are kept for at least seven days.
+- **Progress is queued-or-rendering.** The job status reports a state, not a percentage,
+  so the bar only moves when one is volunteered.
+- **Stills are uploaded, not inlined.** Each still is written to a temp file and handed
+  to the CLI as `--start-image`/`--end-image`; the CLI uploads them itself and the files
+  are removed the moment the submission is answered.

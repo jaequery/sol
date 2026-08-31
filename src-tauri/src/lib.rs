@@ -1,17 +1,16 @@
 //! SolCut desktop shell.
 //!
-//! The interesting logic lives in two dependency-free crates — `solcut-higgsfield` for the
-//! API and `solcut-render` for the ffmpeg export — so it can be tested without a GUI
-//! toolchain. This file is the Tauri surface over them: commands, background jobs, events.
+//! The interesting logic lives in two dependency-free crates — `solcut-higgsfield` for
+//! generation through the official Higgsfield CLI and `solcut-render` for the ffmpeg
+//! export — so it can be tested without a GUI toolchain. This file is the Tauri surface
+//! over them: commands, background jobs, events.
 
 pub mod media;
 pub mod settings;
 
 use serde::{Deserialize, Serialize};
 use settings::{SettingsInput, SettingsView};
-use solcut_higgsfield::{
-    Accepted, Client, Config, Frame, GenerateRequest, HiggsfieldError, JobState,
-};
+use solcut_higgsfield::{Cli, GenerateRequest, HiggsfieldError, JobState, DEFAULT_MODEL};
 use solcut_render::{ExportSpec, Progress, Renderer};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -19,14 +18,12 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-/// The polling cadence Higgsfield asks for: start at two seconds, ease off towards ten,
-/// and give up at an application-level timeout.
-/// <https://docs.higgsfield.ai/docs/concepts/polling>
+/// The polling cadence: start at two seconds, ease off towards ten, and give up at an
+/// application-level timeout. Each poll is one `higgsfield generate get`.
 const POLL_INTERVAL_START: Duration = Duration::from_secs(2);
 const POLL_INTERVAL_MAX: Duration = Duration::from_secs(10);
 const POLL_BACKOFF: f32 = 1.5;
-/// The wait is spent in short slices so a cancellation still reaches the API while the
-/// request is queued — which is the only window in which it can be cancelled at all.
+/// The wait is spent in short slices so a cancellation stops the watching promptly.
 const CANCEL_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const POLL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Past this, the UI switches to its "taking longer than usual" copy.
@@ -46,7 +43,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn config(&self) -> Config {
+    fn settings(&self) -> settings::Settings {
         settings::load(&self.config_dir)
     }
 
@@ -94,6 +91,7 @@ pub struct GenerationUpdate {
     /// `queued` | `running` | `succeeded` | `failed` | `cancelled`
     pub status: String,
     pub progress: f32,
+    /// The CLI's job id, once the submission has been accepted.
     pub job_id: Option<String>,
     pub elapsed_secs: u64,
     pub slow: bool,
@@ -123,16 +121,16 @@ pub struct GenerateInput {
     /// Chosen by the frontend so it can match events to the segment that asked for them.
     pub generation_id: String,
     pub prompt: String,
-    /// `data:image/jpeg;base64,…` of the photo the motion starts from. The client
-    /// uploads it and passes the resulting public URL, which is all the API accepts.
+    /// `data:image/jpeg;base64,…` of the photo the motion starts from. It is written to
+    /// a file and handed to the CLI, which uploads it itself.
     pub start_frame: String,
     /// The same for the photo the motion ends on, when there is one.
     pub end_frame: Option<String>,
-    /// The model endpoint the frontend's per-render selector chose for THIS request.
-    /// Absent or blank, the render falls back to the endpoint Settings stores — the model
-    /// choice travels with the request, it is not a saved setting.
+    /// The CLI model id the frontend's per-render selector chose for THIS request.
+    /// Absent or blank, the render falls back to the default model — the model choice
+    /// travels with the request, it is not a saved setting.
     #[serde(default)]
-    pub endpoint: Option<String>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -150,37 +148,35 @@ fn emit(app: &AppHandle, update: GenerationUpdate) {
 
 #[tauri::command]
 fn get_settings(state: State<'_, AppState>) -> SettingsView {
-    SettingsView::from(&state.config())
+    let cli = Cli::find();
+    SettingsView::new(&state.settings(), cli.as_ref().map(|c| c.binary()))
 }
 
 #[tauri::command]
 fn save_settings(input: SettingsInput, state: State<'_, AppState>) -> Result<SettingsView, String> {
-    let config = input.apply_to(state.config());
-    settings::save(&state.config_dir, &config)?;
-    Ok(SettingsView::from(&config))
+    let settings = input.apply_to(state.settings());
+    settings::save(&state.config_dir, &settings)?;
+    let cli = Cli::find();
+    Ok(SettingsView::new(
+        &settings,
+        cli.as_ref().map(|c| c.binary()),
+    ))
 }
 
-/// Prove the credential the Settings dialog is *showing*, not just the one on disk.
-///
-/// The point of the button is to check a key before committing to it, so it has to
-/// authenticate with what has been typed — probing the stored credential instead reported
-/// an authentication failure to anyone holding a good key they had not saved yet. Blank
-/// fields fall back to what is stored, exactly as `save_settings` does, so testing after
-/// changing only the endpoint still works without retyping the credential.
+/// The Settings dialog's connection check: one free, read-only CLI call
+/// (`higgsfield model list --video`) that proves the binary runs, the login is live and
+/// a billing workspace is selected — and whose failure message names its own fix.
 #[tauri::command]
-async fn test_connection(
-    input: Option<SettingsInput>,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let config = input.unwrap_or_default().apply_to(state.config());
+async fn test_connection() -> Result<String, String> {
+    let cli = Cli::find().ok_or_else(|| HiggsfieldError::NotInstalled.to_string())?;
     let started = Instant::now();
-    let client = Client::new(config).map_err(|e| e.to_string())?;
-    client
-        .check_credentials()
-        .await
-        .map_err(|e| e.to_string())?;
+    let count = cli.probe().await.map_err(|e| e.to_string())?;
+    let models = match count {
+        Some(n) => format!("{n} video models available"),
+        None => "video models listed".to_string(),
+    };
     Ok(format!(
-        "Authenticated with Higgsfield in {} ms.",
+        "Signed in through the Higgsfield CLI — {models} ({} ms).",
         started.elapsed().as_millis()
     ))
 }
@@ -195,24 +191,23 @@ fn supported_extensions() -> Vec<&'static str> {
     media::supported_extensions()
 }
 
-/// Start a generation. Returns as soon as the job is queued; everything after that
-/// arrives on the `generation:update` event so the editor stays usable.
+/// Start a generation. Returns as soon as the job is handed to the CLI; everything after
+/// that arrives on the `generation:update` event so the editor stays usable.
 #[tauri::command]
 async fn generate_animation(
     app: AppHandle,
     input: GenerateInput,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let config = state.config().with_endpoint(input.endpoint.as_deref());
-    if !config.is_configured() {
-        return Err(HiggsfieldError::NotConfigured.to_string());
-    }
+    let Some(cli) = Cli::find() else {
+        return Err(HiggsfieldError::NotInstalled.to_string());
+    };
     state.forget(&input.generation_id);
 
     let media_dir = state.media_dir.clone();
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        run_generation(handle, config, media_dir, input).await;
+        run_generation(handle, cli, media_dir, input).await;
     });
     Ok(())
 }
@@ -259,20 +254,43 @@ async fn export_timeline(
 
 // ---------------------------------------------------------------- the job loop
 
-async fn run_generation(app: AppHandle, config: Config, media_dir: PathBuf, input: GenerateInput) {
+async fn run_generation(app: AppHandle, cli: Cli, media_dir: PathBuf, input: GenerateInput) {
     let started = Instant::now();
     let id = input.generation_id.clone();
 
-    let client = match Client::new(config) {
-        Ok(c) => c,
+    // The stills go to disk so the CLI can upload them itself; they are removed the
+    // moment the submission has been answered, accepted or not.
+    let frames_dir = media_dir.join("frames");
+    let start_image = match solcut_higgsfield::write_frame(
+        &frames_dir,
+        &format!("{id}-start"),
+        &input.start_frame,
+    ) {
+        Ok(p) => p,
         Err(e) => return fail(&app, &id, started, &e),
     };
+    let end_image = match &input.end_frame {
+        Some(frame) => {
+            match solcut_higgsfield::write_frame(&frames_dir, &format!("{id}-end"), frame) {
+                Ok(p) => Some(p),
+                Err(e) => return fail(&app, &id, started, &e),
+            }
+        }
+        None => None,
+    };
 
+    let model = input
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or(DEFAULT_MODEL)
+        .to_string();
     let request = GenerateRequest {
-        prompt: input.prompt,
-        start_frame: Frame::DataUrl(input.start_frame),
-        end_frame: input.end_frame.map(Frame::DataUrl),
-        seed: None,
+        model,
+        prompt: input.prompt.clone(),
+        start_image: start_image.clone(),
+        end_image: end_image.clone(),
     };
 
     emit(
@@ -280,26 +298,27 @@ async fn run_generation(app: AppHandle, config: Config, media_dir: PathBuf, inpu
         GenerationUpdate::new(&id, "queued", started.elapsed()),
     );
 
-    // `submit` uploads both stills before it posts, so this is the slow part of the flow.
-    let accepted = match client.submit(&request).await {
-        Ok(a) => a,
+    // `create` uploads both stills before it answers, so this is the slow part.
+    let created = cli.create(&request).await;
+    let _ = std::fs::remove_file(&start_image);
+    if let Some(end) = &end_image {
+        let _ = std::fs::remove_file(end);
+    }
+    let job_id = match created {
+        Ok(job_id) => job_id,
         Err(e) => return fail(&app, &id, started, &e),
     };
 
-    emit(
-        &app,
-        update_for(&id, "queued", started.elapsed(), &accepted),
-    );
+    emit(&app, update_for(&id, "queued", started.elapsed(), &job_id));
 
     let mut interval = POLL_INTERVAL_START;
     loop {
         if wait_unless_cancelled(&app, &id, interval).await {
-            // Best effort: the API only cancels a request that has not started, and says
-            // so with a 400 we deliberately ignore. Either way we stop watching it.
-            let _ = client.cancel(&accepted.cancel_url).await;
+            // The CLI has no cancel operation, so a cancellation stops the watching —
+            // the job runs out on Higgsfield's side and its result is simply dropped.
             emit(
                 &app,
-                update_for(&id, "cancelled", started.elapsed(), &accepted),
+                update_for(&id, "cancelled", started.elapsed(), &job_id),
             );
             return;
         }
@@ -316,22 +335,19 @@ async fn run_generation(app: AppHandle, config: Config, media_dir: PathBuf, inpu
         }
         interval = next_interval(interval);
 
-        match client.poll(&accepted.status_url).await {
+        match cli.job_state(&job_id).await {
             Ok(JobState::Queued) => {
-                emit(
-                    &app,
-                    update_for(&id, "queued", started.elapsed(), &accepted),
-                );
+                emit(&app, update_for(&id, "queued", started.elapsed(), &job_id));
             }
             Ok(JobState::Running { progress }) => {
-                let mut u = update_for(&id, "running", started.elapsed(), &accepted);
+                let mut u = update_for(&id, "running", started.elapsed(), &job_id);
                 u.progress = progress;
                 emit(&app, u);
             }
             Ok(JobState::Cancelled) => {
                 emit(
                     &app,
-                    update_for(&id, "cancelled", started.elapsed(), &accepted),
+                    update_for(&id, "cancelled", started.elapsed(), &job_id),
                 );
                 return;
             }
@@ -340,9 +356,9 @@ async fn run_generation(app: AppHandle, config: Config, media_dir: PathBuf, inpu
             }
             Ok(JobState::Succeeded { video_url }) => {
                 let dest = media_dir.join(format!("{id}.mp4"));
-                match client.download(&video_url, &dest).await {
+                match cli.download(&video_url, &dest).await {
                     Ok(_) => {
-                        let mut u = update_for(&id, "succeeded", started.elapsed(), &accepted);
+                        let mut u = update_for(&id, "succeeded", started.elapsed(), &job_id);
                         u.progress = 1.0;
                         u.output_path = Some(dest.display().to_string());
                         emit(&app, u);
@@ -354,7 +370,7 @@ async fn run_generation(app: AppHandle, config: Config, media_dir: PathBuf, inpu
             // A single failed poll is usually a blip; keep going until the timeout, but
             // surface anything that retrying cannot fix.
             Err(e) if e.is_retryable() => {
-                let mut u = update_for(&id, "running", started.elapsed(), &accepted);
+                let mut u = update_for(&id, "running", started.elapsed(), &job_id);
                 u.error = Some(GenerationError::from(&e));
                 emit(&app, u);
             }
@@ -363,16 +379,16 @@ async fn run_generation(app: AppHandle, config: Config, media_dir: PathBuf, inpu
     }
 }
 
-/// An update tagged with the request it belongs to, so the UI can quote the `request_id`
-/// the docs ask people to include in support requests.
-fn update_for(id: &str, status: &str, elapsed: Duration, accepted: &Accepted) -> GenerationUpdate {
+/// An update tagged with the job it belongs to, so the UI can quote the job id in a
+/// support request.
+fn update_for(id: &str, status: &str, elapsed: Duration, job_id: &str) -> GenerationUpdate {
     let mut update = GenerationUpdate::new(id, status, elapsed);
-    update.job_id = Some(accepted.request_id.clone());
+    update.job_id = Some(job_id.to_string());
     update
 }
 
 /// Wait out one polling interval, returning early — and `true` — the moment the user
-/// cancels, so the cancellation reaches the API rather than a poll's worth of seconds later.
+/// cancels, so the card stops promptly rather than a poll's worth of seconds later.
 async fn wait_unless_cancelled(app: &AppHandle, id: &str, interval: Duration) -> bool {
     let deadline = Instant::now() + interval;
     loop {
@@ -446,27 +462,25 @@ mod tests {
     fn a_failure_event_names_the_build_that_produced_it() {
         assert!(BUILD.starts_with(env!("CARGO_PKG_VERSION")), "{BUILD}");
 
-        let error = GenerationError::from(&HiggsfieldError::NotConfigured);
+        let error = GenerationError::from(&HiggsfieldError::NotInstalled);
         let json = serde_json::to_value(&error).expect("serialize");
         assert_eq!(json["build"], BUILD);
     }
 
     #[test]
-    fn a_generate_input_without_an_endpoint_still_deserializes() {
-        // The field is new; an input shaped like the previous build's must keep working.
+    fn a_generate_input_without_a_model_still_deserializes() {
+        // The field replaced `endpoint`; an input naming neither must keep working and
+        // fall back to the default model.
         let input: GenerateInput = serde_json::from_str(
             r#"{"generationId":"gen_1","prompt":"drift","startFrame":"data:image/jpeg;base64,AA=="}"#,
         )
         .expect("legacy input");
-        assert!(input.endpoint.is_none());
+        assert!(input.model.is_none());
 
         let input: GenerateInput = serde_json::from_str(
-            r#"{"generationId":"gen_1","prompt":"drift","startFrame":"data:image/jpeg;base64,AA==","endpoint":"/veo3.1/first-last-frame-to-video"}"#,
+            r#"{"generationId":"gen_1","prompt":"drift","startFrame":"data:image/jpeg;base64,AA==","model":"seedance_2_5"}"#,
         )
         .expect("input with a model choice");
-        assert_eq!(
-            input.endpoint.as_deref(),
-            Some("/veo3.1/first-last-frame-to-video")
-        );
+        assert_eq!(input.model.as_deref(), Some("seedance_2_5"));
     }
 }

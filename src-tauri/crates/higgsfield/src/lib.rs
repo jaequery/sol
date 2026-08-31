@@ -1,485 +1,195 @@
-//! Higgsfield image-to-video client.
+//! Higgsfield generation through the official CLI.
 //!
 //! Deliberately free of Tauri, GUI and platform dependencies so it compiles and tests on
 //! any machine — the desktop shell in `src-tauri/` is a thin wrapper over this.
 //!
-//! Everything here follows the published API at <https://docs.higgsfield.ai>:
+//! Everything here drives `higgsfield`, the official CLI (`npm i -g @higgsfield/cli`,
+//! <https://github.com/higgsfield-ai/cli>), instead of the token-metered API platform:
+//! the CLI authenticates against the user's higgsfield.ai account (`higgsfield auth
+//! login`) and bills its billing workspace — the subscription — and it resolves model ids
+//! against the live catalog, so there is no REST route to guess and get a 404 from.
 //!
-//! 0. Every call carries `Authorization: Key {key_id}:{key_secret}`
-//!    (<https://docs.higgsfield.ai/docs/authentication>) — the credential is one thing in
-//!    two halves, and [`Config::credential`] accepts it either as two fields or as the
-//!    single `key_id:key_secret` string Higgsfield's own SDKs take.
-//! 1. [`Client::upload_image`] puts each rendered still behind a public HTTPS URL,
-//!    because every model parameter that takes an image takes a URL and nothing else.
-//! 2. [`Client::submit`] posts a flat JSON body to a model endpoint and gets back a
-//!    `request_id` with a `status_url`.
-//! 3. [`Client::poll`] reads that `status_url` until it reports a terminal state, and
-//!    [`Client::download`] fetches the finished MP4 next to the project.
-//! 4. [`Client::cancel`] stops a request that has not started processing yet.
+//! 1. [`Cli::find`] locates the binary on `PATH` (or in the usual install prefixes,
+//!    which a GUI-launched app does not always have on its `PATH`).
+//! 2. [`Cli::create`] runs `generate create <model> --prompt … --start-image …
+//!    --end-image … --json`. The CLI uploads the two stills itself — a local file path
+//!    is a documented media input — and answers with the job id.
+//! 3. [`Cli::job_state`] reads `generate get <job_id> --json` until a terminal state,
+//!    and [`Cli::download`] fetches the finished MP4 next to the project.
+//! 4. [`Cli::probe`] is the Settings dialog's connection check: `model list --video
+//!    --json`, which proves the binary, the login and the workspace in one free call.
 
 mod error;
 mod parse;
 
 pub use error::{HiggsfieldError, JobState, Result};
-pub use parse::{find_video_url, parse_state, parse_submit, Accepted};
+pub use parse::{find_result_url, parse_create, parse_job, parse_model_count};
 
 use base64::Engine as _;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::time::Duration;
 
-pub const DEFAULT_BASE_URL: &str = "https://api.higgsfield.ai";
-/// The default model endpoint: MiniMax Hailuo-02, a documented image-to-video operation
-/// whose contract is exactly a SolCut segment — a first frame under `image_url`, a last
-/// frame under `end_image_url`, and a prompt for the motion between them, nothing else
-/// required.
+/// The default model: Seedance 2.5, under the id Higgsfield's own site opens it with
+/// (`higgsfield.ai/ai/video?model=seedance_2_5`). The CLI checks the id against the live
+/// catalog, so a wrong id fails by name instead of by 404.
+pub const DEFAULT_MODEL: &str = "seedance_2_5";
+
+/// The binary the official npm package installs.
+pub const CLI_BINARY: &str = "higgsfield";
+
+/// `generate create` uploads both stills before it answers, so it gets the long budget.
+const CREATE_TIMEOUT: Duration = Duration::from_secs(300);
+/// A status read is one request; anything this slow is stuck.
+const STATUS_TIMEOUT: Duration = Duration::from_secs(60);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// One "animate from this frame to that frame" job.
 ///
-/// It was [`LEGACY_DEFAULT_ENDPOINT`] (Higgsfield's own "DoP") before. dop's published
-/// schema declares the same two frame fields, but the live endpoint is the API face of a
-/// single-image, motion-preset product — its product docs have no start→end-frame mode,
-/// and the API gives no way to list the preset ids it is built around — and it rejects
-/// this app's two-frame requests with a body-level 422 its schema does not predict. The
-/// dop endpoints can still be typed into Settings.
-pub const DEFAULT_ENDPOINT: &str = "/minimax/hailuo-02/standard/image-to-video";
-/// The default endpoint of earlier builds. Every save writes the whole config, so a
-/// settings file from one of them carries this literal even when the user never chose a
-/// model; `settings::load` in the desktop shell moves it forward to [`DEFAULT_ENDPOINT`].
-pub const LEGACY_DEFAULT_ENDPOINT: &str = "/higgsfield-ai/dop/standard";
-/// The defaults of the *first* build, which spoke the envelope API: it POSTed
-/// `{"params": {...}}` to `/v1/image2video` on the platform host. That endpoint still
-/// exists and still wants the envelope, so the flat bodies this editor sends today are
-/// rejected with exactly `422: params: Field required` — on every attempt. A settings
-/// file written back then stores both literals whether or not the user ever chose
-/// anything, so they follow the defaults forward the same way
-/// [`LEGACY_DEFAULT_ENDPOINT`] does.
-pub const FIRST_BUILD_ENDPOINT: &str = "/v1/image2video";
-pub const FIRST_BUILD_BASE_URL: &str = "https://platform.higgsfield.ai";
-/// Where a presigned upload URL is minted. See the "File uploads" guide.
-pub const UPLOAD_URL_PATH: &str = "/files/generate-upload-url";
-
-/// The documented authentication scheme. `Authorization: Key {key_id}:{key_secret}` — not
-/// a bearer token, and not the legacy `hf-api-key`/`hf-secret` pair, which the API still
-/// accepts but the docs steer new integrations away from.
-/// <https://docs.higgsfield.ai/docs/authentication>
-pub const AUTH_SCHEME: &str = "Key";
-
-/// Connection settings. Held by the desktop app, never handed to the webview.
-///
-/// A credential is a key *id* and a *secret*; both are required, and they travel together
-/// in one `Authorization` header. The `api_key`/`api_secret` aliases keep settings files
-/// written by earlier builds readable.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
-    #[serde(alias = "api_key")]
-    pub api_key_id: String,
-    #[serde(default, alias = "api_secret")]
-    pub api_key_secret: String,
-    #[serde(default = "default_base_url")]
-    pub base_url: String,
-    /// The model endpoint appended to `base_url`. Exposed so another documented model can
-    /// be pointed at from Settings without shipping a new build.
-    #[serde(default = "default_endpoint")]
-    pub endpoint: String,
-}
-
-fn default_base_url() -> String {
-    DEFAULT_BASE_URL.into()
-}
-fn default_endpoint() -> String {
-    DEFAULT_ENDPOINT.into()
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            api_key_id: String::new(),
-            api_key_secret: String::new(),
-            base_url: default_base_url(),
-            endpoint: default_endpoint(),
-        }
-    }
-}
-
-impl Config {
-    /// The two halves of the credential as they will be sent, or `None` when what is held
-    /// is not a whole one.
-    ///
-    /// Higgsfield issues *one* credential in two parts, and its own SDKs pass the pair
-    /// around as a single `key_id:key_secret` string — that is what `HF_KEY` and
-    /// `HF_CREDENTIALS` hold. Someone who pastes that whole string into the key-id box has
-    /// a perfectly good credential, so split it on the first colon rather than sending
-    /// `Key id:secret:` and telling them their key is invalid. The secret itself may
-    /// contain colons, so only the first one separates.
-    pub fn credential(&self) -> Option<(String, String)> {
-        let id = self.api_key_id.trim();
-        let secret = self.api_key_secret.trim();
-
-        if !secret.is_empty() {
-            return (!id.is_empty()).then(|| (id.to_string(), secret.to_string()));
-        }
-
-        let (id, secret) = id.split_once(':')?;
-        let (id, secret) = (id.trim(), secret.trim());
-        (!id.is_empty() && !secret.is_empty()).then(|| (id.to_string(), secret.to_string()))
-    }
-
-    /// Both halves of the credential are needed: the API authenticates on
-    /// `Key {id}:{secret}` and rejects a header missing either one.
-    pub fn is_configured(&self) -> bool {
-        self.credential().is_some()
-    }
-
-    /// The same settings with a pasted credential split into its two halves and stray
-    /// whitespace gone.
-    ///
-    /// Applied before anything is stored or displayed, so the settings file and the masked
-    /// hint the dialog shows both describe the credential that actually goes on the wire —
-    /// a combined string left in the key-id field would otherwise mask the tail of the
-    /// *secret* and show it as the key id.
-    ///
-    /// It also carries the stale defaults of earlier builds forward: settings files
-    /// always store a concrete endpoint, so "never chose a model" and "chose the
-    /// then-default" are the same bytes, and both old defaults reject every request this
-    /// editor can make — [`LEGACY_DEFAULT_ENDPOINT`] with a body-level 422, and
-    /// [`FIRST_BUILD_ENDPOINT`] (whose file also pinned [`FIRST_BUILD_BASE_URL`]) with
-    /// `422: params: Field required`, because it wants the envelope shape the first
-    /// build spoke. The other dop endpoints are left alone — typing one is unambiguously
-    /// a choice.
-    pub fn normalized(mut self) -> Self {
-        match self.credential() {
-            Some((id, secret)) => {
-                self.api_key_id = id;
-                self.api_key_secret = secret;
-            }
-            None => {
-                self.api_key_id = self.api_key_id.trim().to_string();
-                self.api_key_secret = self.api_key_secret.trim().to_string();
-            }
-        }
-        self.base_url = self.base_url.trim().to_string();
-        self.endpoint = self.endpoint.trim().to_string();
-        if self.endpoint == LEGACY_DEFAULT_ENDPOINT {
-            self.endpoint = DEFAULT_ENDPOINT.to_string();
-        }
-        if self.endpoint == FIRST_BUILD_ENDPOINT {
-            self.endpoint = DEFAULT_ENDPOINT.to_string();
-            // The same file pinned the platform host — the then-default beside the
-            // then-default endpoint. A base URL stored next to any *other* endpoint was
-            // typed, and stays.
-            if self.base_url == FIRST_BUILD_BASE_URL {
-                self.base_url = DEFAULT_BASE_URL.to_string();
-            }
-        }
-        self
-    }
-
-    /// This configuration with one render's model choice overlaid.
-    ///
-    /// The editor's per-render model selector resolves to a concrete endpoint and sends
-    /// it with each request; the stored endpoint answers only when the request names none
-    /// (or a blank one). A model choice therefore never has to be written to disk — and
-    /// never disturbs the endpoint the user typed into Settings.
-    pub fn with_endpoint(mut self, endpoint: Option<&str>) -> Self {
-        if let Some(endpoint) = endpoint.map(str::trim).filter(|e| !e.is_empty()) {
-            self.endpoint = endpoint.to_string();
-        }
-        self
-    }
-
-    fn url(&self, path: &str) -> String {
-        let base = self.base_url.trim_end_matches('/');
-        let path = path.trim_start_matches('/');
-        format!("{base}/{path}")
-    }
-
-    fn submit_url(&self) -> String {
-        self.url(&self.endpoint)
-    }
-}
-
-/// A still handed to the API as the start or end of the motion.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Frame {
-    /// `data:image/jpeg;base64,…` — how the editor hands over a locally rendered
-    /// still. It is uploaded before submission, because the API only takes URLs.
-    DataUrl(String),
-    /// An already-hosted image, passed straight through.
-    Url(String),
-}
-
-impl Frame {
-    /// Build a data URL from raw encoded image bytes.
-    pub fn from_jpeg_bytes(bytes: &[u8]) -> Self {
-        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-        Self::DataUrl(format!("data:image/jpeg;base64,{b64}"))
-    }
-}
-
-/// The image content types the upload endpoint accepts.
-const SUPPORTED_IMAGE_TYPES: &[&str] = &[
-    "image/jpeg",
-    "image/jpg",
-    "image/png",
-    "image/webp",
-    "image/gif",
-];
-
-/// Split `data:image/jpeg;base64,…` into its content type and bytes.
-fn decode_data_url(url: &str) -> Result<(String, Vec<u8>)> {
-    let rest = url
-        .strip_prefix("data:")
-        .ok_or_else(|| HiggsfieldError::Malformed("a frame is not a data URL".into()))?;
-    let (meta, payload) = rest
-        .split_once(',')
-        .ok_or_else(|| HiggsfieldError::Malformed("a frame data URL has no payload".into()))?;
-
-    let content_type = meta.split(';').next().unwrap_or("").to_ascii_lowercase();
-    if !SUPPORTED_IMAGE_TYPES.contains(&content_type.as_str()) {
-        return Err(HiggsfieldError::Malformed(format!(
-            "{content_type:?} is not an image type the API accepts"
-        )));
-    }
-    if !meta.contains("base64") {
-        return Err(HiggsfieldError::Malformed(
-            "a frame data URL must be base64-encoded".into(),
-        ));
-    }
-
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(payload)
-        .map_err(|e| HiggsfieldError::Malformed(format!("undecodable frame data URL: {e}")))?;
-    Ok((content_type, bytes))
-}
-
-/// One "animate from this frame to that frame" request.
-///
-/// There is deliberately no duration here: no documented endpoint takes a free-form
-/// length. The models publish fixed choices (the default hailuo-02 operation has none at
-/// all), and the editor fits whatever comes back into the segment it replaces.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// There is deliberately no duration here: the models publish fixed choices, the CLI
+/// defaults them, and the editor fits whatever comes back into the segment it replaces.
+#[derive(Debug, Clone)]
 pub struct GenerateRequest {
+    /// The CLI job type, e.g. `seedance_2_5`.
+    pub model: String,
     pub prompt: String,
-    /// The photo the motion starts from.
-    pub start_frame: Frame,
-    /// The same for the photo the motion ends on. Omitted for a single-image animation;
-    /// supplied, it pins where the motion ends.
-    pub end_frame: Option<Frame>,
-    pub seed: Option<u64>,
+    /// The still the motion starts from, as a local file the CLI uploads itself.
+    pub start_image: PathBuf,
+    /// The same for the still the motion ends on. Supplied, it pins where the motion
+    /// lands — which is what makes a transition a transition.
+    pub end_image: Option<PathBuf>,
 }
 
-/// The JSON body for a model endpoint, from already-uploaded image URLs.
-///
-/// Every documented image-to-video model takes a flat `{prompt, image_url, …}` object —
-/// there is no `params` envelope and no `model` field, the model *is* the path. Two
-/// details vary by endpoint and are the only thing this branches on:
-///
-/// * the veo `first-last-frame-to-video` operations name their images
-///   `first_frame_url`/`last_frame_url` rather than `image_url`/`end_image_url`;
-/// * only the `dop` and `wan-25-preview` schemas declare a `seed`, and an undeclared
-///   field is a `422`.
-///
-/// Kept as its own function so the wire format is unit-testable without a network.
-pub fn build_body(
-    endpoint: &str,
-    prompt: &str,
-    start_url: &str,
-    end_url: Option<&str>,
-    seed: Option<u64>,
-) -> Value {
-    let (start_key, end_key) = if endpoint.contains("first-last-frame-to-video") {
-        ("first_frame_url", "last_frame_url")
-    } else {
-        ("image_url", "end_image_url")
-    };
-
-    let mut body = Map::new();
-    body.insert("prompt".into(), json!(prompt));
-    body.insert(start_key.into(), json!(start_url));
-    if let Some(end) = end_url {
-        body.insert(end_key.into(), json!(end));
+/// The argv for `generate create`, kept as its own function so the exact invocation is
+/// unit-testable without spawning anything. `--json`/`--no-color` ride on every run.
+pub fn build_create_args(req: &GenerateRequest) -> Vec<String> {
+    let mut args = vec![
+        "generate".to_string(),
+        "create".to_string(),
+        req.model.clone(),
+        "--prompt".to_string(),
+        req.prompt.clone(),
+        "--start-image".to_string(),
+        req.start_image.display().to_string(),
+    ];
+    if let Some(end) = &req.end_image {
+        args.push("--end-image".to_string());
+        args.push(end.display().to_string());
     }
-    if let Some(seed) = seed.filter(|_| endpoint_takes_a_seed(endpoint)) {
-        body.insert("seed".into(), json!(seed));
+    args
+}
+
+/// A located `higgsfield` binary and the operations SolCut needs from it.
+#[derive(Debug, Clone)]
+pub struct Cli {
+    binary: PathBuf,
+}
+
+impl Cli {
+    /// The CLI wherever it is installed, or `None` — which the UI reports as "not
+    /// installed" with the install command, rather than failing at render time.
+    pub fn find() -> Option<Self> {
+        find_binary().map(Self::new)
     }
-    Value::Object(body)
-}
 
-fn endpoint_takes_a_seed(endpoint: &str) -> bool {
-    endpoint.contains("/dop/") || endpoint.contains("wan-25-preview")
-}
-
-pub struct Client {
-    http: reqwest::Client,
-    config: Config,
-    /// `Key {id}:{secret}`, built and validated once at construction and flagged sensitive
-    /// so reqwest keeps it out of its own diagnostics.
-    auth: reqwest::header::HeaderValue,
-}
-
-/// Hand-written so a stray `{:?}` in a log line cannot print the credential.
-impl std::fmt::Debug for Client {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Client")
-            .field("base_url", &self.config.base_url)
-            .field("endpoint", &self.config.endpoint)
-            .field("configured", &self.config.is_configured())
-            .finish()
+    pub fn new(binary: PathBuf) -> Self {
+        Self { binary }
     }
-}
 
-impl Client {
-    pub fn new(config: Config) -> Result<Self> {
-        let config = config.normalized();
-        let (key_id, key_secret) = config.credential().ok_or(HiggsfieldError::NotConfigured)?;
+    pub fn binary(&self) -> &Path {
+        &self.binary
+    }
 
-        // A credential copied out of a dashboard can arrive with a line break or a
-        // non-ASCII character in it. reqwest would defer that to `send()` and report it as
-        // an opaque "builder error" transport failure, which reads like the network is
-        // down; catch it here and say what is actually wrong.
-        let mut auth =
-            reqwest::header::HeaderValue::from_str(&format!("{AUTH_SCHEME} {key_id}:{key_secret}"))
-                .map_err(|_| {
-                    HiggsfieldError::BadCredential(
-                        "the key id or secret contains a character that cannot go in an HTTP \
-                         header — re-copy the credential from cloud.higgsfield.ai"
-                            .into(),
-                    )
-                })?;
-        auth.set_sensitive(true);
+    /// Submit one generation. The CLI uploads the frames and answers with the job id.
+    pub async fn create(&self, req: &GenerateRequest) -> Result<String> {
+        let stdout = self.run(&build_create_args(req), CREATE_TIMEOUT).await?;
+        parse_create(&stdout)
+    }
+
+    /// Where a job has got to, by asking `generate get`.
+    pub async fn job_state(&self, job_id: &str) -> Result<JobState> {
+        let args = [
+            "generate".to_string(),
+            "get".to_string(),
+            job_id.to_string(),
+        ];
+        let stdout = self.run(&args, STATUS_TIMEOUT).await?;
+        parse_job(&stdout)
+    }
+
+    /// Connection check for the Settings dialog: list the video models.
+    ///
+    /// One free, read-only call that proves the binary runs, the login is live and a
+    /// billing workspace is selected — and whose failure message (the CLI's own words)
+    /// names the fix. Returns the number of models when the listing is countable.
+    pub async fn probe(&self) -> Result<Option<usize>> {
+        let args = [
+            "model".to_string(),
+            "list".to_string(),
+            "--video".to_string(),
+        ];
+        let stdout = self.run(&args, PROBE_TIMEOUT).await?;
+        Ok(parse_model_count(&stdout))
+    }
+
+    /// Run the CLI once and hand back its stdout.
+    ///
+    /// A non-zero exit becomes [`HiggsfieldError::Cli`] carrying the CLI's own stderr —
+    /// its refusals name their fix (`auth login`, `workspace set`, an unknown model id).
+    /// Overrunning the budget kills the process and reports what was being asked.
+    async fn run(&self, args: &[String], timeout: Duration) -> Result<String> {
+        let mut command = tokio::process::Command::new(&self.binary);
+        command
+            .args(args)
+            .arg("--json")
+            .arg("--no-color")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let what = args
+            .iter()
+            .take(2)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let output = tokio::time::timeout(timeout, command.output())
+            .await
+            .map_err(|_| HiggsfieldError::Timeout {
+                what: what.clone(),
+                secs: timeout.as_secs(),
+            })?
+            .map_err(|e| match e.kind() {
+                std::io::ErrorKind::NotFound => HiggsfieldError::NotInstalled,
+                _ => HiggsfieldError::Io(format!("could not run the Higgsfield CLI: {e}")),
+            })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        if output.status.success() {
+            return Ok(stdout);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = match stderr.trim() {
+            "" => match stdout.trim() {
+                "" => format!("`{CLI_BINARY} {what}` failed without saying why"),
+                out => preview(out),
+            },
+            err => preview(err),
+        };
+        Err(HiggsfieldError::Cli { message })
+    }
+
+    /// Stream the finished video to `dest`, returning the bytes written.
+    ///
+    /// The result URL is storage, not a metered API: a plain GET, no credential.
+    pub async fn download(&self, url: &str, dest: &Path) -> Result<u64> {
+        use tokio::io::AsyncWriteExt as _;
 
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .build()?;
-        Ok(Self { http, config, auth })
-    }
-
-    pub fn config(&self) -> &Config {
-        &self.config
-    }
-
-    /// `Authorization: Key {key_id}:{key_secret}`, the documented scheme.
-    fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        req.header(reqwest::header::AUTHORIZATION, self.auth.clone())
-    }
-
-    /// Put an image behind a public HTTPS URL: mint a presigned upload, PUT the bytes with
-    /// every header the API returned, and hand back the `public_url` to pass as a model
-    /// parameter.
-    pub async fn upload_image(&self, bytes: Vec<u8>, content_type: &str) -> Result<String> {
-        let minted = self
-            .auth(self.http.post(self.config.url(UPLOAD_URL_PATH)))
-            .json(&json!({ "content_type": content_type }))
-            .send()
-            .await?;
-        let minted = read_json(minted).await?;
-
-        let upload_url = minted
-            .get("upload_url")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                HiggsfieldError::Malformed("the upload response carried no upload_url".into())
-            })?;
-        let public_url = minted
-            .get("public_url")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                HiggsfieldError::Malformed("the upload response carried no public_url".into())
-            })?
-            .to_string();
-
-        // The presigned URL is storage, not Higgsfield: it wants the headers it was signed
-        // with and must never see the API credential.
-        let mut put = self.http.put(upload_url);
-        for (name, value) in upload_headers(&minted, content_type) {
-            put = put.header(name, value);
-        }
-        let stored = put.body(bytes).send().await?;
-        if !stored.status().is_success() {
-            return Err(HiggsfieldError::Http {
-                status: stored.status().as_u16(),
-                body: preview(&stored.text().await.unwrap_or_default()),
-            });
-        }
-
-        Ok(public_url)
-    }
-
-    /// A [`Frame`] as a URL the API can fetch, uploading it first when it is inline data.
-    async fn frame_url(&self, frame: &Frame) -> Result<String> {
-        match frame {
-            Frame::Url(url) => Ok(url.clone()),
-            Frame::DataUrl(url) => {
-                let (content_type, bytes) = decode_data_url(url)?;
-                self.upload_image(bytes, &content_type).await
-            }
-        }
-    }
-
-    /// Send a generation request. Returns as soon as the API has accepted it, with the
-    /// `status_url` to poll.
-    pub async fn submit(&self, req: &GenerateRequest) -> Result<Accepted> {
-        let start_url = self.frame_url(&req.start_frame).await?;
-        let end_url = match &req.end_frame {
-            Some(frame) => Some(self.frame_url(frame).await?),
-            None => None,
-        };
-
-        let body = build_body(
-            &self.config.endpoint,
-            &req.prompt,
-            &start_url,
-            end_url.as_deref(),
-            req.seed,
-        );
-        let response = self
-            .auth(self.http.post(self.config.submit_url()))
-            .json(&body)
-            .send()
-            .await?;
-
-        parse_submit(&read_json(response).await?, &self.config.base_url)
-    }
-
-    /// Ask where a request has got to. `status_url` comes from the submit response, which
-    /// the docs ask callers to use rather than build a URL themselves.
-    pub async fn poll(&self, status_url: &str) -> Result<JobState> {
-        let response = self.auth(self.http.get(status_url)).send().await?;
-        parse_state(&read_json(response).await?)
-    }
-
-    /// Cancel a request that has not started processing.
-    ///
-    /// `202` means it is cancelled; `400` means generation had already begun and the
-    /// request will run to completion, which is a normal race rather than an error.
-    pub async fn cancel(&self, cancel_url: &str) -> Result<bool> {
-        let response = self.auth(self.http.post(cancel_url)).send().await?;
-        match response.status().as_u16() {
-            200..=299 => Ok(true),
-            400 => Ok(false),
-            _ => Err(read_json(response).await.unwrap_err()),
-        }
-    }
-
-    /// Credential check for the Settings dialog. Minting a presigned upload URL is free
-    /// and generates nothing, and a `200` proves the base URL, the key id, the secret and
-    /// the account are all good — which a 404-shaped probe cannot.
-    pub async fn check_credentials(&self) -> Result<()> {
-        let response = self
-            .auth(self.http.post(self.config.url(UPLOAD_URL_PATH)))
-            .json(&json!({ "content_type": "image/jpeg" }))
-            .send()
-            .await?;
-        read_json(response).await.map(|_| ())
-    }
-
-    /// Stream the finished video to `dest`, returning the bytes written.
-    pub async fn download(&self, url: &str, dest: &Path) -> Result<u64> {
-        use tokio::io::AsyncWriteExt as _;
-
-        let response = self.http.get(url).send().await?;
+        let response = http.get(url).send().await?;
         if !response.status().is_success() {
             return Err(HiggsfieldError::Http {
                 status: response.status().as_u16(),
@@ -524,105 +234,122 @@ impl Client {
     }
 }
 
-/// The headers a presigned PUT has to carry. The docs say to send every entry of
-/// `upload_headers`; `Content-Type` is spelled out because the upload has to match the
-/// type the URL was signed for.
-fn upload_headers(minted: &Value, content_type: &str) -> BTreeMap<String, String> {
-    let mut headers = BTreeMap::new();
-    headers.insert("Content-Type".to_string(), content_type.to_string());
-    if let Some(map) = minted.get("upload_headers").and_then(Value::as_object) {
-        for (name, value) in map {
-            if let Some(value) = value.as_str() {
-                headers.insert(name.clone(), value.to_string());
+// ---------------------------------------------------------------- binary discovery
+
+/// The `higgsfield` binary: `PATH` first, then the prefixes npm and Homebrew install
+/// into — a GUI-launched app on macOS gets launchd's `PATH`, which has neither.
+pub fn find_binary() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            if let Some(found) = executable_in(&dir) {
+                return Some(found);
             }
         }
     }
-    headers
+    fallback_dirs().iter().find_map(|dir| executable_in(dir))
 }
 
-/// Turn a response into JSON, mapping the status codes the UI has distinct states for.
-///
-/// Errors use the FastAPI envelope `{"detail": …}`, so the detail is lifted out and shown
-/// instead of the raw body wherever there is one.
-async fn read_json(response: reqwest::Response) -> Result<Value> {
-    let status = response.status();
-    let retry_after = response
-        .headers()
-        .get("retry-after")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
-
-    let body = response.text().await.unwrap_or_default();
-
-    match status.as_u16() {
-        200..=299 => serde_json::from_str(&body).map_err(|e| {
-            HiggsfieldError::Malformed(format!("{e} (body started with: {})", preview(&body)))
-        }),
-        401 => Err(HiggsfieldError::Unauthorized {
-            status: 401,
-            detail: detail_of(&body),
-        }),
-        403 => Err(HiggsfieldError::InsufficientCredits {
-            detail: detail_of(&body),
-        }),
-        429 => Err(HiggsfieldError::RateLimited {
-            retry_after_secs: retry_after,
-        }),
-        other => Err(HiggsfieldError::Http {
-            status: other,
-            body: detail_of(&body),
-        }),
-    }
-}
-
-/// The human part of an error body: `detail` when it parses as the documented envelope,
-/// the truncated body otherwise (an HTML gateway page, say).
-fn detail_of(body: &str) -> String {
-    match serde_json::from_str::<Value>(body) {
-        Ok(value) => match value.get("detail") {
-            Some(Value::String(s)) => s.clone(),
-            // Validation errors put a list of problems in `detail`.
-            Some(Value::Array(problems)) => validation_messages(problems)
-                .unwrap_or_else(|| preview(&Value::Array(problems.clone()).to_string())),
-            Some(other) => preview(&other.to_string()),
-            None => preview(body),
-        },
-        Err(_) => preview(body),
-    }
-}
-
-/// A validation list reduced to what was actually wrong: `field: message` per entry.
-///
-/// Each entry of a FastAPI/pydantic 422 also carries `input` — the rejected value echoed
-/// back, which for a submission is the whole body including two long image URLs. Dumping
-/// the raw list put that echo (serialised first, keys being sorted) in front of `msg`,
-/// and the length cap then cut off exactly the part that said what was invalid. So: keep
-/// `loc` and `msg`, drop the rest.
-fn validation_messages(problems: &[Value]) -> Option<String> {
-    let lines: Vec<String> = problems
+fn executable_in(dir: &Path) -> Option<PathBuf> {
+    binary_names()
         .iter()
-        .filter_map(|problem| {
-            let msg = problem.get("msg").and_then(Value::as_str)?;
-            let field = problem
-                .get("loc")
-                .and_then(Value::as_array)
-                .map(|loc| {
-                    loc.iter()
-                        // Skip the constant "body" prefix and numeric list indexes —
-                        // "motions.id" reads better than "body.motions.0.id".
-                        .filter_map(Value::as_str)
-                        .filter(|part| *part != "body")
-                        .collect::<Vec<_>>()
-                        .join(".")
-                })
-                .filter(|field| !field.is_empty());
-            Some(match field {
-                Some(field) => format!("{field}: {msg}"),
-                None => msg.to_string(),
-            })
-        })
-        .collect();
-    (!lines.is_empty()).then(|| preview(&lines.join("; ")))
+        .map(|name| dir.join(name))
+        .find(|candidate| is_executable(candidate))
+}
+
+fn binary_names() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &["higgsfield.cmd", "higgsfield.exe"]
+    }
+    #[cfg(not(windows))]
+    {
+        &[CLI_BINARY]
+    }
+}
+
+/// Where `npm i -g` and Homebrew put binaries when the launching environment's `PATH`
+/// does not say.
+fn fallback_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".local/bin"));
+        dirs.push(home.join(".npm-global/bin"));
+    }
+    dirs
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
+// ---------------------------------------------------------------- frame files
+
+/// The image content types a frame may arrive as.
+const SUPPORTED_IMAGE_TYPES: &[(&str, &str)] = &[
+    ("image/jpeg", "jpg"),
+    ("image/jpg", "jpg"),
+    ("image/png", "png"),
+    ("image/webp", "webp"),
+    ("image/gif", "gif"),
+];
+
+/// Split `data:image/jpeg;base64,…` into its content type and bytes.
+pub fn decode_data_url(url: &str) -> Result<(String, Vec<u8>)> {
+    let rest = url
+        .strip_prefix("data:")
+        .ok_or_else(|| HiggsfieldError::Malformed("a frame is not a data URL".into()))?;
+    let (meta, payload) = rest
+        .split_once(',')
+        .ok_or_else(|| HiggsfieldError::Malformed("a frame data URL has no payload".into()))?;
+
+    let content_type = meta.split(';').next().unwrap_or("").to_ascii_lowercase();
+    if !SUPPORTED_IMAGE_TYPES
+        .iter()
+        .any(|(t, _)| *t == content_type)
+    {
+        return Err(HiggsfieldError::Malformed(format!(
+            "{content_type:?} is not an image type a frame can be"
+        )));
+    }
+    if !meta.contains("base64") {
+        return Err(HiggsfieldError::Malformed(
+            "a frame data URL must be base64-encoded".into(),
+        ));
+    }
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|e| HiggsfieldError::Malformed(format!("undecodable frame data URL: {e}")))?;
+    Ok((content_type, bytes))
+}
+
+/// Write a frame's data URL to `{dir}/{stem}.{ext}` so the CLI can upload it, returning
+/// the path to pass as `--start-image`/`--end-image`.
+pub fn write_frame(dir: &Path, stem: &str, data_url: &str) -> Result<PathBuf> {
+    let (content_type, bytes) = decode_data_url(data_url)?;
+    let ext = SUPPORTED_IMAGE_TYPES
+        .iter()
+        .find(|(t, _)| *t == content_type)
+        .map(|(_, ext)| *ext)
+        .unwrap_or("jpg");
+
+    std::fs::create_dir_all(dir).map_err(|e| HiggsfieldError::Io(e.to_string()))?;
+    let path = dir.join(format!("{stem}.{ext}"));
+    std::fs::write(&path, bytes).map_err(|e| HiggsfieldError::Io(e.to_string()))?;
+    Ok(path)
 }
 
 pub(crate) fn preview(body: &str) -> String {
@@ -638,493 +365,113 @@ pub(crate) fn preview(body: &str) -> String {
 mod tests {
     use super::*;
 
-    fn cfg() -> Config {
-        Config {
-            api_key_id: "id".into(),
-            api_key_secret: "secret".into(),
-            ..Default::default()
+    fn request() -> GenerateRequest {
+        GenerateRequest {
+            model: DEFAULT_MODEL.into(),
+            prompt: "slow dolly-in".into(),
+            start_image: PathBuf::from("/tmp/a.jpg"),
+            end_image: Some(PathBuf::from("/tmp/b.jpg")),
         }
     }
 
     #[test]
-    fn refuses_to_build_a_client_without_both_halves_of_the_credential() {
-        let err = Client::new(Config::default()).unwrap_err();
-        assert!(matches!(err, HiggsfieldError::NotConfigured));
-
-        // A key id on its own cannot form a `Key id:secret` header.
-        let id_only = Config {
-            api_key_id: "id".into(),
-            ..Config::default()
-        };
-        assert!(!id_only.is_configured());
-        assert!(matches!(
-            Client::new(id_only).unwrap_err(),
-            HiggsfieldError::NotConfigured
-        ));
+    fn the_default_model_is_seedance_2_5() {
+        assert_eq!(DEFAULT_MODEL, "seedance_2_5");
     }
 
     #[test]
-    fn a_credential_pasted_whole_is_split_on_its_first_colon() {
-        // The form Higgsfield's own SDKs take, in `HF_KEY` / `HF_CREDENTIALS`.
-        let pasted = Config {
-            api_key_id: "key-id:key-secret".into(),
-            ..Config::default()
-        };
-        assert!(pasted.is_configured(), "a whole credential, in one box");
+    fn the_create_argv_is_the_documented_invocation() {
         assert_eq!(
-            pasted.credential(),
-            Some(("key-id".into(), "key-secret".into()))
-        );
-
-        let split = pasted.normalized();
-        assert_eq!(split.api_key_id, "key-id");
-        assert_eq!(split.api_key_secret, "key-secret");
-    }
-
-    #[test]
-    fn a_secret_with_colons_in_it_survives_the_split() {
-        let pasted = Config {
-            api_key_id: "key-id:sec:ret".into(),
-            ..Config::default()
-        };
-        assert_eq!(
-            pasted.credential(),
-            Some(("key-id".into(), "sec:ret".into())),
-            "only the first colon separates the two halves"
+            build_create_args(&request()),
+            vec![
+                "generate",
+                "create",
+                "seedance_2_5",
+                "--prompt",
+                "slow dolly-in",
+                "--start-image",
+                "/tmp/a.jpg",
+                "--end-image",
+                "/tmp/b.jpg",
+            ]
         );
     }
 
     #[test]
-    fn two_filled_boxes_are_never_re_split() {
-        let typed = Config {
-            api_key_id: "key:id".into(),
-            api_key_secret: "secret".into(),
-            ..Config::default()
-        };
-        assert_eq!(
-            typed.credential(),
-            Some(("key:id".into(), "secret".into())),
-            "a colon in a key id the user typed in full is part of the key id"
-        );
+    fn a_single_frame_sends_no_end_image() {
+        let mut req = request();
+        req.end_image = None;
+        let args = build_create_args(&req);
+        assert!(!args.iter().any(|a| a == "--end-image"), "{args:?}");
+        assert!(args.iter().any(|a| a == "--start-image"));
     }
 
     #[test]
-    fn whitespace_around_a_pasted_credential_is_ignored() {
-        let messy = Config {
-            api_key_id: "  key-id\n".into(),
-            api_key_secret: "\tkey-secret ".into(),
-            ..Config::default()
-        };
-        assert_eq!(
-            messy.credential(),
-            Some(("key-id".into(), "key-secret".into()))
-        );
-
-        let pasted = Config {
-            api_key_id: " key-id : key-secret \n".into(),
-            ..Config::default()
-        };
-        assert_eq!(
-            pasted.credential(),
-            Some(("key-id".into(), "key-secret".into()))
-        );
-    }
-
-    #[test]
-    fn half_a_pasted_credential_is_still_not_a_credential() {
-        for id in ["key-id:", ":key-secret", ":", "key-id"] {
-            let config = Config {
-                api_key_id: id.into(),
-                ..Config::default()
-            };
-            assert!(!config.is_configured(), "{id:?} is not a whole credential");
-        }
-    }
-
-    #[test]
-    fn a_credential_that_cannot_form_a_header_says_so_instead_of_failing_as_a_network_error() {
-        // An interior line break survives a paste and cannot go in a header value.
-        // reqwest would defer this to `send()` and report "builder error".
-        let broken = Config {
-            api_key_id: "key-id".into(),
-            api_key_secret: "sec\nret".into(),
-            ..Config::default()
-        };
-        let err = Client::new(broken).unwrap_err();
-        let HiggsfieldError::BadCredential(detail) = &err else {
-            panic!("expected a credential error, got {err:?}");
-        };
-        assert!(detail.contains("cloud.higgsfield.ai"), "{detail}");
-        assert_eq!(err.title(), "Authentication failed");
-        assert!(
-            !err.is_retryable(),
-            "retrying the same bad paste cannot help"
-        );
-    }
-
-    #[test]
-    fn the_defaults_are_the_documented_api() {
-        let c = Config::default();
-        assert_eq!(c.base_url, "https://api.higgsfield.ai");
-        assert_eq!(c.endpoint, "/minimax/hailuo-02/standard/image-to-video");
-        assert_eq!(
-            AUTH_SCHEME, "Key",
-            "the documented scheme is `Key id:secret`, not a bearer token"
-        );
-    }
-
-    #[test]
-    fn a_request_carries_its_own_model_choice() {
-        let config = cfg().with_endpoint(Some("/bytedance/seedance/v2.5/pro/image-to-video"));
-        assert_eq!(
-            config.endpoint,
-            "/bytedance/seedance/v2.5/pro/image-to-video"
-        );
-        assert_eq!(
-            config.api_key_id, "id",
-            "only the endpoint is the request's to change"
-        );
-        assert_eq!(config.base_url, DEFAULT_BASE_URL);
-    }
-
-    #[test]
-    fn a_request_naming_no_model_falls_back_to_the_stored_endpoint() {
-        for absent in [None, Some(""), Some("   ")] {
-            let config = cfg().with_endpoint(absent);
-            assert_eq!(config.endpoint, DEFAULT_ENDPOINT);
-        }
-    }
-
-    #[test]
-    fn a_per_request_endpoint_is_trimmed_like_a_typed_one() {
-        let config = cfg().with_endpoint(Some("  /veo3.1/first-last-frame-to-video \n"));
-        assert_eq!(config.endpoint, "/veo3.1/first-last-frame-to-video");
-    }
-
-    #[test]
-    fn builds_urls_without_doubling_slashes() {
-        let c = Config {
-            base_url: "https://api.test/".into(),
-            ..cfg()
-        };
-        assert_eq!(
-            c.submit_url(),
-            "https://api.test/minimax/hailuo-02/standard/image-to-video"
-        );
-        assert_eq!(
-            c.url(UPLOAD_URL_PATH),
-            "https://api.test/files/generate-upload-url"
-        );
-    }
-
-    /// The regression behind "error when generating a transition": earlier builds stored
-    /// `/higgsfield-ai/dop/standard` the moment a key was saved, chosen or not, and that
-    /// endpoint rejects the two-frame requests this editor makes with a body-level 422.
-    #[test]
-    fn the_legacy_default_endpoint_follows_the_default_forward() {
-        let stale = Config {
-            endpoint: LEGACY_DEFAULT_ENDPOINT.into(),
-            ..cfg()
-        }
-        .normalized();
-        assert_eq!(stale.endpoint, DEFAULT_ENDPOINT);
-        assert_eq!(stale.api_key_id, "id", "the credential is untouched");
-    }
-
-    /// The regression behind "animation generation always fails with a 422": the first
-    /// build spoke the envelope API — `{"params": {...}}` to `/v1/image2video` on
-    /// `platform.higgsfield.ai` — and stored both literals the moment a key was saved.
-    /// That endpoint answers today's flat bodies with `422: params: Field required`, on
-    /// every attempt, so both stale defaults must follow the working defaults forward.
-    #[test]
-    fn the_first_builds_defaults_follow_the_defaults_forward() {
-        let stale = Config {
-            base_url: FIRST_BUILD_BASE_URL.into(),
-            endpoint: FIRST_BUILD_ENDPOINT.into(),
-            ..cfg()
-        }
-        .normalized();
-        assert_eq!(stale.endpoint, DEFAULT_ENDPOINT);
-        assert_eq!(stale.base_url, DEFAULT_BASE_URL);
-        assert_eq!(stale.api_key_id, "id", "the credential is untouched");
-    }
-
-    #[test]
-    fn a_typed_base_url_survives_the_first_build_endpoint_migration() {
-        let config = Config {
-            base_url: "https://proxy.example".into(),
-            endpoint: FIRST_BUILD_ENDPOINT.into(),
-            ..cfg()
-        }
-        .normalized();
-        assert_eq!(
-            config.endpoint, DEFAULT_ENDPOINT,
-            "the envelope endpoint can never serve this editor's requests"
-        );
-        assert_eq!(
-            config.base_url, "https://proxy.example",
-            "a base URL beside a non-default endpoint was typed, and stays"
-        );
-    }
-
-    #[test]
-    fn the_platform_host_beside_a_chosen_endpoint_is_kept() {
-        // The official SDKs use the platform host for the documented API, so beside a
-        // working endpoint it is a choice, not a first-build leftover.
-        let config = Config {
-            base_url: FIRST_BUILD_BASE_URL.into(),
-            endpoint: "/higgsfield-ai/dop/turbo".into(),
-            ..cfg()
-        }
-        .normalized();
-        assert_eq!(config.base_url, FIRST_BUILD_BASE_URL);
-        assert_eq!(config.endpoint, "/higgsfield-ai/dop/turbo");
-    }
-
-    #[test]
-    fn any_other_endpoint_is_a_choice_and_kept() {
-        for chosen in [
-            "/higgsfield-ai/dop/turbo",
-            "/veo3.1/first-last-frame-to-video",
-        ] {
-            let config = Config {
-                endpoint: chosen.into(),
-                ..cfg()
-            }
-            .normalized();
-            assert_eq!(config.endpoint, chosen);
-        }
-    }
-
-    #[test]
-    fn a_settings_file_from_an_earlier_build_still_reads() {
-        let stored = r#"{"api_key":"old-id","api_secret":"old-secret","model":"dop"}"#;
-        let config: Config = serde_json::from_str(stored).expect("legacy settings");
-        assert_eq!(config.api_key_id, "old-id");
-        assert_eq!(config.api_key_secret, "old-secret");
-        assert!(config.is_configured());
-
-        // An earlier build stored whatever was pasted, combined form included.
-        let combined = r#"{"api_key":"old-id:old-secret"}"#;
-        let config: Config = serde_json::from_str::<Config>(combined)
-            .expect("legacy settings")
-            .normalized();
-        assert_eq!(config.api_key_id, "old-id");
-        assert_eq!(config.api_key_secret, "old-secret");
-    }
-
-    #[test]
-    fn the_body_is_flat_and_names_both_frames() {
-        let body = build_body(
-            "/higgsfield-ai/dop/standard",
-            "slow dolly-in",
-            "https://cdn.test/a.jpg",
-            Some("https://cdn.test/b.jpg"),
-            Some(7),
-        );
-        assert_eq!(body["prompt"], "slow dolly-in");
-        assert_eq!(body["image_url"], "https://cdn.test/a.jpg");
-        assert_eq!(body["end_image_url"], "https://cdn.test/b.jpg");
-        assert_eq!(body["seed"], 7);
-        assert!(
-            body.get("params").is_none() && body.get("model").is_none(),
-            "no envelope and no model field: the model is the endpoint"
-        );
-    }
-
-    #[test]
-    fn the_default_endpoint_names_both_frames_and_declares_no_seed() {
-        let body = build_body(
-            DEFAULT_ENDPOINT,
-            "slow dolly-in",
-            "https://cdn.test/a.jpg",
-            Some("https://cdn.test/b.jpg"),
-            Some(7),
-        );
-        assert_eq!(body["image_url"], "https://cdn.test/a.jpg");
-        assert_eq!(body["end_image_url"], "https://cdn.test/b.jpg");
-        assert!(
-            body.get("seed").is_none(),
-            "hailuo-02 declares no seed, and an undeclared field risks a 422"
-        );
-    }
-
-    #[test]
-    fn a_single_frame_sends_one_image() {
-        let body = build_body(
-            "/higgsfield-ai/dop/standard",
-            "drift",
-            "https://cdn.test/a.jpg",
-            None,
-            None,
-        );
-        assert!(body.get("end_image_url").is_none());
-        assert!(body.get("seed").is_none());
-    }
-
-    #[test]
-    fn the_veo_first_last_endpoint_uses_its_own_parameter_names() {
-        let body = build_body(
-            "/veo3.1/first-last-frame-to-video",
-            "pan",
-            "https://cdn.test/a.jpg",
-            Some("https://cdn.test/b.jpg"),
-            Some(7),
-        );
-        assert_eq!(body["first_frame_url"], "https://cdn.test/a.jpg");
-        assert_eq!(body["last_frame_url"], "https://cdn.test/b.jpg");
-        assert!(
-            body.get("seed").is_none(),
-            "veo declares no seed, and an undeclared field is a 422"
-        );
+    fn the_prompt_travels_as_one_argument_never_through_a_shell() {
+        let mut req = request();
+        req.prompt = "pan; rm -rf / `boom` $(x)".into();
+        let args = build_create_args(&req);
+        let at = args.iter().position(|a| a == "--prompt").unwrap();
+        assert_eq!(args[at + 1], "pan; rm -rf / `boom` $(x)");
     }
 
     #[test]
     fn jpeg_bytes_round_trip_through_a_data_url() {
-        let Frame::DataUrl(url) = Frame::from_jpeg_bytes(&[0xff, 0xd8, 0xff]) else {
-            panic!("expected a data url");
-        };
-        assert!(url.starts_with("data:image/jpeg;base64,"));
-
-        let (content_type, bytes) = decode_data_url(&url).expect("decode");
+        let b64 = base64::engine::general_purpose::STANDARD.encode([0xff, 0xd8, 0xff]);
+        let (content_type, bytes) =
+            decode_data_url(&format!("data:image/jpeg;base64,{b64}")).expect("decode");
         assert_eq!(content_type, "image/jpeg");
         assert_eq!(bytes, vec![0xff, 0xd8, 0xff]);
     }
 
     #[test]
-    fn an_unsupported_frame_type_is_refused_before_it_is_uploaded() {
+    fn an_unsupported_frame_type_is_refused_before_it_is_written() {
         let err = decode_data_url("data:image/tiff;base64,AAAA").unwrap_err();
         assert!(matches!(err, HiggsfieldError::Malformed(_)), "{err:?}");
     }
 
     #[test]
-    fn presigned_uploads_carry_every_header_the_api_returned() {
-        let minted = json!({
-            "upload_headers": {"Content-Type": "image/jpeg", "x-amz-tagging": "retention=temporary"}
-        });
-        let headers = upload_headers(&minted, "image/jpeg");
-        assert_eq!(
-            headers.get("x-amz-tagging").map(String::as_str),
-            Some("retention=temporary")
-        );
-        assert_eq!(
-            headers.get("Content-Type").map(String::as_str),
-            Some("image/jpeg")
-        );
-        assert!(
-            !headers
-                .keys()
-                .any(|k| k.eq_ignore_ascii_case("authorization")),
-            "the API credential never reaches the storage host"
-        );
-    }
+    fn a_frame_lands_on_disk_under_its_own_type() {
+        let dir = std::env::temp_dir().join(format!("solcut-frames-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
 
-    #[test]
-    fn error_bodies_are_reduced_to_their_detail() {
-        assert_eq!(
-            detail_of(r#"{"detail":"Invalid credentials"}"#),
-            "Invalid credentials"
-        );
-        assert!(detail_of(r#"{"detail":[{"loc":["body","image_url"]}]}"#).contains("image_url"));
-        assert_eq!(
-            detail_of("<html>bad gateway</html>"),
-            "<html>bad gateway</html>"
-        );
-    }
-
-    /// The regression behind "Generation failed" cards that showed nothing but URLs: a
-    /// 422's entries echo the whole submitted body under `input`, and serialising the
-    /// raw list put ~230 characters of image URL in front of `msg` — which the length
-    /// cap then cut off. What must survive is the message; what must go is the echo.
-    #[test]
-    fn a_validation_list_surfaces_the_message_not_the_echoed_input() {
-        let url = format!(
-            "https://cdn.test/{}/{}.jpeg",
-            "a".repeat(80),
-            "b".repeat(40)
-        );
-        let body = json!({
-            "detail": [{
-                "type": "value_error",
-                "loc": ["body"],
-                "msg": "Value error, end frame is not supported by this model",
-                "input": {"end_image_url": url, "image_url": url, "prompt": "drift"}
-            }]
-        });
-        let detail = detail_of(&body.to_string());
-        assert_eq!(
-            detail,
-            "Value error, end frame is not supported by this model"
-        );
-        assert!(
-            !detail.contains("cdn.test"),
-            "the input echo is dropped: {detail}"
-        );
-    }
-
-    #[test]
-    fn every_validation_problem_is_named_with_its_field() {
-        let body = json!({
-            "detail": [
-                {"type": "missing", "loc": ["body", "duration"], "msg": "Field required", "input": {}},
-                {"type": "missing", "loc": ["body", "motions", 0, "id"], "msg": "Field required", "input": {}}
-            ]
-        });
-        assert_eq!(
-            detail_of(&body.to_string()),
-            "duration: Field required; motions.id: Field required",
-            "the constant `body` prefix and list indexes are noise"
-        );
-    }
-
-    #[test]
-    fn a_validation_list_without_messages_still_shows_something() {
-        let detail = detail_of(r#"{"detail":[{"loc":["body","seed"],"type":"int_type"}]}"#);
-        assert!(detail.contains("seed"), "{detail}");
-    }
-
-    #[test]
-    fn error_titles_are_distinct_per_state() {
-        assert_eq!(HiggsfieldError::NotConfigured.title(), "Not connected");
-        assert_eq!(
-            HiggsfieldError::InsufficientCredits {
-                detail: String::new()
-            }
-            .title(),
-            "Out of credits"
-        );
-        assert!(HiggsfieldError::RateLimited {
-            retry_after_secs: None
-        }
-        .is_retryable());
-        assert!(!HiggsfieldError::Unauthorized {
-            status: 401,
-            detail: String::new()
-        }
-        .is_retryable());
-        assert!(HiggsfieldError::Http {
-            status: 503,
-            body: String::new()
-        }
-        .is_retryable());
-        assert!(
-            HiggsfieldError::Http {
-                status: 423,
-                body: String::new()
-            }
-            .is_retryable(),
-            "423 is a temporarily blocked model, which is worth another go"
-        );
-        assert!(!HiggsfieldError::Http {
-            status: 422,
-            body: String::new()
-        }
-        .is_retryable());
+        let b64 = base64::engine::general_purpose::STANDARD.encode([1, 2, 3]);
+        let path = write_frame(&dir, "gen_1-start", &format!("data:image/png;base64,{b64}"))
+            .expect("write");
+        assert_eq!(path, dir.join("gen_1-start.png"));
+        assert_eq!(std::fs::read(&path).unwrap(), vec![1, 2, 3]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn long_error_bodies_are_truncated() {
         let long = "x".repeat(5_000);
         assert!(preview(&long).chars().count() <= 201);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_discovery_finds_an_executable_and_skips_a_plain_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!("solcut-which-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let plain = dir.join(CLI_BINARY);
+        std::fs::write(&plain, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(executable_in(&dir), None, "a non-executable file is not it");
+
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(executable_in(&dir), Some(plain));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_fallback_prefixes_cover_npm_and_homebrew() {
+        let dirs = fallback_dirs();
+        assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
     }
 }

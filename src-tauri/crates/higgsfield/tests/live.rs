@@ -1,64 +1,59 @@
-//! An opt-in check against the real Higgsfield API.
+//! An opt-in check against the real Higgsfield CLI.
 //!
-//! Everything else in this crate is proved against a local stub, which pins what goes on
-//! the wire but cannot prove Higgsfield accepts it. This one does, for anyone holding a
-//! credential:
+//! Everything else in this crate is proved against a stub executable, which pins what is
+//! run but cannot prove the real CLI accepts it. This one does, for any machine that has
+//! the CLI installed and signed in (`npm i -g @higgsfield/cli`, `higgsfield auth login`,
+//! `higgsfield workspace set …`):
 //!
 //! ```text
-//! HF_API_KEY_ID=… HF_API_KEY_SECRET=… \
-//!   cargo test -p solcut-higgsfield --test live -- --nocapture
-//!
-//! # or the single-string form Higgsfield's own SDKs take
-//! HF_KEY="key-id:key-secret" cargo test -p solcut-higgsfield --test live -- --nocapture
+//! cargo test -p solcut-higgsfield --test live -- --nocapture
 //! ```
 //!
-//! Without a credential in the environment it reports that and passes, so it is safe in
-//! the default `cargo test` run. It only ever mints a presigned upload URL — nothing is
-//! generated and nothing is charged.
+//! Without the CLI on the machine — or with one that is not signed in — it reports that
+//! and passes, so it is safe in the default `cargo test` run. It only ever lists the
+//! video models — nothing is generated and nothing is charged. On a working setup it
+//! also proves the app's default model id, `seedance_2_5`, exists in the live catalog —
+//! the exact class of failure (a model the account cannot reach) that once 404'd every
+//! default render.
 
-use solcut_higgsfield::{Client, Config, HiggsfieldError};
-
-/// A credential from the environment, under any of the names the official SDKs document.
-fn credential_from_env() -> Option<Config> {
-    let pair = |id: &str, secret: &str| Config {
-        api_key_id: id.to_string(),
-        api_key_secret: secret.to_string(),
-        ..Config::default()
-    };
-
-    if let (Ok(id), Ok(secret)) = (
-        std::env::var("HF_API_KEY_ID"),
-        std::env::var("HF_API_KEY_SECRET"),
-    ) {
-        return Some(pair(&id, &secret));
-    }
-    // `HF_KEY` / `HF_CREDENTIALS` hold `key_id:key_secret` in one string; `Config` splits
-    // it, so this leg exercises that path against the live API too.
-    ["HF_KEY", "HF_CREDENTIALS"]
-        .iter()
-        .find_map(|name| std::env::var(name).ok())
-        .map(|combined| pair(&combined, ""))
-}
+use solcut_higgsfield::{Cli, HiggsfieldError, DEFAULT_MODEL};
 
 #[tokio::test]
-async fn a_real_credential_authenticates_against_the_documented_api() {
-    let Some(config) = credential_from_env() else {
-        eprintln!(
-            "skipped: set HF_API_KEY_ID and HF_API_KEY_SECRET (or HF_KEY=\"id:secret\") to \
-             check a real credential against {}",
-            Config::default().base_url
-        );
+async fn the_real_cli_lists_the_default_model() {
+    let Some(cli) = Cli::find() else {
+        eprintln!("live: no `higgsfield` binary on this machine — skipping (install with `npm i -g @higgsfield/cli`)");
         return;
     };
+    eprintln!("live: using {}", cli.binary().display());
 
-    let base_url = config.base_url.clone();
-    let client = Client::new(config).expect("a whole credential");
-
-    match client.check_credentials().await {
-        Ok(()) => eprintln!("authenticated against {base_url}"),
-        Err(HiggsfieldError::Unauthorized { detail, .. }) => {
-            panic!("{base_url} rejected the credential: {detail}")
+    match cli.probe().await {
+        Ok(count) => {
+            eprintln!(
+                "live: signed in; {} video models listed",
+                count.map_or("?".to_string(), |n| n.to_string())
+            );
         }
-        Err(other) => panic!("could not reach {base_url}: {other}"),
+        Err(HiggsfieldError::Cli { message }) => {
+            // Present but not signed in (or no workspace): that is this machine's state,
+            // not a bug in the wrapper — report it and pass.
+            eprintln!("live: CLI present but not usable — {message}");
+            return;
+        }
+        Err(other) => panic!("the probe failed in an unexpected way: {other}"),
     }
+
+    // A working setup must actually offer the default model, or every default render
+    // dies at create. Checked against the raw listing so the shape does not matter.
+    let output = tokio::process::Command::new(cli.binary())
+        .args(["model", "list", "--video", "--json", "--no-color"])
+        .output()
+        .await
+        .expect("run model list");
+    let listing = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        listing.contains(DEFAULT_MODEL),
+        "the live catalog does not list the default model {DEFAULT_MODEL:?} — \
+         pick a different default or check the account's plan.\nCatalog: {listing}"
+    );
+    eprintln!("live: default model {DEFAULT_MODEL:?} is in the catalog");
 }

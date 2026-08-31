@@ -1,29 +1,25 @@
 use std::fmt;
 
-/// Everything that can go wrong talking to Higgsfield, in the shape the UI needs to
-/// render its error states: a short title, a human sentence, and whether retrying helps.
-///
-/// The status-code meanings follow <https://docs.higgsfield.ai/docs/concepts/errors>.
+/// Everything that can go wrong generating through the Higgsfield CLI, in the shape the
+/// UI needs to render its error states: a short title, a human sentence, and whether
+/// retrying helps.
 #[derive(Debug, thiserror::Error)]
 pub enum HiggsfieldError {
-    #[error("no API key id and secret configured")]
-    NotConfigured,
+    /// The `higgsfield` binary is not on `PATH` (or in the usual install locations).
+    #[error(
+        "the Higgsfield CLI is not installed — run `npm i -g @higgsfield/cli`, \
+         then `higgsfield auth login`"
+    )]
+    NotInstalled,
 
-    /// The credential is present but cannot form an `Authorization` header at all — a
-    /// line break survived a paste, say. Distinct from [`Self::Unauthorized`], which is
-    /// the API turning a well-formed header down.
-    #[error("the API credential is unusable: {0}")]
-    BadCredential(String),
+    /// The CLI ran and refused. The message is the CLI's own words, which carry their own
+    /// fix (`higgsfield auth login`, `hf workspace set …`, an unknown model id, …).
+    #[error("{message}")]
+    Cli { message: String },
 
-    #[error("authentication rejected (HTTP {status}): {detail}")]
-    Unauthorized { status: u16, detail: String },
-
-    /// `403` is documented as insufficient credits, not a bad credential.
-    #[error("the account is out of credits: {detail}")]
-    InsufficientCredits { detail: String },
-
-    #[error("rate limited")]
-    RateLimited { retry_after_secs: Option<u64> },
+    /// The CLI did not answer within the time budget and was stopped.
+    #[error("the CLI did not answer `{what}` within {secs} seconds")]
+    Timeout { what: String, secs: u64 },
 
     #[error("API returned HTTP {status}: {body}")]
     Http { status: u16, body: String },
@@ -31,7 +27,7 @@ pub enum HiggsfieldError {
     #[error("network error: {0}")]
     Transport(String),
 
-    #[error("unexpected API response: {0}")]
+    #[error("unexpected CLI output: {0}")]
     Malformed(String),
 
     #[error("job failed: {0}")]
@@ -45,13 +41,24 @@ impl HiggsfieldError {
     /// Short label for the error card header.
     pub fn title(&self) -> &'static str {
         match self {
-            Self::NotConfigured => "Not connected",
-            Self::BadCredential(_) | Self::Unauthorized { .. } => "Authentication failed",
-            Self::InsufficientCredits { .. } => "Out of credits",
-            Self::RateLimited { .. } => "Rate limited",
-            Self::Http { .. } => "Higgsfield rejected the request",
+            Self::NotInstalled => "Higgsfield CLI not found",
+            Self::Cli { message } => {
+                // The CLI's stderr names the fix; the title names the state. The two
+                // phrases matched here are the CLI's own hints for an expired login and
+                // a missing billing workspace.
+                let lower = message.to_ascii_lowercase();
+                if lower.contains("auth login") || lower.contains("not authenticated") {
+                    "Not signed in"
+                } else if lower.contains("workspace") {
+                    "No billing workspace"
+                } else {
+                    "Higgsfield refused the request"
+                }
+            }
+            Self::Timeout { .. } => "Higgsfield CLI timed out",
+            Self::Http { .. } => "Could not download the result",
             Self::Transport(_) => "Network error",
-            Self::Malformed(_) => "Unexpected response",
+            Self::Malformed(_) => "Unexpected CLI output",
             Self::JobFailed(_) => "Generation failed",
             Self::Io(_) => "Could not save the result",
         }
@@ -59,12 +66,12 @@ impl HiggsfieldError {
 
     /// Whether the same request is worth sending again unchanged.
     ///
-    /// `400` and `422` mean the request itself was rejected, `423`/`503` mean the model is
-    /// temporarily unavailable and are worth another go later.
+    /// A CLI refusal (bad model id, not signed in, no credits) will refuse identically
+    /// next time; a timeout or a network blip is worth another go.
     pub fn is_retryable(&self) -> bool {
         match self {
-            Self::RateLimited { .. } | Self::Transport(_) => true,
-            Self::Http { status, .. } => *status >= 500 || *status == 423,
+            Self::Timeout { .. } | Self::Transport(_) => true,
+            Self::Http { status, .. } => *status >= 500,
             _ => false,
         }
     }
@@ -87,10 +94,9 @@ fn strip_url(msg: &str) -> String {
 
 pub type Result<T> = std::result::Result<T, HiggsfieldError>;
 
-/// A snapshot of a running request, as the UI wants to show it.
+/// A snapshot of a running job, as the UI wants to show it.
 ///
-/// One variant per documented terminal state
-/// (<https://docs.higgsfield.ai/docs/concepts/requests>); `nsfw` arrives as a
+/// One variant per terminal state the CLI reports; `nsfw` arrives as a
 /// [`JobState::Failed`] carrying the moderation reason, because the UI treats it the same.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
@@ -141,5 +147,59 @@ mod tests {
         );
         assert_eq!(JobState::Queued.to_string(), "queued");
         assert_eq!(JobState::Cancelled.to_string(), "cancelled");
+    }
+
+    #[test]
+    fn a_cli_refusal_is_titled_by_what_it_says() {
+        let title = |message: &str| {
+            HiggsfieldError::Cli {
+                message: message.into(),
+            }
+            .title()
+        };
+        assert_eq!(
+            title("Session expired. Re-run `higgsfield auth login`."),
+            "Not signed in"
+        );
+        assert_eq!(
+            title("No workspace selected.\nHint: Run: hf workspace set <workspace_id>"),
+            "No billing workspace"
+        );
+        assert_eq!(
+            title("unknown job type \"seedance_9\""),
+            "Higgsfield refused the request"
+        );
+    }
+
+    #[test]
+    fn refusals_are_not_retried_but_blips_are() {
+        assert!(!HiggsfieldError::Cli {
+            message: "unknown job type".into()
+        }
+        .is_retryable());
+        assert!(HiggsfieldError::Timeout {
+            what: "generate get".into(),
+            secs: 60
+        }
+        .is_retryable());
+        assert!(HiggsfieldError::Transport("connection reset".into()).is_retryable());
+        assert!(HiggsfieldError::Http {
+            status: 503,
+            body: String::new()
+        }
+        .is_retryable());
+        assert!(!HiggsfieldError::Http {
+            status: 404,
+            body: String::new()
+        }
+        .is_retryable());
+        assert!(!HiggsfieldError::NotInstalled.is_retryable());
+    }
+
+    #[test]
+    fn the_not_installed_error_names_the_install_command() {
+        let message = HiggsfieldError::NotInstalled.to_string();
+        assert!(message.contains("npm i -g @higgsfield/cli"), "{message}");
+        assert!(message.contains("higgsfield auth login"), "{message}");
     }
 }
