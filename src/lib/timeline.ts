@@ -456,14 +456,14 @@ export function timelineEndMs(clips: Clip[], tracks: AudioTrack[]): number {
 // ---------------------------------------------------------------- cuts & transitions
 
 /**
- * A photo→photo cut: two photos next to each other — the place a transition can fill.
- * Their edges may touch, or the user may have dragged one away to leave a gap; either way
- * the pair can be bridged, and a render into a gap consumes it.
+ * A cut: two clips next to each other — the place a transition can fill. Their edges may
+ * touch, or the user may have dragged one away to leave a gap; either way the pair can be
+ * bridged, and a render into a gap consumes it.
  */
 export interface Cut {
-  /** The photo on the left; the transition lands right after it. */
+  /** The clip on the left; the transition lands right after it. */
   afterClipId: string;
-  /** The photo on the right. */
+  /** The clip on the right. */
   beforeClipId: string;
   /** Where the ✦ chip sits: the shared edge, or the middle of the gap between the pair. */
   timeMs: number;
@@ -472,19 +472,32 @@ export interface Cut {
 }
 
 /**
- * Every cut between two photos: consecutive in time order, touching or with a gap between
- * them — a gap a user drags open between two photos is exactly where a transition goes, so
- * it keeps the pair's chip rather than losing it. Only photos: a generated transition
- * needs a still on each side, so boundaries touching video (including a landed transition,
- * which breaks its own pair into photo|video and video|photo) simply are not offered.
+ * Whether a clip is something a transition can be rendered *from*. Anything on the track
+ * qualifies — a photo is already a still, a video hands over the frame at its edge — except
+ * a transition that has already landed: bridging one would be animating an animation, and
+ * every landing would sprout two fresh chips on either side of itself.
  */
-export function photoCuts(clips: Clip[]): Cut[] {
+function bridgeable(clip: Clip): boolean {
+  return clip.transition === undefined;
+}
+
+/**
+ * Every cut a transition could fill: two clips consecutive in time order, touching or with
+ * a gap between them — a gap a user drags open between a pair is exactly where a transition
+ * goes, so it keeps the pair's chip rather than losing it.
+ *
+ * Kind-blind by design. Higgsfield animates between two stills; a photo is one already and
+ * a video's frame at the cut is pulled off it (`backend.captureVideoFrame`), so photo→photo,
+ * video→video and the mixed pairs are all the same job. What is *not* offered is a boundary
+ * touching a landed transition — see `bridgeable`.
+ */
+export function bridgeableCuts(clips: Clip[]): Cut[] {
   const placed = layout(clips);
   const cuts: Cut[] = [];
   for (let i = 0; i < placed.length - 1; i += 1) {
     const a = placed[i];
     const b = placed[i + 1];
-    if (a.clip.kind === 'photo' && b.clip.kind === 'photo') {
+    if (bridgeable(a.clip) && bridgeable(b.clip)) {
       const gapMs = b.startMs - a.endMs;
       cuts.push({
         afterClipId: a.clip.id,
@@ -495,6 +508,56 @@ export function photoCuts(clips: Clip[]): Cut[] {
     }
   }
   return cuts;
+}
+
+/**
+ * Whether this pair has a still to give up — the whole rule behind the replace option.
+ *
+ * `replace` means the stills leave and the motion stands in their place. Two videos have no
+ * still between them: there is nothing to consume, so the option is not offered at all
+ * rather than offered and quietly doing nothing. A photo on either side does have one, so
+ * the option stands and applies to that side.
+ */
+export function cutOffersReplace(a: Clip, b: Clip): boolean {
+  return a.kind === 'photo' || b.kind === 'photo';
+}
+
+/**
+ * One frame at 30 fps — the step between the point a clip runs *to* and the last frame it
+ * actually shows. A seek to the out point itself lands on the first frame the clip no
+ * longer plays, which is one frame of the wrong footage.
+ */
+export const FRAME_STEP_MS = 33;
+
+/**
+ * Where in its source a clip's anchor frame sits: the last frame it shows on its outgoing
+ * edge, the first on its incoming one.
+ *
+ * `undefined` for a photo — it has exactly one frame, and the image itself is what is sent.
+ * That absence is the same absence every record written before transitions could involve
+ * video carries, which is why nothing has to be migrated.
+ */
+export function anchorMs(clip: Clip, edge: 'out' | 'in'): number | undefined {
+  if (clip.kind !== 'video') return undefined;
+  if (edge === 'in') return clip.trimStartMs;
+  return Math.max(clip.trimStartMs, clip.trimStartMs + clip.durationMs - FRAME_STEP_MS);
+}
+
+/** What a finished transition records about one of its two sides. */
+export function transitionSource(clip: Clip, edge: 'out' | 'in'): TransitionSource {
+  const atMs = anchorMs(clip, edge);
+  const source: TransitionSource = { clipId: clip.id, assetId: clip.assetId };
+  if (atMs !== undefined) source.atMs = atMs;
+  return source;
+}
+
+/**
+ * The clips a `replace` landing on this pair takes off the track: its stills, and only
+ * those. A video keeps its span and its trim — it is footage the user shot, not a held
+ * frame the motion is standing in for.
+ */
+export function consumedByReplace(a: Clip, b: Clip): string[] {
+  return [a, b].filter((c) => c.kind === 'photo').map((c) => c.id);
 }
 
 /** What lands on the timeline when a transition render finishes. */
@@ -546,7 +609,7 @@ export function insertTransitionClip(
   beforeClipId: string,
   generated: GeneratedTransition,
 ): Clip[] {
-  const cut = photoCuts(clips).find(
+  const cut = bridgeableCuts(clips).find(
     (c) => c.afterClipId === afterClipId && c.beforeClipId === beforeClipId,
   );
   const after = clips.find((c) => c.id === afterClipId);
@@ -563,15 +626,22 @@ export function insertTransitionClip(
 }
 
 /**
- * Put a finished replace-mode transition in the place of its two photos. The pair must
- * still form a cut — same guard, and same identity no-op, as `insertTransitionClip` — so
- * an edit made while Higgsfield rendered can never have the photos yanked out from under
+ * Put a finished replace-mode transition in the place of the pair's **stills**. The pair
+ * must still form a cut — same guard, and same identity no-op, as `insertTransitionClip` —
+ * so an edit made while Higgsfield rendered can never have the clips yanked out from under
  * it.
  *
- * The clip lands where the left photo started and both photos leave the track: the span
- * from one still to the other is now pure film, the gap between them consumed with them.
- * Everything from the right photo's old end shifts by the difference between the render's
- * length and the span it replaced, so gaps further along keep their shape.
+ * One rule covers every pair: the stills leave, the footage stays. The render therefore
+ * stands from wherever the left side stops being footage — a photo's start, a video's end —
+ * to wherever the right side starts being it, consuming the gap between them either way.
+ * Two photos both go and the clip holds their whole span, exactly as before. A photo beside
+ * a video gives up only the photo, because the video is footage the user shot rather than a
+ * held frame the motion can stand in for. Two videos have no still to give up, so this
+ * reduces to `insertTransitionClip` — and `cutOffersReplace` sees to it that the mode is
+ * never offered there in the first place.
+ *
+ * Everything from the consumed span's end shifts by the difference between the render's
+ * length and that span, so gaps further along keep their shape.
  */
 export function replacePairWithTransition(
   clips: Clip[],
@@ -579,20 +649,23 @@ export function replacePairWithTransition(
   beforeClipId: string,
   generated: GeneratedTransition,
 ): Clip[] {
-  const cut = photoCuts(clips).find(
+  const cut = bridgeableCuts(clips).find(
     (c) => c.afterClipId === afterClipId && c.beforeClipId === beforeClipId,
   );
   const after = clips.find((c) => c.id === afterClipId);
   const before = clips.find((c) => c.id === beforeClipId);
   if (!cut || !after || !before) return clips;
 
-  const clip = transitionClip(makeId('clip'), after.startMs, generated);
-  const oldEnd = before.startMs + before.durationMs;
-  const delta = clip.durationMs - (oldEnd - after.startMs);
+  const spanStart = after.kind === 'photo' ? after.startMs : after.startMs + after.durationMs;
+  const spanEnd = before.kind === 'photo' ? before.startMs + before.durationMs : before.startMs;
+  const doomed = new Set(consumedByReplace(after, before));
+
+  const clip = transitionClip(makeId('clip'), spanStart, generated);
+  const delta = clip.durationMs - (spanEnd - spanStart);
   return sortClips([
     ...clips
-      .filter((c) => c.id !== afterClipId && c.id !== beforeClipId)
-      .map((c) => (c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c)),
+      .filter((c) => !doomed.has(c.id))
+      .map((c) => (c.startMs >= spanEnd ? { ...c, startMs: c.startMs + delta } : c)),
     clip,
   ]);
 }
@@ -672,14 +745,17 @@ export function setTransitionDuration(clips: Clip[], clipId: string, durationMs:
 export type TransitionStaleness = 'fresh' | 'stale' | 'orphaned';
 
 /**
- * Whether a finished transition still matches what stands around it. `stale` means both
- * neighbours are photos but not the ones it was rendered from, so a one-tap regenerate can
- * fix it; `orphaned` means a neighbour is missing or not a photo, so there is nothing to
- * regenerate between. Never acts — the user decides what to spend.
+ * Whether a finished transition still matches what stands around it. `stale` means it no
+ * longer spans what it was rendered from, so a one-tap regenerate can fix it; `orphaned`
+ * means there is nothing left to regenerate between at all. Never acts — the user decides
+ * what to spend.
  *
- * A replace-mode transition consumed its photos, so its neighbours say nothing: it is
- * `fresh` for as long as both source assets stand in the bin (`assets`), and `orphaned` —
- * nothing left to regenerate from — once one is gone or its file is missing.
+ * An insert-mode transition is judged by its neighbours, which is what makes stale →
+ * Regenerate correct after a reorder. A replace-mode one consumed the pair's *stills*, so
+ * those say nothing and it is `fresh` for as long as their assets stand in the bin
+ * (`assets`), `orphaned` once one is gone or missing. What it does still watch is a side it
+ * did **not** consume: a video keeps its place on the track, and trimming it moves the very
+ * frame the motion was rendered from.
  */
 export function transitionStaleness(
   clips: Clip[],
@@ -690,23 +766,33 @@ export function transitionStaleness(
   const at = placed.findIndex((p) => p.clip.id === transitionClipId);
   const clip = at === -1 ? undefined : placed[at].clip;
   if (!clip?.transition) return 'orphaned';
+  const { from, to } = clip.transition;
 
   if (clip.transition.mode === 'replace') {
     const gone = (assetId: string) =>
       assets !== undefined && (!assets[assetId] || assets[assetId].missing);
-    return gone(clip.transition.from.assetId) || gone(clip.transition.to.assetId)
-      ? 'orphaned'
-      : 'fresh';
+    if (gone(from.assetId) || gone(to.assetId)) return 'orphaned';
+    return anchorMoved(clips, from, 'out') || anchorMoved(clips, to, 'in') ? 'stale' : 'fresh';
   }
 
   const left = placed[at - 1]?.clip;
   const right = placed[at + 1]?.clip;
-  if (!left || !right || left.kind !== 'photo' || right.kind !== 'photo') return 'orphaned';
+  if (!left || !right) return 'orphaned';
 
-  const { from, to } = clip.transition;
   if (left.id !== from.clipId || left.assetId !== from.assetId) return 'stale';
   if (right.id !== to.clipId || right.assetId !== to.assetId) return 'stale';
+  if (anchorMs(left, 'out') !== from.atMs || anchorMs(right, 'in') !== to.atMs) return 'stale';
   return 'fresh';
+}
+
+/**
+ * Whether the clip a source names is still on the track *and* no longer offers the frame
+ * that was rendered from it. A source whose clip is gone — every photo a replace landing
+ * consumed — has moved nowhere; it is judged by its asset instead.
+ */
+function anchorMoved(clips: Clip[], source: TransitionSource, edge: 'out' | 'in'): boolean {
+  const live = clips.find((c) => c.id === source.clipId);
+  return live !== undefined && anchorMs(live, edge) !== source.atMs;
 }
 
 export function formatTimecode(ms: number): string {

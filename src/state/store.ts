@@ -49,16 +49,19 @@ import {
 } from '../lib/film';
 import { hydrate, markMissing, readProjectFile, toProjectFile } from '../lib/project';
 import {
+  anchorMs,
   audioTrack,
+  bridgeableCuts,
   canSplitAt,
   clipAt,
+  consumedByReplace,
+  cutOffersReplace,
   insertClips,
   insertIndexAtTime,
   insertTransitionClip,
   makeId,
   moveAudio,
   photoClip,
-  photoCuts,
   placeClip,
   removeClipsClosingSpans,
   replacePairWithTransition,
@@ -69,6 +72,7 @@ import {
   sortClips,
   timelineEndMs,
   trackEndMs,
+  transitionSource,
   videoClip,
   type Cut,
   type GeneratedTransition,
@@ -699,8 +703,15 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   setCutMode(mode) {
-    const { selection } = get();
+    const s0 = get();
+    const { selection } = s0;
     if (selection.kind !== 'cut') return;
+    const a = s0.clips.find((c) => c.id === selection.afterClipId);
+    const b = s0.clips.find((c) => c.id === selection.beforeClipId);
+    if (!a || !b) return;
+    // The card removes the toggle where the pair has no still to give up; the action
+    // refuses it there too, so a stored pick can never outlive the reason it was possible.
+    if (mode === 'replace' && !cutOffersReplace(a, b)) return;
     const key = cutKey(selection.afterClipId, selection.beforeClipId);
     set((s) => ({ cutModes: { ...s.cutModes, [key]: mode } }));
   },
@@ -727,28 +738,30 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!clipA || !clipB) return null;
     const prompt =
       (s.cutPrompts[cutKey(afterClipId, beforeClipId)] ?? '').trim() || DEFAULT_TRANSITION_PROMPT;
-    const from: TransitionSource = { clipId: clipA.id, assetId: clipA.assetId };
-    const to: TransitionSource = { clipId: clipB.id, assetId: clipB.assetId };
+    // The motion runs out of the left clip and into the right one, so each side gives up the
+    // frame at the cut: a photo is that frame already, a video's is taken at its edge.
+    const from: TransitionSource = transitionSource(clipA, 'out');
+    const to: TransitionSource = transitionSource(clipB, 'in');
     const target: GenerationTarget = {
       kind: 'cut',
       afterClipId,
       beforeClipId,
       from,
       to,
-      mode: resolveCutMode(s, afterClipId, beforeClipId, mode),
+      mode: resolveCutMode(s, clipA, clipB, mode),
     };
     return launchGeneration(set, get, target, prompt, {
-      fromSrc: s.assets[clipA.assetId].src,
-      toSrc: s.assets[clipB.assetId].src,
+      from: frameOfClip(s.assets[clipA.assetId], clipA, 'out'),
+      to: frameOfClip(s.assets[clipB.assetId], clipB, 'in'),
     });
   },
 
   /**
-   * Re-render an existing transition. An insert-mode clip renders from whatever photos
-   * stand around it NOW — that is what makes stale → Regenerate correct after a reorder or
-   * a replacement — and has nothing to do when orphaned: there are no longer two photos to
-   * span. A replace-mode clip consumed its photos, so it renders from its recorded source
-   * *assets*, still in the media bin; only a missing asset stops it.
+   * Re-render an existing transition. An insert-mode clip renders from whatever stands
+   * around it NOW — that is what makes stale → Regenerate correct after a reorder or a
+   * replacement — and has nothing to do when orphaned: there is no longer a clip on each
+   * side to span. A replace-mode clip consumed the pair's stills, so those are re-rendered
+   * from their assets in the media bin; only a missing asset stops it.
    */
   regenerateTransition(clipId) {
     const s = get();
@@ -768,33 +781,40 @@ export const useEditor = create<EditorState>((set, get) => ({
       const assetB = s.assets[to.assetId];
       if (!assetA || !assetB || assetA.missing || assetB.missing) return;
       const prompt = clip.transition.prompt.trim() || DEFAULT_TRANSITION_PROMPT;
-      // The pair's clip ids are long gone; the landing only reads `replacesClipId`.
+      // A consumed still is re-rendered from its asset in the bin. A side the landing did
+      // *not* consume — a video keeps its footage — is still on the track and may have been
+      // trimmed since, so it is re-read from the clip as it stands rather than from the
+      // frame that was recorded. That is exactly what makes its Regenerate worth pressing.
+      const liveA = s.clips.find((c) => c.id === from.clipId);
+      const liveB = s.clips.find((c) => c.id === to.clipId);
       const target: GenerationTarget = {
         kind: 'cut',
         afterClipId: from.clipId,
         beforeClipId: to.clipId,
-        from,
-        to,
+        from: liveA ? transitionSource(liveA, 'out') : from,
+        to: liveB ? transitionSource(liveB, 'in') : to,
         replacesClipId: clipId,
         mode: 'replace',
       };
       launchGeneration(set, get, target, prompt, {
-        fromSrc: assetA.src,
-        toSrc: assetB.src,
+        from: liveA ? frameOfClip(assetA, liveA, 'out') : frameOfSource(assetA, from),
+        to: liveB ? frameOfClip(assetB, liveB, 'in') : frameOfSource(assetB, to),
       });
       return;
     }
 
     const left = placedClips[at - 1];
     const right = placedClips[at + 1];
-    if (!left || !right || left.kind !== 'photo' || right.kind !== 'photo') return;
+    // Any media on both sides will do, but not another transition: the chip refuses to
+    // bridge one, and regenerating between two would do exactly what the chip forbids.
+    if (!left || !right || left.transition !== undefined || right.transition !== undefined) return;
     const assetA = s.assets[left.assetId];
     const assetB = s.assets[right.assetId];
     if (!assetA || !assetB || assetA.missing || assetB.missing) return;
 
     const prompt = clip.transition.prompt.trim() || DEFAULT_TRANSITION_PROMPT;
-    const from: TransitionSource = { clipId: left.id, assetId: left.assetId };
-    const to: TransitionSource = { clipId: right.id, assetId: right.assetId };
+    const from: TransitionSource = transitionSource(left, 'out');
+    const to: TransitionSource = transitionSource(right, 'in');
     const target: GenerationTarget = {
       kind: 'cut',
       afterClipId: left.id,
@@ -804,8 +824,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       replacesClipId: clipId,
     };
     launchGeneration(set, get, target, prompt, {
-      fromSrc: assetA.src,
-      toSrc: assetB.src,
+      from: frameOfClip(assetA, left, 'out'),
+      to: frameOfClip(assetB, right, 'in'),
     });
   },
 
@@ -853,9 +873,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!s.settings?.configured) return;
     // One run at a time — the action guards itself, not just the button that offers it.
     if (s.animateQueue !== null || s.animateRun !== null) return;
-    const eligible = photoCuts(s.clips).filter((cut) =>
-      cutEligible(s, cut.afterClipId, cut.beforeClipId),
-    );
+    const eligible = animatableCuts(s);
     if (eligible.length === 0) return;
     set({ animateQueue: eligible, animateRun: { legs: [] } });
     get().advanceAnimateQueue();
@@ -1496,21 +1514,25 @@ function cutKey(afterClipId: string, beforeClipId: string): string {
 
 /**
  * The mode a cut launch stamps — and the mode its card displays. One expression for both,
- * so the card can never promise one landing and get another. An explicit `mode` (the
- * animate-all queue's forced insert) wins, then the cut's own stored pick; only the
- * *fallback* changes with the weather — replace by default, insert while an Animate all
- * run is live, because a replace landing would consume clips out from under the legs
- * still behind it.
+ * so the card can never promise one landing and get another. The pair has the final say:
+ * with no still on either side there is nothing for a replace to stand in for. Otherwise an
+ * explicit `mode` (the animate-all queue's forced insert) wins, then the cut's own stored
+ * pick; only the *fallback* changes with the weather — replace by default, insert while an
+ * Animate all run is live, because a replace landing would consume clips out from under the
+ * legs still behind it.
  */
 export function resolveCutMode(
   s: Pick<EditorState, 'cutModes' | 'animateRun'>,
-  afterClipId: string,
-  beforeClipId: string,
+  a: Clip,
+  b: Clip,
   mode?: TransitionMode,
 ): TransitionMode {
+  // Two videos have no still to stand in for, so `replace` is not a choice they can make —
+  // not from a stored pick, and not from the animate queue. It is the pair that decides.
+  if (!cutOffersReplace(a, b)) return 'insert';
   return (
     mode ??
-    s.cutModes[cutKey(afterClipId, beforeClipId)] ??
+    s.cutModes[cutKey(a.id, b.id)] ??
     (s.animateRun !== null ? 'insert' : DEFAULT_TRANSITION_MODE)
   );
 }
@@ -1520,17 +1542,17 @@ function liveGeneration(g: Generation): boolean {
 }
 
 /**
- * Whether this cut could start a generation right now: the pair still forms a photo→photo
- * cut (side by side, touching or across a gap), both sources on hand, and no job already
- * running for it. Settings are checked separately — an unconfigured app changes what the
- * UI says, not what a cut is.
+ * Whether this cut could start a generation right now: the pair still forms a cut (side by
+ * side, touching or across a gap, neither of them a landed transition), both sources on
+ * hand, and no job already running for it. Settings are checked separately — an
+ * unconfigured app changes what the UI says, not what a cut is.
  */
 export function cutEligible(
   s: Pick<EditorState, 'clips' | 'assets' | 'generations'>,
   afterClipId: string,
   beforeClipId: string,
 ): boolean {
-  const cut = photoCuts(s.clips).find(
+  const cut = bridgeableCuts(s.clips).find(
     (c) => c.afterClipId === afterClipId && c.beforeClipId === beforeClipId,
   );
   if (!cut) return false;
@@ -1550,9 +1572,22 @@ export function cutEligible(
   );
 }
 
-/** The cuts "✦ Animate all" would fill right now. */
+/**
+ * The cuts "✦ Animate all" would fill right now — photo→photo only, though a chip stands on
+ * every kind of cut.
+ *
+ * One tap must not start a paid render at every boundary of a reel of footage. Bridging
+ * video is a deliberate act, taken one cut at a time from its own chip; filling the stills
+ * between photos in one go is the thing worth a button.
+ */
 export function animatableCuts(s: Pick<EditorState, 'clips' | 'assets' | 'generations'>): Cut[] {
-  return photoCuts(s.clips).filter((cut) => cutEligible(s, cut.afterClipId, cut.beforeClipId));
+  const byId = new Map(s.clips.map((c) => [c.id, c]));
+  return bridgeableCuts(s.clips).filter(
+    (cut) =>
+      byId.get(cut.afterClipId)?.kind === 'photo' &&
+      byId.get(cut.beforeClipId)?.kind === 'photo' &&
+      cutEligible(s, cut.afterClipId, cut.beforeClipId),
+  );
 }
 
 /**
@@ -1568,7 +1603,7 @@ function prunedAfterEdit(
   cutModes: Record<string, TransitionMode>,
 ): Pick<EditorState, 'generations' | 'cutPrompts' | 'cutModes'> {
   const ids = new Set(clips.map((c) => c.id));
-  const cuts = new Set(photoCuts(clips).map((c) => cutKey(c.afterClipId, c.beforeClipId)));
+  const cuts = new Set(bridgeableCuts(clips).map((c) => cutKey(c.afterClipId, c.beforeClipId)));
 
   const bothStand = ([key]: [string, unknown]) => {
     const [a, b] = key.split(':');
@@ -1635,9 +1670,10 @@ function launchFilmSegment(set: Setter, get: () => EditorState, index: number): 
       filmSegmentIndex: index,
     },
     segment.prompt.trim() || defaultFilmPrompt(index),
+    // A film is made of photos only, so both ends are stills already.
     {
-      fromSrc: start.src,
-      toSrc: end.src,
+      from: { kind: 'photo', src: start.src },
+      to: { kind: 'photo', src: end.src },
     },
     // The leg claims the id before anything is sent, so a straggling update from the run
     // this one replaces is recognisably stale.
@@ -1701,6 +1737,44 @@ async function probeFilmSegmentDuration(
 }
 
 /**
+ * What one end of a generation is rendered from.
+ *
+ * Higgsfield animates between two stills, and where a still comes from depends on what is
+ * standing there: a photo is already one and is drawn in the webview, while a video has to
+ * give up the frame at its edge, which is pulled off the file by ffmpeg. Two shapes rather
+ * than one with optional fields, so a video source can never reach the backend without the
+ * moment it was taken from.
+ */
+type FrameSource =
+  | { kind: 'photo'; src: string }
+  | { kind: 'video'; path: string; atMs: number };
+
+/** The frame a clip on the track contributes at one of its edges. */
+function frameOfClip(asset: MediaAsset, clip: Clip, edge: 'out' | 'in'): FrameSource {
+  return clip.kind === 'video'
+    ? { kind: 'video', path: asset.path, atMs: anchorMs(clip, edge) ?? 0 }
+    : { kind: 'photo', src: asset.src };
+}
+
+/**
+ * The frame a recorded source contributes once its clip is gone — what a replace-mode
+ * regeneration has left to work from. A record written before transitions could involve
+ * video carries no `atMs`, and never needed one: its sources were photos.
+ */
+function frameOfSource(asset: MediaAsset, source: TransitionSource): FrameSource {
+  return asset.kind === 'video'
+    ? { kind: 'video', path: asset.path, atMs: source.atMs ?? 0 }
+    : { kind: 'photo', src: asset.src };
+}
+
+/** One still, whichever kind of source it came from, as the data URL the backend takes. */
+async function renderFrame(source: FrameSource): Promise<string> {
+  return source.kind === 'photo'
+    ? renderPhotoJpeg(source.src)
+    : backend.captureVideoFrame(source.path, source.atMs);
+}
+
+/**
  * Record a generation and submit it: render both frames, hand them to the backend. The
  * record lands synchronously (so callers get an id to track); the submission runs behind
  * it, and a failure to even start — which emits no backend event — marks the record failed
@@ -1711,7 +1785,7 @@ function launchGeneration(
   get: () => EditorState,
   target: GenerationTarget,
   prompt: string,
-  frames: { fromSrc: string; toSrc: string },
+  frames: { from: FrameSource; to: FrameSource },
   /**
    * Runs before the record is written, with the id it is about to get. A film leg uses it
    * to claim the id, so the leg recognises this run's updates and not the one it replaced.
@@ -1738,8 +1812,8 @@ function launchGeneration(
 
   void (async () => {
     try {
-      const startFrame = await renderPhotoJpeg(frames.fromSrc);
-      const endFrame = await renderPhotoJpeg(frames.toSrc);
+      const startFrame = await renderFrame(frames.from);
+      const endFrame = await renderFrame(frames.to);
       await backend.generateAnimation({ generationId, prompt, startFrame, endFrame, model });
     } catch (error) {
       const existing = get().generations[generationId];
@@ -1760,14 +1834,14 @@ function launchGeneration(
 }
 
 /**
- * A finished cut render: insert the transition at its cut, stand it in the place of its
- * two photos (replace mode), or — for a regeneration — swap it over the existing
+ * A finished cut render: insert the transition at its cut, stand it in the place of the
+ * pair's stills (replace mode), or — for a regeneration — swap it over the existing
  * transition clip. The timeline may have been edited mid-render, so the landing is
  * guarded: if the place is gone the clip is never put somewhere wrong, the MP4 stays in
  * the cache, and a toast says what to do instead.
  *
- * A replace landing consumes the pair, which is an edit like any other: prompts, mode
- * picks and failed records for cuts the photos took with them are pruned, and a live
+ * A replace landing consumes the pair's stills, which is an edit like any other: prompts,
+ * mode picks and failed records for cuts those clips took with them are pruned, and a live
  * render whose own clips were just consumed is cancelled — nothing is left to land it on.
  */
 function landCutResult(
@@ -1816,7 +1890,11 @@ function landCutResult(
       };
     }
 
-    const doomed = new Set([target.afterClipId, target.beforeClipId]);
+    // Only what the landing actually took off the track. A mixed pair keeps its video, and
+    // cancelling a paid render over footage that is still standing would be a real loss.
+    const after = s.clips.find((c) => c.id === target.afterClipId);
+    const before = s.clips.find((c) => c.id === target.beforeClipId);
+    const doomed = new Set(after && before ? consumedByReplace(after, before) : []);
     const generations = { ...s.generations };
     for (const [id, g] of Object.entries(generations)) {
       if (id === generation.id || g.target.kind !== 'cut' || !liveGeneration(g)) continue;
@@ -1866,7 +1944,7 @@ function landCutResult(
       title:
         target.replacesClipId !== undefined
           ? 'Transition finished, but its clip was deleted'
-          : 'Transition finished, but its photos moved',
+          : 'Transition finished, but its clips moved',
       detail: 'Tap the ✦ on the new cut to regenerate.',
     });
     return;

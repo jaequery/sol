@@ -9,7 +9,7 @@ import {
   insertIndexAt,
   layout,
   moveAudio,
-  photoCuts,
+  bridgeableCuts,
   placeClip,
   resizeAudio,
   resizeClipInList,
@@ -174,7 +174,7 @@ export function Timeline() {
   const width = Math.max(toPx(total), 320);
 
   // Chips live on the preview list so they ride along with a drag or resize in progress.
-  const cuts = useMemo(() => photoCuts(previewClips), [previewClips]);
+  const cuts = useMemo(() => bridgeableCuts(previewClips), [previewClips]);
 
   // The generation a chip should wear: a live one first, else the failed one awaiting a retry.
   const generationByCut = useMemo(() => {
@@ -1008,11 +1008,12 @@ function TimelineClip({
         ) : clip.kind === 'photo' ? (
           <img src={asset.src} alt="" draggable={false} />
         ) : fromAsset && toAsset ? (
-          // A replace-mode transition wears its two source stills — start left, end right,
-          // animating into one another — rather than a frame of the render.
+          // A replace-mode transition wears its two sources — start left, end right,
+          // animating into one another — rather than a frame of the render. A source that
+          // is footage shows as footage: an <img> pointed at an .mp4 is a broken image.
           <span className="clip__pair" data-testid={`clip-pair-${clip.id}`} aria-hidden="true">
-            <img src={fromAsset.src} alt="" draggable={false} />
-            <img src={toAsset.src} alt="" draggable={false} />
+            <SourceFace asset={fromAsset} />
+            <SourceFace asset={toAsset} />
             <i className="clip__pair-arrow">→</i>
           </span>
         ) : (
@@ -1045,10 +1046,19 @@ function TimelineClip({
   );
 }
 
+/** One half of a replace-mode transition's face: whichever source stood on that side. */
+function SourceFace({ asset }: { asset: MediaAsset }) {
+  return asset.kind === 'video' ? (
+    <video src={asset.src} muted preload="metadata" />
+  ) : (
+    <img src={asset.src} alt="" draggable={false} />
+  );
+}
+
 /**
- * The ✦ button standing on a photo→photo cut. Clicking only ever selects the cut —
- * spending money takes the big button in the inspector — and while that cut's job runs,
- * the chip itself is the progress surface (the cut has no width for an overlay to fill).
+ * The ✦ button standing on a cut. Clicking only ever selects the cut — spending money takes
+ * the big button in the inspector — and while that cut's job runs, the chip itself is the
+ * progress surface (the cut has no width for an overlay to fill).
  */
 function CutChip({
   cut,
@@ -1105,7 +1115,7 @@ function CutChip({
       // where the finished clip lands.
       title={
         offline
-          ? 'A photo on this cut has no media — re-import it first'
+          ? 'A clip on this cut has no media — re-import it first'
           : `Bridge ${nameA} and ${nameB} with an AI motion transition`
       }
       disabled={offline}

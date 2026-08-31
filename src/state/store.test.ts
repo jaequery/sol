@@ -9,7 +9,13 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEditor } from './store';
-import { audioTrack, photoClip, resizeClipInList, videoClip } from '../lib/timeline';
+import {
+  audioTrack,
+  bridgeableCuts,
+  photoClip,
+  resizeClipInList,
+  videoClip,
+} from '../lib/timeline';
 import { assembleFilm, defaultFilmPrompt, FILM_SEGMENT_DURATION_MS } from '../lib/film';
 import { DEFAULT_MODEL_ID, type GenerateInput, type GenerationUpdate } from '../lib/backend';
 import { MIN_CLIP_DURATION_MS, type Clip, type MediaAsset } from '../types/project';
@@ -40,6 +46,10 @@ vi.mock('../lib/backend', async (importOriginal) => ({
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
   cancelGeneration: (id: string) => cancelGeneration(id),
   ffmpegAvailable: async () => true,
+  // A video's anchor frame comes off ffmpeg on the Rust side; the stub keeps both the file
+  // it was taken from and the moment it was taken at, which is the whole thing under test.
+  captureVideoFrame: async (path: string, atMs: number) =>
+    `data:image/jpeg;base64,grab-of-${path}@${atMs}`,
   exportTimeline: vi.fn(),
   onGenerationUpdate: async () => () => {},
   onExportProgress: async () => () => {},
@@ -579,7 +589,7 @@ describe('replace-mode cut transitions', () => {
     expect(Object.keys(s.assets).sort()).toEqual(assetsBefore);
     expect(s.toasts.at(-1)).toMatchObject({
       tone: 'error',
-      title: 'Transition finished, but its photos moved',
+      title: 'Transition finished, but its clips moved',
     });
   });
 
@@ -633,6 +643,163 @@ describe('replace-mode cut transitions', () => {
       Object.values(useEditor.getState().generations).some((g) => g.status === 'queued'),
     ).toBe(false);
     expect(generateAnimation).not.toHaveBeenCalled();
+  });
+});
+
+describe('transitions that involve video', () => {
+  /** A video asset in the bin, with a real path for ffmpeg to be pointed at. */
+  function videoAsset(id: string): MediaAsset {
+    return {
+      id,
+      name: `${id}.mp4`,
+      kind: 'video',
+      path: `/footage/${id}.mp4`,
+      src: `asset:///footage/${id}.mp4`,
+      sizeBytes: 4096,
+      durationMs: 12_000,
+    };
+  }
+
+  function bin(...assets: MediaAsset[]): void {
+    useEditor.setState({
+      assets: { ...useEditor.getState().assets, ...Object.fromEntries(assets.map((a) => [a.id, a])) },
+    });
+  }
+
+  function succeedCut(id: string, outputPath = '/cache/mixed.mp4') {
+    emit({ generationId: id, status: 'succeeded', progress: 1, elapsedSecs: 60, slow: false, outputPath });
+  }
+
+  it('animates out of a video and into a photo, sending the frame at the cut', async () => {
+    bin(videoAsset('asset_v'));
+    // Trimmed to run 1000–4000 inside its source, so the motion leaves on the frame at
+    // 4000 less one step — not at the head of the file, and not past what the clip shows.
+    const v = { ...videoClip({ id: 'asset_v', name: 'asset_v.mp4' }, 3000, 0), trimStartMs: 1000 };
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 3000);
+    useEditor.setState({ clips: [v, b] });
+
+    const id = useEditor.getState().startCutGeneration(v.id, b.id);
+    expect(id).toBeTruthy();
+    await submitted(1);
+
+    const sent = generateAnimation.mock.calls[0][0];
+    // The video side is grabbed off the file by path; the photo side is drawn as ever.
+    expect(sent.startFrame).toBe('data:image/jpeg;base64,grab-of-/footage/asset_v.mp4@3967');
+    expect(sent.endFrame).toBe('data:image/jpeg;base64,still-of-asset:///photos/asset_b.jpg');
+
+    // And the moment is recorded, so the render can be repeated after the photo is gone.
+    const target = useEditor.getState().generations[id!].target;
+    expect(target).toMatchObject({
+      kind: 'cut',
+      from: { clipId: v.id, assetId: 'asset_v', atMs: 3967 },
+      to: { clipId: b.id, assetId: 'asset_b' },
+    });
+    expect((target as { to: { atMs?: number } }).to.atMs).toBeUndefined();
+  });
+
+  it('animates into a video from its first shown frame, not from the head of the file', async () => {
+    bin(videoAsset('asset_v'));
+    const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 2000, 0);
+    const v = { ...videoClip({ id: 'asset_v', name: 'asset_v.mp4' }, 3000, 2000), trimStartMs: 2500 };
+    useEditor.setState({ clips: [a, v] });
+
+    useEditor.getState().startCutGeneration(a.id, v.id);
+    await submitted(1);
+
+    const sent = generateAnimation.mock.calls[0][0];
+    expect(sent.startFrame).toBe('data:image/jpeg;base64,still-of-asset:///photos/asset_a.jpg');
+    expect(sent.endFrame).toBe('data:image/jpeg;base64,grab-of-/footage/asset_v.mp4@2500');
+  });
+
+  it('a replace landing on a mixed pair takes the photo and leaves the footage alone', async () => {
+    bin(videoAsset('asset_v'));
+    const v = { ...videoClip({ id: 'asset_v', name: 'asset_v.mp4' }, 2000, 0), trimStartMs: 800 };
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 2000);
+    useEditor.setState({ clips: [v, b] });
+
+    const id = useEditor.getState().startCutGeneration(v.id, b.id, 'replace');
+    await submitted(1);
+    succeedCut(id!);
+
+    const s = useEditor.getState();
+    // The video is still there, whole, with its trim — only the still gave up its span.
+    expect(s.clips.map((c) => [c.id, c.startMs, c.durationMs])).toEqual([
+      [v.id, 0, 2000],
+      [s.clips[1].id, 2000, 5000],
+    ]);
+    expect(s.clips[0].trimStartMs).toBe(800);
+    expect(s.clips[1].transition).toMatchObject({ mode: 'replace' });
+    // And the photo is back in the bin to re-drag, exactly as a replaced pair leaves both.
+    expect(s.assets.asset_b).toBeDefined();
+  });
+
+  it('a video-to-video cut cannot be told to replace — there is no still to stand in for', async () => {
+    bin(videoAsset('asset_v1'), videoAsset('asset_v2'));
+    const v1 = videoClip({ id: 'asset_v1', name: 'asset_v1.mp4' }, 2000, 0);
+    const v2 = videoClip({ id: 'asset_v2', name: 'asset_v2.mp4' }, 3000, 2000);
+    useEditor.setState({
+      clips: [v1, v2],
+      selection: { kind: 'cut', afterClipId: v1.id, beforeClipId: v2.id },
+    });
+
+    // The action refuses the pick, not just the card that offers it.
+    useEditor.getState().setCutMode('replace');
+    expect(useEditor.getState().cutModes[`${v1.id}:${v2.id}`]).toBeUndefined();
+
+    // Even a mode forced past the store lands as an insert: both videos keep their spans.
+    const id = useEditor.getState().startCutGeneration(v1.id, v2.id, 'replace');
+    await submitted(1);
+    expect(useEditor.getState().generations[id!].target).toMatchObject({ mode: 'insert' });
+
+    succeedCut(id!, '/cache/between.mp4');
+    const s = useEditor.getState();
+    expect(s.clips.map((c) => [c.id, c.startMs])).toEqual([
+      [v1.id, 0],
+      [s.clips[1].id, 2000],
+      [v2.id, 7000],
+    ]);
+  });
+
+  it('regenerating a mixed replace re-reads the video as it stands now, not as it was', async () => {
+    bin(videoAsset('asset_v'));
+    const v = videoClip({ id: 'asset_v', name: 'asset_v.mp4' }, 4000, 0);
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 4000);
+    useEditor.setState({ clips: [v, b] });
+
+    const id = useEditor.getState().startCutGeneration(v.id, b.id, 'replace');
+    await submitted(1);
+    succeedCut(id!);
+    const landed = useEditor.getState().clips.find((c) => c.transition)!;
+
+    // The video the landing left alone is trimmed shorter, so the frame the motion was
+    // rendered from is no longer the one it runs out of.
+    useEditor.setState({
+      clips: useEditor.getState().clips.map((c) => (c.id === v.id ? { ...c, durationMs: 2000 } : c)),
+    });
+
+    generateAnimation.mockClear();
+    useEditor.getState().regenerateTransition(landed.id);
+    await submitted(1);
+    const sent = generateAnimation.mock.calls[0][0];
+    expect(sent.startFrame).toBe('data:image/jpeg;base64,grab-of-/footage/asset_v.mp4@1967');
+  });
+
+  it('leaves video cuts out of Animate all, however many chips stand on them', () => {
+    bin(videoAsset('asset_v1'), videoAsset('asset_v2'));
+    const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 2000, 0);
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 2000, 2000);
+    const v1 = videoClip({ id: 'asset_v1', name: 'asset_v1.mp4' }, 2000, 4000);
+    const v2 = videoClip({ id: 'asset_v2', name: 'asset_v2.mp4' }, 2000, 6000);
+    useEditor.setState({ clips: [a, b, v1, v2] });
+
+    // Four clips, three cuts, all of them chipped — but one tap must not spend on footage.
+    expect(bridgeableCuts(useEditor.getState().clips)).toHaveLength(3);
+    useEditor.getState().animateAll();
+    expect(useEditor.getState().animateRun!.legs).toHaveLength(1);
+    expect(useEditor.getState().animateRun!.legs[0]).toMatchObject({
+      afterClipId: a.id,
+      beforeClipId: b.id,
+    });
   });
 });
 
@@ -996,7 +1163,7 @@ describe('the animate-all run and its terminal collapse', () => {
 
     succeed(g1, '/cache/t1.mp4');
     expect(useEditor.getState().toasts.at(-1)).toMatchObject({
-      title: 'Transition finished, but its photos moved',
+      title: 'Transition finished, but its clips moved',
     });
 
     succeed(g2, '/cache/t2.mp4');

@@ -295,7 +295,12 @@ function readTransitionSource(raw: unknown): TransitionSource | null {
   const clipId = str(raw.clipId);
   const assetId = str(raw.assetId);
   if (!clipId || !assetId) return null;
-  return { clipId, assetId };
+  const source: TransitionSource = { clipId, assetId };
+  // Videos only, and only since transitions could involve them: a record without it is a
+  // photo side, or one written before there was anything else to be.
+  const atMs = num(raw.atMs);
+  if (atMs !== null && atMs >= 0) source.atMs = Math.round(atMs);
+  return source;
 }
 
 function readAudioTrack(raw: unknown): AudioTrack | null {

@@ -191,6 +191,69 @@ pub fn video_filter(spec: &ExportSpec) -> String {
     )
 }
 
+/// The size of an anchor still handed to Higgsfield. Matches `FRAME_WIDTH`/`FRAME_HEIGHT`
+/// in `src/lib/frames.ts`, so a frame grabbed out of a video and one drawn from a photo
+/// reach the API as the same shape.
+pub const STILL_WIDTH: u32 = 1280;
+pub const STILL_HEIGHT: u32 = 720;
+
+/// How far back from a source's end a tail anchor is taken.
+///
+/// It has to be a margin rather than one frame: ffmpeg's accurate seek discards frames
+/// whose timestamp falls *before* the target, so landing between the last frame's start and
+/// the end of the file decodes nothing at all — and nothing here knows the source's frame
+/// rate to aim at its last frame exactly. A tenth of a second clears the final frame at
+/// every rate down to 12 fps, and three frames of slack costs a motion anchor nothing.
+pub const TAIL_MARGIN_SECS: f32 = 0.1;
+
+/// Where a still request may actually seek to: never negative, and never past the last
+/// frame there is. `duration_secs` is `None` when the source could not be probed, in which
+/// case the request stands as asked and ffmpeg decides.
+///
+/// This is the whole reason the clamp lives on this side: the editor's idea of a clip's
+/// length is provisional until the file has been probed, so only the file itself knows
+/// where its last frame is.
+pub fn still_seek_secs(at_ms: u32, duration_secs: Option<f32>) -> f32 {
+    let asked = at_ms as f32 / 1000.0;
+    let capped = match duration_secs {
+        Some(d) if d.is_finite() && d > 0.0 => asked.min(d - TAIL_MARGIN_SECS),
+        _ => asked,
+    };
+    capped.max(0.0)
+}
+
+/// ffmpeg argv for pulling one frame out of `path` at `at_secs`, cover-cropped to
+/// `width`x`height` and written to stdout as a JPEG.
+///
+/// The crop matches `renderPhotoJpeg` in `src/lib/frames.ts` rather than the export's
+/// letterbox, because these two frames are the *ends of one motion* — Higgsfield is given
+/// a still from each side and they have to be framed alike. `-ss` before `-i` seeks the
+/// input, which ffmpeg still resolves to the exact timestamp, and autorotation applies the
+/// display matrix, so a phone clip's anchor stands the same way up as its export does.
+pub fn still_args(path: &Path, at_secs: f32, width: u32, height: u32) -> Vec<String> {
+    vec![
+        "-hide_banner".into(),
+        "-loglevel".into(),
+        "error".into(),
+        "-ss".into(),
+        num(at_secs),
+        "-i".into(),
+        path.display().to_string(),
+        "-frames:v".into(),
+        "1".into(),
+        "-vf".into(),
+        format!(
+            "scale={width}:{height}:force_original_aspect_ratio=increase,\
+             crop={width}:{height},setsar=1"
+        ),
+        "-q:v".into(),
+        "2".into(),
+        "-f".into(),
+        "mjpeg".into(),
+        "-".into(),
+    ]
+}
+
 /// Full ffmpeg argv for normalising one clip into a standalone MP4 part.
 ///
 /// Every part gets a stereo 48 kHz AAC track — silent for photos and for videos that have
@@ -474,6 +537,84 @@ impl Renderer {
             .unwrap_or(false)
     }
 
+    /// The source's real length in seconds, read with ffprobe. `None` whenever ffprobe
+    /// cannot say — a missing binary, an unreadable container — so the caller falls back to
+    /// asking for the timestamp it was given rather than refusing outright.
+    pub async fn duration_secs(&self, path: &Path) -> Option<f32> {
+        let output = Command::new(&self.ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(path)
+            .kill_on_drop(true)
+            .output()
+            .await
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|d| d.is_finite() && *d > 0.0)
+    }
+
+    /// One frame of `path` as JPEG bytes — the anchor a video side of a transition is
+    /// animated from or to.
+    ///
+    /// The request is clamped against the file's own duration, because the editor's idea of
+    /// a clip's length is provisional until its probe lands: asking for the tail frame of a
+    /// video that turned out to be shorter must give the last frame there is, not nothing.
+    pub async fn capture_frame(
+        &self,
+        path: &Path,
+        at_ms: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<u8>> {
+        // No `is_available` preflight here, unlike `export`: that one guards a long
+        // multi-step job whose failure halfway through would waste minutes. This is a
+        // single call, and a missing binary already surfaces as `FfmpegMissing` through
+        // `From<io::Error>` — a second process spawned to ask first would buy nothing.
+        if !path.exists() {
+            return Err(RenderError::SourceMissing {
+                clip: file_name(path),
+                path: path.display().to_string(),
+            });
+        }
+
+        let at_secs = still_seek_secs(at_ms, self.duration_secs(path).await);
+        let args = still_args(path, at_secs, width, height);
+        let output = Command::new(&self.ffmpeg)
+            .args(&args)
+            .kill_on_drop(true)
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            return Err(RenderError::Ffmpeg {
+                stage: "grabbing a frame".into(),
+                code: output.status.code().unwrap_or(-1),
+                stderr: tail(&String::from_utf8_lossy(&output.stderr), 20),
+            });
+        }
+        if output.stdout.is_empty() {
+            // ffmpeg reports success having decoded nothing when the seek lands in a hole.
+            return Err(RenderError::Ffmpeg {
+                stage: "grabbing a frame".into(),
+                code: 0,
+                stderr: format!("no frame at {at_secs}s in {}", file_name(path)),
+            });
+        }
+        Ok(output.stdout)
+    }
+
     async fn has_audio(&self, path: &Path) -> bool {
         let output = Command::new(&self.ffprobe)
             .args([
@@ -618,6 +759,13 @@ impl Renderer {
     }
 }
 
+/// The bare file name, for an error a human can place without reading a whole path.
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
 /// ffmpeg's stderr is enormous; the last few lines carry the actual reason.
 fn tail(s: &str, lines: usize) -> String {
     let all: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -627,6 +775,38 @@ fn tail(s: &str, lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_still_request_never_seeks_past_the_last_frame_there_is() {
+        // The editor asks for a video's tail at `trimStart + duration`, and that length is
+        // provisional until the file has been probed — so a 12 s ask against a 4 s file
+        // must land on the last frame, not in the void after it.
+        assert_eq!(still_seek_secs(12_000, Some(4.0)), 4.0 - TAIL_MARGIN_SECS);
+        // Comfortably inside the file: asked for is given.
+        assert_eq!(still_seek_secs(1500, Some(4.0)), 1.5);
+        // Nothing known about the file: ffmpeg decides, we do not invent a cap.
+        assert_eq!(still_seek_secs(12_000, None), 12.0);
+        // A zero-length or nonsense probe is the same as no probe.
+        assert_eq!(still_seek_secs(2000, Some(0.0)), 2.0);
+        // The head of a source that is shorter than one frame still cannot go negative.
+        assert_eq!(still_seek_secs(0, Some(0.01)), 0.0);
+    }
+
+    #[test]
+    fn a_still_is_cover_cropped_to_the_anchor_size_and_written_to_stdout() {
+        let args = still_args(Path::new("/m/surf.mp4"), 2.5, STILL_WIDTH, STILL_HEIGHT);
+        let line = args.join(" ");
+        // Seeking before -i, so ffmpeg seeks the input rather than decoding up to the mark.
+        assert!(line.contains("-ss 2.5 -i /m/surf.mp4"), "{line}");
+        assert!(line.contains("-frames:v 1"), "{line}");
+        // Cover-cropped like a photo still, NOT letterboxed like the export: the two ends
+        // of one motion have to be framed alike.
+        assert!(
+            line.contains("scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720"),
+            "{line}"
+        );
+        assert!(line.ends_with("-f mjpeg -"), "{line}");
+    }
 
     fn spec() -> ExportSpec {
         ExportSpec {

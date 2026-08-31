@@ -2,7 +2,9 @@
 //! that mixes them, and probe the resulting MP4. Skipped (not failed) where ffmpeg is
 //! absent, so the suite still runs on a bare machine.
 
-use solcut_render::{AudioTrack, ExportClip, ExportSpec, Renderer, Source};
+use solcut_render::{
+    AudioTrack, ExportClip, ExportSpec, Renderer, Source, STILL_HEIGHT, STILL_WIDTH,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -501,4 +503,71 @@ async fn exports_an_assembled_three_photo_film() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The anchor a video side of an AI transition is animated from or to. This is the whole
+/// reason transitions can involve video at all: a photo is already a still, a video is not,
+/// and the frame has to come off the same decoder the export uses so the anchor and the
+/// footage beside it agree on rotation and pixel aspect.
+#[tokio::test]
+async fn grabs_one_anchor_still_out_of_a_video() {
+    if !ffmpeg_present() {
+        eprintln!("skipping: ffmpeg not on PATH");
+        return;
+    }
+    let dir = workdir("anchor");
+    let video = make_video(&dir);
+
+    let jpeg = Renderer::default()
+        .capture_frame(&video, 1500, STILL_WIDTH, STILL_HEIGHT)
+        .await
+        .expect("capture a frame");
+
+    // A real JPEG: SOI marker, and enough bytes to be a picture rather than a header.
+    assert_eq!(&jpeg[..2], &[0xff, 0xd8], "not a JPEG");
+    assert!(jpeg.len() > 2000, "suspiciously small: {} bytes", jpeg.len());
+
+    // Cover-cropped to the anchor size, so it arrives at Higgsfield shaped like a photo
+    // still — the 640x480 source is scaled up and cropped, never letterboxed.
+    let out = dir.join("still.jpg");
+    std::fs::write(&out, &jpeg).expect("write still");
+    assert_eq!(probe(&out, "stream=width,height"), "1280\n720");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The tail anchor is asked for at the clip's trimmed-out point, and the editor's idea of a
+/// clip's length is provisional until its probe lands — so an ask past the real end has to
+/// come back with the last frame there is rather than nothing at all.
+#[tokio::test]
+async fn an_anchor_asked_for_past_the_end_still_lands_on_the_last_frame() {
+    if !ffmpeg_present() {
+        eprintln!("skipping: ffmpeg not on PATH");
+        return;
+    }
+    let dir = workdir("anchor-past-end");
+    let video = make_video(&dir); // 3 s
+
+    let jpeg = Renderer::default()
+        .capture_frame(&video, 30_000, STILL_WIDTH, STILL_HEIGHT)
+        .await
+        .expect("capture the tail frame");
+    assert_eq!(&jpeg[..2], &[0xff, 0xd8], "not a JPEG");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A source that has gone missing is named, exactly as an export names it — the same
+/// failure a user can actually act on.
+#[tokio::test]
+async fn a_missing_video_is_named_when_its_anchor_is_asked_for() {
+    if !ffmpeg_present() {
+        eprintln!("skipping: ffmpeg not on PATH");
+        return;
+    }
+    let err = Renderer::default()
+        .capture_frame(Path::new("/nope/gone.mp4"), 0, STILL_WIDTH, STILL_HEIGHT)
+        .await
+        .expect_err("a missing file cannot be captured");
+    assert!(err.to_string().contains("gone.mp4"), "{err}");
 }
