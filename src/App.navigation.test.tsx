@@ -26,6 +26,8 @@ const STORED_SETTINGS = {
   configured: true,
   cliPath: '/usr/local/bin/higgsfield',
   customModel: '',
+  hasApiKey: false,
+  apiKeyIdHint: '',
 };
 let storedSettings = { ...STORED_SETTINGS };
 /** Mutable so the browser-only branches are reachable, unlike the hard `true` next door. */
@@ -41,6 +43,7 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   getSettings: async () => storedSettings,
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
+  testApiKey: vi.fn(),
   importPaths: vi.fn(),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
   cancelGeneration: vi.fn(async () => {}),
@@ -562,9 +565,11 @@ describe('settings dialog', () => {
     await mount();
     await user.click(screen.getByRole('button', { name: 'Settings' }));
 
-    const field = screen.getByLabelText('Custom model');
-    expect(field).toHaveFocus();
+    // The credential is the first thing the dialog asks for, as it was before generation
+    // moved to the CLI — the custom model below it is the escape hatch, not the headline.
+    expect(screen.getByLabelText('API key ID')).toHaveFocus();
 
+    const field = screen.getByLabelText('Custom model');
     await user.type(field, 'wan2_7');
     expect(field).toHaveValue('wan2_7');
 

@@ -7,13 +7,20 @@ import { useEditor } from '../state/store';
  * connection lives (entered from the title bar's Settings button, or any
  * "Connect Higgsfield" callout).
  *
- * Authentication belongs to the Higgsfield CLI (`higgsfield auth login`), billed to the
- * account's subscription workspace — the app holds no credential at all. So this dialog
- * is small: it says whether the CLI was found, shows the three setup commands only while
- * it is missing, proves the connection on demand, and stores the one thing the app still
- * keeps — a custom model id for the Model picker's escape-hatch entry.
+ * It holds three things, and they are deliberately separate:
  *
- * The form mounts fresh every time the dialog opens, so its field is seeded from the
+ * 1. **The CLI**, which is what actually renders — found or not, proved by
+ *    **Test connection**. Authentication is the CLI's own (`higgsfield auth login`),
+ *    billed to the account's subscription workspace.
+ * 2. **The API key** — the Cloud credential from `cloud.higgsfield.ai`. A different
+ *    credential, a different host and a different balance: the CLI has no notion of an
+ *    API key at all, so this one is *not* what generates. It is kept here so it can be
+ *    set in one place and proved with **Test key**, which is why that control sits beside
+ *    the fields rather than in the footer — a stale key must never make a machine with a
+ *    working CLI report itself disconnected.
+ * 3. **A custom model id** for the Model picker's escape-hatch entry.
+ *
+ * The form mounts fresh every time the dialog opens, so its fields are seeded from the
  * settings that are stored *now* rather than from whatever had loaded at first render.
  */
 export function SettingsDialog() {
@@ -28,15 +35,46 @@ function ConnectionForm() {
   const close = useEditor((s) => s.closeSettings);
   const save = useEditor((s) => s.saveSettings);
   const test = useEditor((s) => s.testConnection);
+  const testKey = useEditor((s) => s.testApiKey);
 
+  // The credential boxes always start empty; blank means "keep what is stored", so the
+  // secret never has to come back to this window to survive a save.
+  const [apiKeyId, setApiKeyId] = useState('');
+  const [apiKeySecret, setApiKeySecret] = useState('');
+  // Blank-means-keep would otherwise make a stored key permanent. Forget is the way out,
+  // and typing disarms it, so a forget and a new key can never both be in flight.
+  const [forgetApiKey, setForgetApiKey] = useState(false);
   const [customModel, setCustomModel] = useState(settings?.customModel ?? '');
+  // The check is a network round trip with a 30 s budget, so the button has to say it is
+  // working — otherwise a slow answer is indistinguishable from a dead control.
+  const [checking, setChecking] = useState(false);
+
+  const stored = settings?.hasApiKey ?? false;
+  const input = { apiKeyId, apiKeySecret, forgetApiKey, customModel };
+
+  function typeKeyId(value: string) {
+    setApiKeyId(value);
+    setForgetApiKey(false);
+  }
+  function typeKeySecret(value: string) {
+    setApiKeySecret(value);
+    setForgetApiKey(false);
+  }
+  async function checkKey() {
+    setChecking(true);
+    try {
+      await testKey(input);
+    } finally {
+      setChecking(false);
+    }
+  }
 
   return (
     <div className="scrim" role="dialog" aria-modal="true" aria-label="Settings">
       <div className="modal">
         <div className="modal__head">Settings</div>
-        {/* The body is the Higgsfield connection — its hints name the CLI themselves,
-            so the head stays a plain "Settings" with no second, redundant heading. */}
+        {/* The body's own hints name the CLI and the key, so the head stays a plain
+            "Settings" with no second, redundant heading. */}
         <div className="modal__body">
           {settings?.configured ? (
             <p className="hint" style={{ marginTop: 0 }}>
@@ -60,11 +98,75 @@ function ConnectionForm() {
           )}
 
           <div className="field">
+            <label htmlFor="api-key-id">API key ID</label>
+            <input
+              id="api-key-id"
+              type="password"
+              autoComplete="off"
+              autoFocus
+              value={apiKeyId}
+              placeholder={
+                forgetApiKey ? '' : settings?.apiKeyIdHint || 'from cloud.higgsfield.ai'
+              }
+              onChange={(e) => typeKeyId(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="api-key-secret">API key secret</label>
+            <input
+              id="api-key-secret"
+              type="password"
+              autoComplete="off"
+              value={apiKeySecret}
+              placeholder={
+                forgetApiKey || !stored ? 'the other half of the key' : '•••• stored'
+              }
+              onChange={(e) => typeKeySecret(e.target.value)}
+            />
+            <p className="hint" style={{ marginBottom: 0 }}>
+              {forgetApiKey ? (
+                <>The stored key is removed on <b>Save</b>. Type a new one to keep a key.</>
+              ) : (
+                <>
+                  Optional, and separate from the CLI above — a Cloud credential from
+                  cloud.higgsfield.ai, in two halves. It is <b>not</b> what renders, so it
+                  is kept and proved here, nothing more. Both halves are held by the
+                  desktop backend in an owner-only file that never reaches this window;
+                  pasting the whole <code>key_id:key_secret</code> string into the ID box
+                  works too.
+                </>
+              )}
+            </p>
+            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 7 }}>
+              {stored && !forgetApiKey && (
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  onClick={() => {
+                    setApiKeyId('');
+                    setApiKeySecret('');
+                    setForgetApiKey(true);
+                  }}
+                >
+                  Forget key
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn"
+                disabled={checking}
+                onClick={() => void checkKey()}
+              >
+                {checking ? 'Testing…' : 'Test key'}
+              </button>
+            </div>
+          </div>
+
+          <div className="field">
             <label htmlFor="custom-model">Custom model</label>
             <input
               id="custom-model"
               autoComplete="off"
-              autoFocus
               value={customModel}
               placeholder="a model id from `higgsfield model list --video`"
               onChange={(e) => setCustomModel(e.target.value)}
@@ -78,7 +180,7 @@ function ConnectionForm() {
 
           {message && (
             <div className={message.ok ? 'okbox' : 'errbox'} role="status">
-              <b>{message.ok ? 'Connection OK' : 'Could not connect'}</b>
+              <b>{message.title ?? (message.ok ? 'Connection OK' : 'Could not connect')}</b>
               {message.text}
             </div>
           )}
@@ -90,7 +192,7 @@ function ConnectionForm() {
           <button type="button" className="btn" onClick={() => void test()}>
             Test connection
           </button>
-          <button type="button" className="btn btn--primary" onClick={() => void save({ customModel })}>
+          <button type="button" className="btn btn--primary" onClick={() => void save(input)}>
             Save
           </button>
         </div>

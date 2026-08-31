@@ -91,7 +91,7 @@ fn request(dir: &Path) -> GenerateRequest {
 async fn a_job_is_created_polled_and_its_result_downloaded() {
     let mp4 = b"not really an mp4, but the bytes that came back".to_vec();
     let served = mp4.clone();
-    let server = MockServer::start(move |_n| Response::bytes(200, served.clone()));
+    let server = MockServer::start(move |_req, _n| Response::bytes(200, served.clone()));
     let video_url = format!("{}/out/video.mp4", server.base_url());
 
     let stub = StubCli::new("happy");
