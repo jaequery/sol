@@ -76,8 +76,9 @@ higgsfield auth login
 higgsfield workspace set <workspace_id>
 ```
 
-**✦ Connect Higgsfield** in the title bar shows whether the CLI was found (looking on
-`PATH` and in the usual npm/Homebrew prefixes), and **Test connection** runs one free,
+**Settings** in the title bar opens the Higgsfield connection, which shows whether the
+CLI was found (looking on `PATH` and in the usual npm/Homebrew prefixes), and where
+**Test connection** runs one free,
 read-only CLI call — `higgsfield model list --video` — which proves the binary, the login
 and the billing workspace in one go, and repeats the CLI's own fix when one is missing.
 
