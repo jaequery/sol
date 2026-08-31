@@ -130,10 +130,23 @@ describe('title bar', () => {
     await user.click(screen.getByRole('button', { name: 'Settings' }));
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  });
 
-    vi.mocked(backend.pickMediaFiles).mockResolvedValue([]);
-    await user.click(screen.getByRole('button', { name: 'Import' }));
-    expect(backend.pickMediaFiles).toHaveBeenCalled();
+  it('offers no Import of its own — media intake belongs to the bin', async () => {
+    await mount();
+
+    // Scoped to the bar and case-blind on purpose: the bin's own affordances are named
+    // "Import media" and "import", and this must not start passing by that coincidence.
+    const bar = document.querySelector('.titlebar') as HTMLElement;
+    // Proves the scope is the real bar and not an empty element, which would make the
+    // assertion below pass for the wrong reason.
+    expect(within(bar).getByRole('button', { name: 'Settings' })).toBeInTheDocument();
+    expect(
+      within(bar).queryByRole('button', { name: /import/i }),
+      'the bin head keeps a + Import whatever the bin holds — a second copy up here was the redundancy',
+    ).toBeNull();
+
+    expect(screen.getByRole('button', { name: 'Import media' })).toBeInTheDocument();
   });
 
   it('Export MP4 is dark on an empty project and live once there is a clip', async () => {
