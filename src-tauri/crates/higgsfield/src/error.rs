@@ -47,7 +47,9 @@ impl HiggsfieldError {
                 // phrases matched here are the CLI's own hints for an expired login and
                 // a missing billing workspace.
                 let lower = message.to_ascii_lowercase();
-                if lower.contains("auth login") || lower.contains("not authenticated") {
+                if transient(&lower) {
+                    "Higgsfield is unavailable"
+                } else if lower.contains("auth login") || lower.contains("not authenticated") {
                     "Not signed in"
                 } else if lower.contains("workspace") {
                     "No billing workspace"
@@ -67,14 +69,49 @@ impl HiggsfieldError {
     /// Whether the same request is worth sending again unchanged.
     ///
     /// A CLI refusal (bad model id, not signed in, no credits) will refuse identically
-    /// next time; a timeout or a network blip is worth another go.
+    /// next time; a timeout, a network blip, or an upstream wobble the CLI is only
+    /// relaying — a 5xx, a rate limit — is worth another go.
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Timeout { .. } | Self::Transport(_) => true,
             Self::Http { status, .. } => *status >= 500,
+            Self::Cli { message } => transient(&message.to_ascii_lowercase()),
             _ => false,
         }
     }
+}
+
+/// Whether a CLI refusal is really the API's own bad day, quoted back.
+///
+/// The CLI prints the upstream status line verbatim — "Higgsfield API error (HTTP 503).
+/// request failed with status 503 Service Unavailable" — so a status of 429 or 5xx read
+/// out of that text says the request was never judged on its merits. Codes are only
+/// trusted next to `http`/`status`, so a job id that happens to contain 503 is not
+/// mistaken for one.
+fn transient(lower: &str) -> bool {
+    const PHRASES: &[&str] = &[
+        "service unavailable",
+        "bad gateway",
+        "gateway timeout",
+        "internal server error",
+        "too many requests",
+        "rate limit",
+        "try again later",
+        "temporarily unavailable",
+        "overloaded",
+    ];
+    if PHRASES.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    ["http ", "status ", "http/1.1 ", "code "]
+        .iter()
+        .flat_map(|marker| {
+            lower
+                .match_indices(marker)
+                .map(move |(at, _)| &lower[at + marker.len()..])
+        })
+        .filter_map(|rest| rest.get(..3).and_then(|code| code.parse::<u16>().ok()))
+        .any(|code| code == 429 || (500..600).contains(&code))
 }
 
 impl From<reqwest::Error> for HiggsfieldError {
@@ -137,6 +174,47 @@ mod tests {
     #[test]
     fn messages_without_a_url_are_left_alone() {
         assert_eq!(strip_url("connection closed"), "connection closed");
+    }
+
+    #[test]
+    fn an_upstream_wobble_the_cli_relays_is_worth_another_go() {
+        let err = HiggsfieldError::Cli {
+            message: "Error: Higgsfield API error (HTTP 503). request failed with status 503 \
+                      Service Unavailable"
+                .into(),
+        };
+        assert!(
+            err.is_retryable(),
+            "a 503 is the API's bad day, not the request's"
+        );
+        assert_eq!(err.title(), "Higgsfield is unavailable");
+
+        for message in [
+            "Error: Higgsfield API error (HTTP 429). too many requests",
+            "Error: rate limit exceeded, try again later",
+            "Error: bad gateway",
+        ] {
+            let err = HiggsfieldError::Cli {
+                message: message.into(),
+            };
+            assert!(err.is_retryable(), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_the_same_request_would_earn_again_is_not_retryable() {
+        for message in [
+            "Error: Session expired. Hint: Re-run `higgsfield auth login`.",
+            "Error: unknown model id `seedance_9_9`",
+            "Error: no billing workspace selected",
+            // A job id is not a status code, however 503-shaped it looks.
+            "Error: job 503503-1234 was rejected: the prompt is empty",
+        ] {
+            let err = HiggsfieldError::Cli {
+                message: message.into(),
+            };
+            assert!(!err.is_retryable(), "{message}");
+        }
     }
 
     #[test]

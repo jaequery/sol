@@ -134,9 +134,10 @@ describe('title bar', () => {
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
-    await user.click(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })[0]);
-    expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Close the film panel' }));
+    expect(
+      screen.queryAllByRole('button', { name: '✦ New film from 3 photos' }),
+      'the film panel is opened from the empty timeline, not from the bar',
+    ).toHaveLength(1);
 
     vi.mocked(backend.pickMediaFiles).mockResolvedValue([]);
     await user.click(screen.getByRole('button', { name: 'Import' }));
@@ -350,6 +351,124 @@ describe('timeline toolbar', () => {
   });
 });
 
+// ----------------------------------------------------------------- timeline seeking
+
+// The harness zoom is 100 px/s — one pixel is ten milliseconds — so a click at
+// clientX N must land the playhead at exactly N × 10 ms (jsdom rects sit at zero).
+
+describe('click-to-seek', () => {
+  it('clicking the track seeks the playhead to the clicked time', async () => {
+    await mount();
+    await dropPhotoPair();
+    const before = useEditor.getState().selection;
+
+    // The bare track below the clips, and the open stretch between them, both cue.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('timeline-track'), { clientX: 100 });
+    });
+    expect(useEditor.getState().playheadMs).toBe(1000);
+
+    const gaps = screen.getByTestId('timeline-track').querySelector('.track__clips')!;
+    await act(async () => {
+      fireEvent.click(gaps, { clientX: 200 });
+    });
+    expect(useEditor.getState().playheadMs).toBe(2000);
+
+    // Scrubbing is not deselecting (state 7): the import's selection stands untouched.
+    expect(useEditor.getState().selection).toEqual(before);
+  });
+
+  it('clicking a clip selects it and cues playback at the clicked point', async () => {
+    await mount();
+    await dropPhotoPair();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'cliff.png photo clip' }), {
+        detail: 1,
+        clientX: 300,
+      });
+    });
+    const s = useEditor.getState();
+    expect(s.selection).toEqual({ kind: 'clip', clipId: s.clips[1].id });
+    expect(s.playheadMs).toBe(3000);
+  });
+
+  it('a keyboard activation selects a clip without moving the playhead', async () => {
+    await mount();
+    await dropPhotoPair();
+    act(() => useEditor.getState().setPlayhead(1234));
+
+    // Enter on a focused button lands as a click with no coordinates and detail 0.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'cliff.png photo clip' }));
+    });
+    const s = useEditor.getState();
+    expect(s.selection).toEqual({ kind: 'clip', clipId: s.clips[1].id });
+    expect(s.playheadMs).toBe(1234);
+  });
+
+  it('the ruler is a click-and-drag seek surface', async () => {
+    await mount();
+    await dropPhotoPair();
+    const ruler = screen.getByTestId('timeline-ruler');
+
+    await act(async () => fireEvent.pointerDown(ruler, { button: 0, clientX: 100 }));
+    expect(useEditor.getState().playheadMs).toBe(1000);
+
+    // Held down, the pointer scrubs — and past the end it pins to the timeline's end.
+    await act(async () => fireEvent.pointerMove(window, { clientX: 200 }));
+    expect(useEditor.getState().playheadMs).toBe(2000);
+    await act(async () => fireEvent.pointerMove(window, { clientX: 2000 }));
+    expect(useEditor.getState().playheadMs).toBe(10000);
+
+    // Released, the pointer is just a pointer again.
+    await act(async () => fireEvent.pointerUp(window, { clientX: 2000 }));
+    await act(async () => fireEvent.pointerMove(window, { clientX: 100 }));
+    expect(useEditor.getState().playheadMs).toBe(10000);
+  });
+
+  it('a clip drag still never seeks on release', async () => {
+    await mount();
+    await dropPhotoPair();
+    act(() => useEditor.getState().setPlayhead(1234));
+
+    const clip = screen.getByRole('button', { name: 'sunset.jpg photo clip' });
+    await act(async () => fireEvent.pointerDown(clip, { button: 0, clientX: 100 }));
+    await act(async () => fireEvent.pointerMove(window, { clientX: 160 }));
+    await act(async () => fireEvent.pointerUp(window, { clientX: 160 }));
+    // The click the browser fires after a drag is the drag's tail, not a seek.
+    await act(async () => {
+      fireEvent.click(clip, { detail: 1, clientX: 160 });
+    });
+    expect(useEditor.getState().playheadMs).toBe(1234);
+  });
+
+  it('clicking a sound, or the open stretch of its lane, cues the playhead there', async () => {
+    const user = userEvent.setup();
+    await mount();
+    await dropPhotoPair();
+    mockPick('/media/theme.mp3', 'theme.mp3', 'audio');
+    await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+    const sound = await screen.findByRole('button', { name: 'theme.mp3 audio track' });
+
+    await act(async () => {
+      fireEvent.click(sound, { detail: 1, clientX: 300 });
+    });
+    let s = useEditor.getState();
+    expect(s.selection).toEqual({ kind: 'audio', trackId: s.audioTracks[0].id });
+    expect(s.playheadMs).toBe(3000);
+
+    const lane = screen.getByTestId('audio-lanes').querySelector('.audio-lane')!;
+    await act(async () => {
+      fireEvent.click(lane, { clientX: 100 });
+    });
+    s = useEditor.getState();
+    expect(s.playheadMs).toBe(1000);
+    // The lane background is seek surface, not a deselect.
+    expect(s.selection).toEqual({ kind: 'audio', trackId: s.audioTracks[0].id });
+  });
+});
+
 // ----------------------------------------------------------------------------- inspector
 
 describe('inspector', () => {
@@ -537,7 +656,7 @@ describe('film wizard', () => {
   }
 
   async function openWizard(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })[0]);
+    await user.click(screen.getByRole('button', { name: '✦ New film from 3 photos' }));
     return screen.getByRole('dialog', { name: 'New film from 3 photos' });
   }
 
@@ -766,7 +885,7 @@ describe('keyboard', () => {
   it('regression — Escape closes one layer at a time, innermost first', async () => {
     const user = userEvent.setup();
     await mount();
-    await user.click(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })[0]);
+    await user.click(screen.getByRole('button', { name: '✦ New film from 3 photos' }));
     await user.click(screen.getByRole('button', { name: 'Settings' }));
 
     await act(async () => fireEvent.keyDown(document.body, { key: 'Escape' }));
@@ -807,7 +926,10 @@ describe('keyboard', () => {
     await mount();
     await dropPhotoPair();
     await user.click(screen.getByRole('button', { name: 'sunset.jpg photo clip' }));
-    await user.click(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })[0]);
+    // With clips down, the empty timeline's call to action is gone, so the panel is opened
+    // the way the film flow itself reopens it.
+    await act(async () => useEditor.getState().openFilmWizard());
+    expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).toBeInTheDocument();
 
     await act(async () => fireEvent.keyDown(document.body, { key: 'Delete' }));
     expect(useEditor.getState().clips).toHaveLength(1);

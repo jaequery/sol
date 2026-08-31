@@ -91,11 +91,14 @@ macOS/Linux). **Needs a packaged build to verify — recommend its own ticket.**
 and inserts *between* clips; playhead scrubbing is off by up to seconds at low zoom. Layout
 geometry rather than a button, and jsdom reports zero-size rects, so a regression test would
 have to stub `getBoundingClientRect` wholesale. **Recommend its own ticket with visual
-verification.**
+verification.** *(Resolved for scrubbing in SOL-WZQ6XY: every seek now maps px→ms off the
+clips' own box. Drop placement still measures `.track` — still open.)*
 
 **R3 — Three of four position-anchored decorations sit 12 px off** (the insert marker, the
 audio-lanes playhead, the ruler ticks) because they resolve `left` against a padded containing
-block. The two playheads are visibly 12 px apart. Same root cause as R2.
+block. The two playheads are visibly 12 px apart. Same root cause as R2. *(Resolved for the
+ruler ticks and the lanes playhead in SOL-WZQ6XY, which made the ruler a seek surface and had
+to align it; the insert marker — a drop decoration — still sits 12 px off.)*
 
 **R4 — No `setPointerCapture` anywhere.** Drags listen on `window`, which survives leaving the
 track but not a `pointerup` delivered outside the window. The drag then never commits and the
