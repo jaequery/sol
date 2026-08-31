@@ -4,7 +4,8 @@
 //!
 //! The stub records every argv it is called with, so this file doubles as the record of
 //! exactly what SolCut runs: `generate create <model> --prompt … --start-image …
-//! --end-image … --json --no-color`, then `generate get <job_id> --json --no-color`.
+//! --end-image … [--mode omni_reference] --json --no-color`, then
+//! `generate get <job_id> --json --no-color`.
 #![cfg(unix)]
 
 mod mock_server;
@@ -129,7 +130,8 @@ async fn a_job_is_created_polled_and_its_result_downloaded() {
         lines[0],
         format!(
             "generate create seedance_2_5 --prompt slow dolly-in over the water \
-             --start-image {}/start.jpg --end-image {}/end.jpg --json --no-color",
+             --start-image {}/start.jpg --end-image {}/end.jpg \
+             --mode omni_reference --json --no-color",
             stub.dir.display(),
             stub.dir.display()
         )

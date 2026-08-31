@@ -76,6 +76,15 @@ pub fn build_create_args(req: &GenerateRequest) -> Vec<String> {
         args.push("--end-image".to_string());
         args.push(end.display().to_string());
     }
+    // Seedance 2.5 gates frame inputs behind its reference mode: the live API refuses
+    // `start_image`/`end_image` outside it, in exactly these words — "start_image and
+    // end_image are only allowed for mode 'omni_reference'". SolCut always sends a start
+    // frame, so the mode rides along whenever this model renders. Other models keep
+    // their own default mode; `omni_reference` is not in their published value sets.
+    if req.model == DEFAULT_MODEL {
+        args.push("--mode".to_string());
+        args.push("omni_reference".to_string());
+    }
     args
 }
 
@@ -393,6 +402,8 @@ mod tests {
                 "/tmp/a.jpg",
                 "--end-image",
                 "/tmp/b.jpg",
+                "--mode",
+                "omni_reference",
             ]
         );
     }
@@ -404,6 +415,29 @@ mod tests {
         let args = build_create_args(&req);
         assert!(!args.iter().any(|a| a == "--end-image"), "{args:?}");
         assert!(args.iter().any(|a| a == "--start-image"));
+    }
+
+    /// The regression behind "start_image and end_image are only allowed for mode
+    /// 'omni_reference'" on every default render: Seedance 2.5 accepts frames only in
+    /// its reference mode, so the default model must ask for it — and only the default
+    /// model, because the other models' published mode sets do not contain it.
+    #[test]
+    fn seedance_2_5_asks_for_its_reference_mode_and_other_models_do_not() {
+        let args = build_create_args(&request());
+        let at = args.iter().position(|a| a == "--mode").expect("a mode");
+        assert_eq!(args[at + 1], "omni_reference");
+
+        // A single-frame render still sends a start image, so the mode still applies.
+        let mut single = request();
+        single.end_image = None;
+        assert!(build_create_args(&single).iter().any(|a| a == "--mode"));
+
+        for other in ["seedance_2_0", "seedance1_5", "kling3_0", "veo3_1_lite"] {
+            let mut req = request();
+            req.model = other.into();
+            let args = build_create_args(&req);
+            assert!(!args.iter().any(|a| a == "--mode"), "{other}: {args:?}");
+        }
     }
 
     #[test]
