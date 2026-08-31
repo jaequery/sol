@@ -401,6 +401,82 @@ async fn reports_a_failed_generation_with_its_reason() {
     );
 }
 
+/// The regression behind "error in the generating transition": a 2xx ack that packages
+/// the documented object — the one request wrapped in a one-element array — used to kill
+/// a render the API had already accepted and charged for. It must read like the object
+/// itself, all the way to the finished state.
+#[tokio::test]
+async fn an_ack_that_lists_the_one_request_still_finishes_the_render() {
+    let base = shared_base();
+    let handler_base = Arc::clone(&base);
+
+    let server = MockServer::start(move |req: &Request, _| {
+        let base = handler_base.get().expect("base url");
+        match (req.method.as_str(), req.path.as_str()) {
+            ("POST", "/minimax/hailuo-02/standard/image-to-video") => Response::json(
+                200,
+                &format!(
+                    r#"[{{"status":"queued","request_id":"r-listed",
+                          "status_url":"{base}/requests/r-listed/status"}}]"#
+                ),
+            ),
+            ("GET", "/requests/r-listed/status") => Response::json(
+                200,
+                r#"[{"status":"completed","request_id":"r-listed",
+                     "video":{"url":"https://cdn.test/out.mp4"}}]"#,
+            ),
+            _ => Response::json(500, r#"{"detail":"unexpected request"}"#),
+        }
+    });
+    base.set(server.base_url()).expect("set once");
+
+    let client = Client::new(config(&server)).expect("client");
+    let accepted = client
+        .submit(&GenerateRequest {
+            prompt: "drift".into(),
+            start_frame: Frame::Url("https://cdn.test/a.jpg".into()),
+            end_frame: None,
+            seed: None,
+        })
+        .await
+        .expect("a listed ack is the documented object, packaged");
+    assert_eq!(accepted.request_id, "r-listed");
+
+    assert_eq!(
+        client.poll(&accepted.status_url).await.expect("poll"),
+        JobState::Succeeded {
+            video_url: "https://cdn.test/out.mp4".into()
+        }
+    );
+}
+
+/// When the ack really has no reading, the error must say what the API sent — the type
+/// and the body — so the card the user screenshots carries its own diagnosis.
+#[tokio::test]
+async fn an_unreadable_ack_names_what_the_api_sent() {
+    let server = MockServer::start(|req: &Request, _| match req.path.as_str() {
+        "/minimax/hailuo-02/standard/image-to-video" => Response::json(200, r#""r-bare""#),
+        _ => Response::json(500, r#"{"detail":"unexpected request"}"#),
+    });
+    let client = Client::new(config(&server)).expect("client");
+
+    let err = client
+        .submit(&GenerateRequest {
+            prompt: "drift".into(),
+            start_frame: Frame::Url("https://cdn.test/a.jpg".into()),
+            end_frame: None,
+            seed: None,
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, HiggsfieldError::Malformed(_)), "{err:?}");
+    let msg = err.to_string();
+    assert!(msg.contains("a JSON string"), "{msg}");
+    assert!(msg.contains("r-bare"), "the body is quoted back: {msg}");
+    assert!(!err.is_retryable(), "the same ack would come back again");
+}
+
 #[tokio::test]
 async fn rejects_html_error_pages_instead_of_pretending_they_parsed() {
     let server = MockServer::start(|_, _| Response::json(200, "<html>gateway timeout</html>"));

@@ -8,10 +8,18 @@
 //! { "status": "completed", "request_id": "…", "video": { "url": "https://…/out.mp4" } }
 //! ```
 //!
+//! The documented object is also accepted through one layer of packaging — the one
+//! request wrapped in a one-element array — because a 2xx means the API accepted (and
+//! charges for) the generation, and abandoning a running job over harmless packaging is
+//! strictly worse than reading it. Anything without an unambiguous reading is refused
+//! with the evidence attached: the JSON type and a truncated echo of the body, so the
+//! error card carries its own diagnosis.
+//!
 //! Every function here is pure, so the behaviour is pinned by unit tests instead of by a
 //! live endpoint.
 
 use crate::error::{HiggsfieldError, JobState, Result};
+use crate::preview;
 use serde_json::Value;
 
 /// What a submission returns: the id plus the URLs the API asks callers to use verbatim
@@ -28,16 +36,12 @@ pub struct Accepted {
 /// `status_url` and `cancel_url` are documented as always present, but they are cheap to
 /// derive from `request_id`, so a response that omits them still works.
 pub fn parse_submit(body: &Value, base_url: &str) -> Result<Accepted> {
+    let body = unwrapped(body);
     let request_id = body
         .get("request_id")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            HiggsfieldError::Malformed(format!(
-                "no request_id in the submit response (keys: {})",
-                top_level_keys(body)
-            ))
-        })?
+        .ok_or_else(|| unreadable("request_id", "submit", body))?
         .to_string();
 
     let base = base_url.trim_end_matches('/');
@@ -55,15 +59,11 @@ pub fn parse_submit(body: &Value, base_url: &str) -> Result<Accepted> {
 /// The documented statuses are `queued`, `in_progress`, `completed`, `failed`, `nsfw` and
 /// `canceled`; anything else is reported as malformed rather than silently polled forever.
 pub fn parse_state(body: &Value) -> Result<JobState> {
+    let body = unwrapped(body);
     let status = body
         .get("status")
         .and_then(Value::as_str)
-        .ok_or_else(|| {
-            HiggsfieldError::Malformed(format!(
-                "no status in the request status response (keys: {})",
-                top_level_keys(body)
-            ))
-        })?
+        .ok_or_else(|| unreadable("status", "request status", body))?
         .to_ascii_lowercase();
 
     match status.as_str() {
@@ -160,10 +160,43 @@ fn url_field(body: &Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn top_level_keys(v: &Value) -> String {
-    match v.as_object() {
-        Some(map) => map.keys().cloned().collect::<Vec<_>>().join(", "),
-        None => "<not an object>".into(),
+/// The documented object through one harmless layer of packaging.
+///
+/// SolCut submits exactly one request, so a response that *lists* that one request —
+/// `[{…}]` — reads unambiguously as the documented object. Several entries, or an entry
+/// that is not an object, have no safe reading and are left for [`unreadable`].
+fn unwrapped(body: &Value) -> &Value {
+    match body.as_array() {
+        Some(items) if items.len() == 1 && items[0].is_object() => &items[0],
+        _ => body,
+    }
+}
+
+/// Why a body could not be read, with the evidence attached: the missing field and the
+/// keys present for an object, the JSON type and a truncated echo of the body for
+/// anything else — so a failure report says what the API sent, not only what it didn't.
+fn unreadable(field: &str, place: &str, body: &Value) -> HiggsfieldError {
+    HiggsfieldError::Malformed(match body.as_object() {
+        Some(map) => format!(
+            "no {field} in the {place} response (keys: {})",
+            map.keys().cloned().collect::<Vec<_>>().join(", ")
+        ),
+        None => format!(
+            "the {place} response is {} rather than the documented request object: {}",
+            json_kind(body),
+            preview(&body.to_string())
+        ),
+    })
+}
+
+fn json_kind(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "JSON null",
+        Value::Bool(_) => "a JSON boolean",
+        Value::Number(_) => "a JSON number",
+        Value::String(_) => "a JSON string",
+        Value::Array(_) => "a JSON array",
+        Value::Object(_) => "a JSON object",
     }
 }
 
@@ -209,6 +242,75 @@ mod tests {
         let err = parse_submit(&json!({"detail": "nope"}), BASE).unwrap_err();
         assert!(matches!(err, HiggsfieldError::Malformed(_)));
         assert!(err.to_string().contains("detail"), "{err}");
+    }
+
+    /// The regression behind "error in the generating transition": a 2xx ack whose JSON
+    /// was not the documented object died as "keys: <not an object>" — no type, no body,
+    /// nothing for a bug report to carry. The one request wrapped in a one-element array
+    /// is readable without guessing, and everything else must quote what actually came.
+    #[test]
+    fn the_one_request_wrapped_in_a_list_is_read() {
+        let accepted = parse_submit(
+            &json!([{
+                "status": "queued",
+                "request_id": "abc",
+                "status_url": "https://api.higgsfield.ai/requests/abc/status"
+            }]),
+            BASE,
+        )
+        .expect("one listed request is the documented object, packaged");
+        assert_eq!(accepted.request_id, "abc");
+        assert_eq!(
+            accepted.status_url,
+            "https://api.higgsfield.ai/requests/abc/status"
+        );
+    }
+
+    #[test]
+    fn a_status_wrapped_in_a_list_is_read() {
+        assert_eq!(
+            parse_state(&json!([{"status": "queued", "request_id": "x"}])).unwrap(),
+            JobState::Queued
+        );
+        assert_eq!(
+            parse_state(&json!([{
+                "status": "completed",
+                "request_id": "x",
+                "video": {"url": "https://cdn.example.com/video.mp4"}
+            }]))
+            .unwrap(),
+            JobState::Succeeded {
+                video_url: "https://cdn.example.com/video.mp4".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_non_object_ack_reports_its_type_and_body() {
+        let err = parse_submit(&json!("r-123"), BASE).unwrap_err();
+        assert!(matches!(err, HiggsfieldError::Malformed(_)), "{err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("a JSON string"), "{msg}");
+        assert!(msg.contains("r-123"), "the body is quoted back: {msg}");
+
+        let err = parse_state(&json!(null)).unwrap_err();
+        assert!(err.to_string().contains("JSON null"), "{err}");
+    }
+
+    #[test]
+    fn an_ack_listing_several_requests_is_refused_with_the_evidence() {
+        // SolCut submitted one request; an ack listing two has no safe reading.
+        let err =
+            parse_submit(&json!([{"request_id": "a"}, {"request_id": "b"}]), BASE).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("a JSON array"), "{msg}");
+        assert!(msg.contains(r#""request_id":"a""#), "{msg}");
+    }
+
+    #[test]
+    fn a_listed_non_object_keeps_the_list_as_evidence() {
+        let err = parse_submit(&json!(["r-123"]), BASE).unwrap_err();
+        assert!(err.to_string().contains("a JSON array"), "{err}");
     }
 
     #[test]

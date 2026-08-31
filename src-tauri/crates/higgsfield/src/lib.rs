@@ -612,7 +612,7 @@ fn validation_messages(problems: &[Value]) -> Option<String> {
     (!lines.is_empty()).then(|| preview(&lines.join("; ")))
 }
 
-fn preview(body: &str) -> String {
+pub(crate) fn preview(body: &str) -> String {
     let trimmed = body.trim();
     if trimmed.chars().count() <= 200 {
         return trimmed.to_string();
