@@ -229,6 +229,21 @@ export async function generateAnimation(input: GenerateInput): Promise<void> {
   await invoke('generate_animation', { input });
 }
 
+/**
+ * One frame out of a video on disk, as a JPEG data URL — the anchor a video side of a
+ * transition is animated from, or to.
+ *
+ * A photo is already a still and is drawn straight in the webview (`lib/frames`); a video
+ * is not, and its frame is pulled with the same ffmpeg the export uses, so the anchor and
+ * the footage that lands beside it agree on rotation and pixel aspect. That does mean a
+ * transition *involving video* needs ffmpeg on `PATH` — photo-to-photo ones still need
+ * nothing but the CLI, and the failure names itself when it is missing.
+ */
+export async function captureVideoFrame(path: string, atMs: number): Promise<string> {
+  requireDesktop();
+  return invoke<string>('capture_video_frame', { path, atMs: Math.max(0, Math.round(atMs)) });
+}
+
 export async function cancelGeneration(id: string): Promise<void> {
   if (!isDesktop()) return;
   await invoke('cancel_generation', { id });

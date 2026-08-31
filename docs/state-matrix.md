@@ -22,8 +22,8 @@ hi-fi walkthrough artifact.
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
 | 7 | **Nothing selected** | First run, or the selected clip was deleted | Inspector shows an explanatory empty state, not a blank panel. The 🗑 button and the Delete key are both dark — as they also are on a selected **cut**, which is a place rather than a thing and has nothing to delete. *(Clicking anywhere on the timeline — ruler, bare track, clip, or lane — cues the playhead; it does not clear the selection.)* | Select a clip |
-| 8 | **Video clip selected** | Click a video clip | Inspector shows clip info + trim; there is nothing AI to offer on a plain video | Select a photo, or a cut |
-| 9 | **Photo clip selected** | Click a photo clip | Inspector shows clip info and a hint pointing at the ✦ chip: put another photo beside it and bridge the cut with an AI transition (section 8) | Select a cut |
+| 8 | **Video clip selected** | Click a video clip | Inspector shows clip info + trim, and the same hint a photo gets: put another clip beside it and bridge the cut with an AI transition (section 8) | Select a cut |
+| 9 | **Photo clip selected** | Click a photo clip | Inspector shows clip info and a hint pointing at the ✦ chip: put another clip beside it and bridge the cut with an AI transition (section 8) | Select a cut |
 
 ## 3. Generation (Higgsfield)
 
@@ -39,7 +39,7 @@ hi-fi walkthrough artifact.
 | 18 | **Failed — rate limited (429)** | API returns 429 | The chip turns error-red with "Rate limited"; inspector shows the message and a Retry (with the same prompt preserved) | Retry / dismiss |
 | 19 | **Failed — not signed in** | The CLI's login expired or no billing workspace is selected | Same error affordance, message carries the CLI's own fix (`higgsfield auth login`, `hf workspace set …`) | Run the named command, retry |
 | 20 | **Failed — network / timeout** | Transport error | Same error affordance with the transport reason | Retry |
-| 21 | **Succeeded** | Poll returns a video URL and the download completes | The generated clip stands in its photos' place on the timeline (or lands at the cut, when the photos are kept), carries an "AI" badge, and is immediately playable in the preview | Play, or regenerate |
+| 21 | **Succeeded** | Poll returns a video URL and the download completes | The generated clip stands in the cut's stills' place on the timeline (or lands at the cut, when the photos are kept or there was no still to take), carries an "AI" badge, and is immediately playable in the preview | Play, or regenerate |
 
 ## 4. Playback / export
 
@@ -100,33 +100,45 @@ Each lane holds one sound.
 
 ## 8. AI transitions
 
-A ✦ chip stands on every cut between two **photos** side by side on the track — edges
-touching, or with a gap the user dragged open between them. By default the finished render
-**stands in the pair's place**: both photos leave the track (staying in the media bin) and
-the span plays as pure motion, never padded by stills. A quiet per-cut action keeps the
-photos and inserts the clip between them instead — which is also how a dragged-open gap
-gets filled. The chip only ever *selects* its cut — generation (a paid Higgsfield call)
-fires exclusively from the cut card's button, ✦ Animate all, Retry, or Regenerate, so a
-stray click can never spend credits and staleness never re-renders on its own.
+A ✦ chip stands on every cut between two clips side by side on the track — photo to photo,
+video to video, or one of each; edges touching, or with a gap the user dragged open between
+them. Each side gives up the frame at the cut: a photo *is* that frame, and a video's is
+pulled off the file (with ffmpeg, so it matches what the export renders) at the exact point
+the clip runs out or begins, trims included. The one boundary that is **not** offered is one
+touching a transition that has already landed — bridging a bridge would sprout two fresh
+chips beside every render.
+
+Where the finished render lands follows what is on the cut, because only a **still** can be
+stood in for. Between two photos it **stands in the pair's place** by default: both leave
+the track (staying in the media bin) and the span plays as pure motion, never padded by
+stills. Beside real footage the same pick takes **only the photo**; the video keeps its span
+and its trim. Between two videos there is no still at all, so the pick is not offered —
+absent from the card rather than shown disabled — and the render lands between them. A quiet
+per-cut action keeps the photos and inserts the clip between them instead, which is also how
+a dragged-open gap gets filled. The chip only ever *selects* its cut — generation (a paid
+Higgsfield call) fires exclusively from the cut card's button, ✦ Animate all, Retry, or
+Regenerate, so a stray click can never spend credits and staleness never re-renders on its
+own.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 46 | **Idle chip** | Two photos sit side by side on the track — edge to edge, or with a gap between them | A small ✦ chip vertically centred on the shared edge, or floating in the middle of the gap (its tooltip names the gap's length); the toolbar shows ✦ Animate all · n when at least one cut is fillable | Tap the chip, or Animate all |
-| 47 | **Chip disabled (media offline)** | A photo on the cut lost its source file | The chip dims with the reason in its tooltip; nothing can be sent for a frame that cannot be rendered | Re-import the photo |
-| 48 | **Cut selected** | Chip tapped | The chip takes the accent ring; the inspector shows the transition card naming both photos, a hint stating the outcome (the finished clip stands in the photos' place by default), an *optional* prompt (empty means the default `Smooth cinematic motion transition`), suggestion chips, a model selector (default Seedance 2.5), and one ✦ Generate transition button. Beneath the button, a quiet text action toggles "keep the photos on the track" per cut, remembered like its prompt | Generate, type first, or click elsewhere |
+| 46 | **Idle chip** | Two clips sit side by side on the track — any kinds, edge to edge or with a gap between them, neither of them an already-landed transition | A small ✦ chip vertically centred on the shared edge, or floating in the middle of the gap (its tooltip names the gap's length); the toolbar shows ✦ Animate all · n counting the **photo-to-photo** cuts only | Tap the chip, or Animate all |
+| 47 | **Chip disabled (media offline)** | A clip on the cut lost its source file | The chip dims with the reason in its tooltip; nothing can be sent for a frame that cannot be rendered | Re-import the clip |
+| 48 | **Cut selected** | Chip tapped | The chip takes the accent ring; the inspector shows the transition card naming both clips, a hint stating the outcome, an *optional* prompt (empty means the default `Smooth cinematic motion transition`), suggestion chips, a model selector (default Seedance 2.5), and one ✦ Generate transition button. Beneath the button, a quiet text action toggles "keep the photo(s) on the track" per cut, remembered like its prompt — **absent entirely between two videos**, which have no still to stand in for | Generate, type first, or click elsewhere |
+| 48a | **Cut selected — video on one or both sides** | Chip tapped on a cut with video | The same card. With a photo on the other side the landing pick stands, in the singular, and applies to that photo alone. With video on both sides there is no pick, and the hint says the clip lands between them. A video side needs ffmpeg on `PATH`; without it the render fails at submission and says so | Generate, or click elsewhere |
 | 49 | **No CLI** | Cut selected with no Higgsfield CLI found | The card's button is replaced by the "Connect Higgsfield to generate" callout; nothing is sent | Install and sign in to the CLI |
 | 50 | **Queued** | Generate pressed, job accepted | The chip widens into a dashed mono pill reading ◐ QUEUED — the cut has no width on the track, so the chip itself is the progress surface; the title bar counts the render | Cancel, or wait |
 | 51 | **Running** | Poll returns progress | The pill shows ◐ n% (or elapsed seconds when the API reports no percentage); **the rest of the app stays fully usable** | Cancel, or wait |
 | 52 | **Slow (> 90 s)** | Still running past the soft threshold | The pill takes an amber tint and the card adds the calm "taking longer than usual" advisory — no modal, no lock | Cancel, or wait |
 | 53 | **Failed** | API error / rate limit / transport | The pill turns rose reading ✕ FAILED; the card explains and offers Retry (same cut, kept prompt) and Dismiss (timeline exactly as it was) | Retry, or dismiss |
-| 54 | **Succeeded — stands in the photos' place** | Render downloaded | The MP4 lands where the left photo started and **both photos leave the track** (staying in the media bin), provisionally 5 s and probe-corrected to its real length; everything after shifts by the difference between the render and the span it replaced, so gaps further along keep their shape. The clip wears both source stills side by side and the ✦ AI badge — the span is pure motion, and the reel no longer carries the stills' 10 s. With **keep the photos** picked, the MP4 is instead inserted *at the cut*: it starts where the left photo ends and the right photo comes to rest flush against its tail — a gap dragged open for it is consumed, not left as black — so the reel grows by the render's length minus the gap's. Either way the chip disappears structurally, and the remaining cuts keep theirs | Play, edit, or fill the next cut |
-| 55 | **Transition selected** | Click the generated clip | The AI transition card: From/To photos, editable prompt, ⟳ Regenerate. Trim, drag and delete work exactly as for any video clip | Regenerate, edit, or leave it |
-| 56 | **Stale** | A different photo now stands beside a kept-photos transition | Only a kept-photos (insert) clip can go stale by its neighbours: it wears an amber `⟳ SOURCES CHANGED` tag and the card says why; it still plays and exports. A clip standing in its photos' place consumed them, so its neighbours say nothing — it stays fresh for as long as both source assets stand in the media bin. Nothing regenerates — or costs — on its own | One-tap Regenerate (uses the *current* neighbours), or ignore |
-| 57 | **Orphaned** | A source asset left the media bin (the default landing), or a kept-photos clip's neighbour is no longer a photo | Amber `⟳ SOURCE MISSING` tag; Regenerate is disabled with the reason. The paid clip is kept — it renders and exports fine | Delete it for a hard cut, or leave it |
-| 58 | **Transition deleted** | 🗑 / Delete on the clip | No confirm (the app has none anywhere, and no undo): the clip goes and the MP4 asset stays in the bin and on disk. A clip that stood in its photos' place leaves **empty track** behind — its photos are long gone from the track, so no cut reappears; re-drag them from the media bin to rebuild it. Deleting a kept-photos clip makes the photo→photo cut — and its ✦ chip — structurally reappear. Re-inserting means regenerating (a re-spend) | Re-add the photos from the bin, or regenerate from the chip |
-| 59 | **Animate all** | ✦ Animate all · n in the toolbar | Every fillable cut queues; submissions go out strictly one at a time (a burst could trip the rate limit and strand half the batch), each chip showing its own state as its turn comes. Landings stay **between** their photos while the run lives — a replace landing would consume clips out from under the cuts still queued — a queued cut that went invalid is skipped, never stalled on, and the toolbar button stands down for the duration | Wait, or keep editing |
+| 54 | **Succeeded — stands in the stills' place** | Render downloaded | The MP4 lands where the consumed span started and **every still on the cut leaves the track** (staying in the media bin), provisionally 5 s and probe-corrected to its real length; everything after shifts by the difference between the render and the span it replaced, so gaps further along keep their shape. The clip wears both sources side by side — footage as footage, a still as a still — plus the ✦ AI badge. Between two photos both go and the reel no longer carries their 10 s; beside a video only the photo goes and the footage keeps its span and trim; between two videos nothing is consumed at all. With **keep the photos** picked, the MP4 is instead inserted *at the cut*: it starts where the left clip ends and the right one comes to rest flush against its tail — a gap dragged open for it is consumed, not left as black — so the reel grows by the render's length minus the gap's. Either way no chip stands beside the landing, and the remaining cuts keep theirs | Play, edit, or fill the next cut |
+| 55 | **Transition selected** | Click the generated clip | The AI transition card: From/To sources, editable prompt, ⟳ Regenerate. Trim, drag and delete work exactly as for any video clip | Regenerate, edit, or leave it |
+| 56 | **Stale** | A different clip now stands beside a kept-photos transition, or a video source was trimmed under one | A kept-photos (insert) clip goes stale by its neighbours: it wears an amber `⟳ SOURCES CHANGED` tag and the card says why; it still plays and exports. A clip standing in the stills' place consumed them, so those say nothing — but a video side it did *not* consume is still on the track, and trimming it moves the very frame the motion was rendered from, which is stale too. Nothing regenerates — or costs — on its own | One-tap Regenerate (reads each side as it stands *now*), or ignore |
+| 57 | **Orphaned** | A source asset left the media bin (the default landing), or a kept-photos clip no longer has a clip on both sides | Amber `⟳ SOURCE MISSING` tag; Regenerate is disabled with the reason. The paid clip is kept — it renders and exports fine | Delete it for a hard cut, or leave it |
+| 58 | **Transition deleted** | 🗑 / Delete on the clip | No confirm (the app has none anywhere, and no undo): the clip goes and the MP4 asset stays in the bin and on disk. A clip that stood in the stills' place leaves **empty track** where those stills were — re-drag them from the media bin to rebuild it; any footage it left alone is still standing, and the cut it now forms with its new neighbour gets a chip. Deleting a kept-photos clip makes the original cut — and its ✦ chip — structurally reappear. Re-inserting means regenerating (a re-spend) | Re-add the photos from the bin, or regenerate from the chip |
+| 59 | **Animate all** | ✦ Animate all · n in the toolbar | Every fillable **photo-to-photo** cut queues — video cuts are deliberately left out, because one tap must not start a paid render at every boundary of a reel of footage; submissions go out strictly one at a time (a burst could trip the rate limit and strand half the batch), each chip showing its own state as its turn comes. Landings stay **between** their photos while the run lives — a replace landing would consume clips out from under the cuts still queued — a queued cut that went invalid is skipped, never stalled on, and the toolbar button stands down for the duration | Wait, or keep editing |
 | 59a | **Animate all — run complete** | The queue has drained and every leg is terminal (landed, failed, cancelled, or swept) | The run collapses: every photo whose touching legs all landed leaves the track, spans closing behind them (media staying in the bin), and each landing is stamped as standing in its photos' place — the chain is pure motion, back to back. A failed or cancelled leg keeps its photos, as does a landing the user deleted or split mid-run. A toast counts what landed | Play, export, or retry the kept cuts |
-| 60 | **Timeline moved mid-render** | The pair was reordered/deleted while rendering | The finished clip is **not** inserted somewhere wrong: a toast explains ("Transition finished, but its photos moved"), the new cuts show fresh chips, and the MP4 stays in the cache | Tap the ✦ on the new cut |
+| 60 | **Timeline moved mid-render** | The pair was reordered/deleted while rendering | The finished clip is **not** inserted somewhere wrong: a toast explains ("Transition finished, but its clips moved"), the new cuts show fresh chips, and the MP4 stays in the cache | Tap the ✦ on the new cut |
 
 ## 9. Film — three photos, two transitions
 

@@ -36,6 +36,9 @@ export function resetEditor(): void {
     cutModes: {},
     animateQueue: null,
     animateSubmittingId: null,
+    // A run left standing flips `resolveCutMode`'s fallback to insert for the next test,
+    // which reads as a mode bug a long way from the test that actually leaked it.
+    animateRun: null,
     film: null,
     filmWizardOpen: false,
     importProblems: [],

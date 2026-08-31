@@ -124,10 +124,11 @@ pub struct GenerateInput {
     /// Chosen by the frontend so it can match events to the segment that asked for them.
     pub generation_id: String,
     pub prompt: String,
-    /// `data:image/jpeg;base64,…` of the photo the motion starts from. It is written to
-    /// a file and handed to the CLI, which uploads it itself.
+    /// `data:image/jpeg;base64,…` of the still the motion starts from — a photo drawn in
+    /// the webview, or a frame grabbed out of a video by [`capture_video_frame`]. It is
+    /// written to a file and handed to the CLI, which uploads it itself.
     pub start_frame: String,
-    /// The same for the photo the motion ends on, when there is one.
+    /// The same for the still the motion ends on, when there is one.
     pub end_frame: Option<String>,
     /// The CLI model id the frontend's per-render selector chose for THIS request.
     /// Absent or blank, the render falls back to the default model — the model choice
@@ -285,6 +286,28 @@ fn cancel_generation(id: String, state: State<'_, AppState>) {
 #[tauri::command]
 async fn ffmpeg_available() -> bool {
     Renderer::default().is_available().await
+}
+
+/// One frame out of a video on disk, as a JPEG data URL — the anchor a video side of an AI
+/// transition is animated from, or to.
+///
+/// A photo is already a still and is drawn in the webview; a video is not. Its frame comes
+/// off the same ffmpeg the export uses, so the anchor Higgsfield animates from and the
+/// footage that ends up beside it agree on rotation and pixel aspect. That makes ffmpeg a
+/// requirement for transitions *involving video* — photo-to-photo transitions still need
+/// nothing but the CLI.
+#[tauri::command]
+async fn capture_video_frame(path: String, at_ms: u32) -> Result<String, String> {
+    let bytes = Renderer::default()
+        .capture_frame(
+            std::path::Path::new(&path),
+            at_ms,
+            solcut_render::STILL_WIDTH,
+            solcut_render::STILL_HEIGHT,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(solcut_higgsfield::jpeg_data_url(&bytes))
 }
 
 #[tauri::command]
@@ -514,6 +537,7 @@ pub fn run() {
             generate_animation,
             cancel_generation,
             ffmpeg_available,
+            capture_video_frame,
             export_timeline,
         ])
         .run(tauri::generate_context!())

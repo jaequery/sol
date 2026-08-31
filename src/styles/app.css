@@ -914,21 +914,22 @@ input {
   padding: 3px 5px;
   border-radius: 4px;
 }
-/* A replace-mode transition's face: its two source stills side by side — start left, end
-   right — split by a seam, an arrow on the seam saying one animates into the other. */
+/* A replace-mode transition's face: its two sources side by side — start left, end right —
+   split by a seam, an arrow on the seam saying one animates into the other. */
 .clip__pair {
   position: absolute;
   inset: 0;
   display: flex;
 }
-.clip__pair img {
+/* Either half can be a still or footage, so both element types wear the same face. */
+.clip__pair :is(img, video) {
   position: static;
   width: 50%;
   height: 100%;
   object-fit: cover;
   opacity: 0.92;
 }
-.clip__pair img + img {
+.clip__pair :is(img, video) + :is(img, video) {
   border-left: 1px solid var(--line);
 }
 .clip__pair-arrow {
@@ -1015,7 +1016,7 @@ input {
 
 /* ---- cut chips */
 
-/* The ✦ button on a photo→photo boundary. Sized so the edge handles beside it keep a
+/* The ✦ button on a cut between two clips. Sized so the edge handles beside it keep a
    clear stretch of grab height above and below; clicking it only ever selects the cut. */
 .cutchip {
   position: absolute;

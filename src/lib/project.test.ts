@@ -282,6 +282,45 @@ describe('a project that has been edited by hand', () => {
     expect(file.clips[0].transition).toEqual(transition);
   });
 
+  it('keeps the moment a video side of a transition was taken from', () => {
+    // A replace landing consumes its still, so the clip that knew the trim is gone. What
+    // survives a save is the only thing that can regenerate the render at the same frame.
+    const transition = {
+      prompt: 'whip through',
+      from: { clipId: 'clip_a', assetId: 'asset_v', atMs: 3967 },
+      to: { clipId: 'clip_b', assetId: 'asset_p' },
+      mode: 'replace' as const,
+    };
+    const file = read({
+      version: PROJECT_VERSION,
+      assets: [{ id: 'asset_p', name: 'a.png', kind: 'photo', path: '/a.png', sizeBytes: 1 }],
+      clips: [{ ...clip({ id: 'clip_1', assetId: 'asset_p', kind: 'video' }), transition }],
+    });
+    expect(file.clips[0].transition).toEqual(transition);
+  });
+
+  it('drops an anchor that is not a moment, keeping the rest of the record', () => {
+    const file = read({
+      version: PROJECT_VERSION,
+      assets: [{ id: 'asset_p', name: 'a.png', kind: 'photo', path: '/a.png', sizeBytes: 1 }],
+      clips: [
+        {
+          ...clip({ id: 'clip_1', assetId: 'asset_p', kind: 'video' }),
+          transition: {
+            prompt: 'whip through',
+            from: { clipId: 'clip_a', assetId: 'asset_v', atMs: -5 },
+            to: { clipId: 'clip_b', assetId: 'asset_p', atMs: 'soon' },
+          },
+        },
+      ],
+    });
+    expect(file.clips[0].transition).toEqual({
+      prompt: 'whip through',
+      from: { clipId: 'clip_a', assetId: 'asset_v' },
+      to: { clipId: 'clip_b', assetId: 'asset_p' },
+    });
+  });
+
   it('refuses a clip that is missing the numbers a clip is made of', () => {
     const file = read({
       version: PROJECT_VERSION,
