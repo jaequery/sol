@@ -11,16 +11,37 @@ import { listen } from '@tauri-apps/api/event';
 import { AUDIO_EXTS, type MediaKind } from '../types/project';
 
 export interface SettingsView {
-  /** The Higgsfield CLI binary was found — generation can at least be attempted. */
+  /**
+   * The Higgsfield CLI binary was found — generation can at least be attempted.
+   *
+   * Deliberately says nothing about the API key: renders go through the CLI, so a stored
+   * key must never make the app offer a generation it cannot run.
+   */
   configured: boolean;
   /** Where it was found, for the dialog to show; null when it wasn't. */
   cliPath: string | null;
   /** A CLI model id offered as the Model picker's Custom entry; blank for none. */
   customModel: string;
+  /** A whole Cloud API credential is stored — both halves. */
+  hasApiKey: boolean;
+  /** e.g. `••••7fa2`, or blank. The key id itself never reaches this window, nor the secret. */
+  apiKeyIdHint: string;
 }
 
 export interface SettingsInput {
   customModel?: string;
+  /** Blank means "keep the stored one" — the key boxes always mount empty. */
+  apiKeyId?: string;
+  apiKeySecret?: string;
+  /** Remove the stored credential. The only way out of blank-means-keep. */
+  forgetApiKey?: boolean;
+}
+
+/** What one API key check concluded — its own heading, separate from the CLI check's. */
+export interface KeyCheck {
+  ok: boolean;
+  title: string;
+  text: string;
 }
 
 export interface ImportedMedia {
@@ -149,7 +170,7 @@ export function assetSrc(path: string): string {
 
 export async function getSettings(): Promise<SettingsView> {
   if (!isDesktop()) {
-    return { configured: false, cliPath: null, customModel: '' };
+    return { configured: false, cliPath: null, customModel: '', hasApiKey: false, apiKeyIdHint: '' };
   }
   return invoke<SettingsView>('get_settings');
 }
@@ -166,6 +187,18 @@ export async function saveSettings(input: SettingsInput): Promise<SettingsView> 
 export async function testConnection(): Promise<string> {
   requireDesktop();
   return invoke<string>('test_connection');
+}
+
+/**
+ * Prove the stored Cloud API key — a different credential from the CLI's, on a different
+ * host, against a different balance. One free, read-only call that generates nothing.
+ *
+ * The input is what the dialog is showing; blank fields fall back to what is stored, so a
+ * key can be proved before it is saved.
+ */
+export async function testApiKey(input: SettingsInput): Promise<KeyCheck> {
+  requireDesktop();
+  return invoke<KeyCheck>('test_api_key', { input });
 }
 
 export async function importPaths(paths: string[]): Promise<ImportResult> {

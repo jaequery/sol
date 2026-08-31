@@ -18,10 +18,18 @@
 //!    and [`Cli::download`] fetches the finished MP4 next to the project.
 //! 4. [`Cli::probe`] is the Settings dialog's connection check: `model list --video
 //!    --json`, which proves the binary, the login and the workspace in one free call.
+//!
+//! The [`credential`] module is the one part that does not go through the CLI: it holds
+//! the *Cloud API* key SolCut stores (a different credential, on a different host, against
+//! a different balance) and the free call that proves it. Nothing renders through it.
 
+mod credential;
 mod error;
 mod parse;
 
+pub use credential::{
+    check_credential, classify, mask, Credential, KeyVerdict, API_BASE_URL, AUTH_SCHEME,
+};
 pub use error::{HiggsfieldError, JobState, Result};
 pub use parse::{find_result_url, parse_create, parse_job, parse_model_count};
 

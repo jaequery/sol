@@ -26,9 +26,12 @@ vi.mock('../lib/backend', async (importOriginal) => ({
     configured: true,
     cliPath: '/usr/local/bin/higgsfield',
     customModel: '',
+    hasApiKey: false,
+    apiKeyIdHint: '',
   }),
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
+  testApiKey: vi.fn(),
   importPaths: vi.fn(),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
   cancelGeneration: (id: string) => cancelGeneration(id),
@@ -54,6 +57,8 @@ const CONNECTED = {
   configured: true,
   cliPath: '/usr/local/bin/higgsfield',
   customModel: '',
+  hasApiKey: false,
+  apiKeyIdHint: '',
 };
 
 function photo(id: string): MediaAsset {
