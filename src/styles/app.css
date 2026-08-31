@@ -47,6 +47,10 @@ input {
 .app {
   height: 100%;
   display: grid;
+  /* The one column is pinned to the window: the timeline's inner strip is as wide as the
+     film is long, and an `auto` column would take that as its minimum and stretch the
+     whole shell — pushing the inspector and the titlebar's buttons off the right edge. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: var(--h-titlebar) minmax(0, 1fr) auto;
 }
 
@@ -119,6 +123,7 @@ input {
   display: grid;
   grid-template-columns: var(--w-bin) minmax(0, 1fr) var(--w-inspector);
   min-height: 0;
+  min-width: 0;
 }
 .col {
   min-width: 0;
@@ -715,6 +720,9 @@ input {
   border-top: 1px solid var(--line);
   background: #0d0f18;
   flex: 0 0 auto;
+  /* A grid item's automatic minimum is its content, and the strip below is film-long:
+     without this the row would widen the shell instead of scrolling inside it. */
+  min-width: 0;
 }
 .timeline__bar {
   height: var(--h-toolbar);
@@ -761,6 +769,7 @@ input {
 .timeline__scroll {
   overflow-x: auto;
   overflow-y: hidden;
+  min-width: 0;
 }
 .timeline__inner {
   position: relative;
