@@ -1,5 +1,6 @@
 /**
- * The film and replace-mode cut flows through the real store.
+ * The film and replace-mode cut flows through the real store, plus the inspector's typed
+ * length — the one edit that reaches the timeline as an absolute value rather than a drag.
  *
  * Same two stubs as `App.test.tsx` and for the same reason: the Tauri bridge and
  * canvas/media decoding are the only things jsdom cannot provide. The store, `lib/film` and
@@ -8,10 +9,16 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEditor } from './store';
-import { bridgeableCuts, photoClip, videoClip } from '../lib/timeline';
+import {
+  audioTrack,
+  bridgeableCuts,
+  photoClip,
+  resizeClipInList,
+  videoClip,
+} from '../lib/timeline';
 import { assembleFilm, defaultFilmPrompt, FILM_SEGMENT_DURATION_MS } from '../lib/film';
 import { DEFAULT_MODEL_ID, type GenerateInput, type GenerationUpdate } from '../lib/backend';
-import type { Clip, MediaAsset } from '../types/project';
+import { MIN_CLIP_DURATION_MS, type Clip, type MediaAsset } from '../types/project';
 
 const generateAnimation = vi.fn(async (_input: GenerateInput) => {});
 const cancelGeneration = vi.fn(async (_id: string) => {});
@@ -93,6 +100,7 @@ beforeEach(() => {
     animateRun: null,
     importProblems: [],
     importing: 0,
+    draggingAssetId: null,
     toasts: [],
     exportState: null,
     settings: CONNECTED,
@@ -121,6 +129,112 @@ function segmentGenerationId(index: number): string {
   expect(id).toBeTruthy();
   return id as string;
 }
+
+describe('a typed length', () => {
+  /** Two photos back to back: a (0–5000) then b (5000–8000). */
+  function pairOnTrack(): [Clip, Clip] {
+    const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 5000, 0);
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 5000);
+    useEditor.setState({ clips: [a, b], audioTracks: [] });
+    return [a, b];
+  }
+
+  it('is the tail drag, to the clip — the two land on exactly the same timeline', () => {
+    const [a] = pairOnTrack();
+    const dragged = resizeClipInList(useEditor.getState().clips, a.id, 'end', 7000);
+
+    useEditor.getState().setClipDuration(a.id, 12_000);
+    expect(useEditor.getState().clips).toEqual(dragged);
+  });
+
+  it('grows the clip and pushes what is behind it along', () => {
+    const [a, b] = pairOnTrack();
+    useEditor.getState().setClipDuration(a.id, 12_000);
+
+    const clips = useEditor.getState().clips;
+    expect(clips.find((c) => c.id === a.id)?.durationMs).toBe(12_000);
+    // Nothing overlaps: b starts where a now ends.
+    expect(clips.find((c) => c.id === b.id)?.startMs).toBe(12_000);
+  });
+
+  it('leaves a gap when it shrinks, rather than pulling the track back', () => {
+    const [a, b] = pairOnTrack();
+    useEditor.getState().setClipDuration(a.id, 2000);
+
+    const clips = useEditor.getState().clips;
+    expect(clips.find((c) => c.id === a.id)?.durationMs).toBe(2000);
+    expect(clips.find((c) => c.id === b.id)?.startMs).toBe(5000);
+  });
+
+  it('stops a video at the end of its source, and floors anything at 100 ms', () => {
+    const clip = videoClip({ id: 'asset_v', name: 'surf.mp4' }, 4000, 0);
+    useEditor.setState({
+      assets: {
+        asset_v: {
+          id: 'asset_v',
+          name: 'surf.mp4',
+          kind: 'video',
+          path: '/v/surf.mp4',
+          src: 'asset:///v/surf.mp4',
+          sizeBytes: 2048,
+          durationMs: 4200,
+        },
+      },
+      clips: [clip],
+      audioTracks: [],
+    });
+
+    useEditor.getState().setClipDuration(clip.id, 30_000);
+    expect(useEditor.getState().clips[0].durationMs).toBe(4200);
+
+    useEditor.getState().setClipDuration(clip.id, 0);
+    expect(useEditor.getState().clips[0].durationMs).toBe(MIN_CLIP_DURATION_MS);
+  });
+
+  it('does nothing at all when the length asked for is the one it already has', () => {
+    const [a] = pairOnTrack();
+    const before = useEditor.getState().clips;
+    useEditor.getState().setClipDuration(a.id, 5000);
+    // The same array, not merely an equal one: an edit that changes nothing must not write
+    // the project file.
+    expect(useEditor.getState().clips).toBe(before);
+  });
+
+  it('retimes a sound on its lane, clamped to the file behind it', () => {
+    const track = audioTrack({ id: 'asset_m', name: 'theme.mp3' }, 2000, 5000);
+    useEditor.setState({
+      assets: {
+        asset_m: {
+          id: 'asset_m',
+          name: 'theme.mp3',
+          kind: 'audio',
+          path: '/m/theme.mp3',
+          src: 'asset:///m/theme.mp3',
+          sizeBytes: 2048,
+          durationMs: 8000,
+        },
+      },
+      clips: [],
+      audioTracks: [track],
+    });
+
+    useEditor.getState().setAudioDuration(track.id, 6500);
+    expect(useEditor.getState().audioTracks[0].durationMs).toBe(6500);
+    // The sound starts where it was put: a length is a tail edit, never a move.
+    expect(useEditor.getState().audioTracks[0].startMs).toBe(2000);
+
+    useEditor.getState().setAudioDuration(track.id, 30_000);
+    expect(useEditor.getState().audioTracks[0].durationMs).toBe(8000);
+  });
+
+  it('is a no-op on an item that is no longer there', () => {
+    pairOnTrack();
+    const before = useEditor.getState().clips;
+    useEditor.getState().setClipDuration('clip_gone', 9000);
+    useEditor.getState().setAudioDuration('audio_gone', 9000);
+    expect(useEditor.getState().clips).toBe(before);
+  });
+});
 
 describe('a cross-asset generation', () => {
   it('sends one photo as the start frame and the other as the end frame', async () => {
@@ -1075,5 +1189,82 @@ describe('the animate-all run and its terminal collapse', () => {
 
     expect(useEditor.getState().animateRun).toBeNull();
     expect(useEditor.getState().toasts).toHaveLength(before);
+  });
+});
+
+// ------------------------------------------------- placing an asset already in the bin
+
+describe('an asset placed from the bin', () => {
+  /** Two photos side by side on the track: a (0–2000) then b (2000–5000). */
+  function binPairOnTrack(): [Clip, Clip] {
+    const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 2000, 0);
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 2000);
+    useEditor.setState({ clips: [a, b] });
+    return [a, b];
+  }
+
+  it('a video placed from the bin lands at its probed length', () => {
+    // A length the importer never guesses: the asset carries it because the file was probed
+    // once, and nothing would ever correct this clip afterwards — `probeDurations` only
+    // patches the clip its own import created.
+    useEditor.setState({
+      assets: {
+        ...useEditor.getState().assets,
+        asset_v: {
+          id: 'asset_v',
+          name: 'walk.mp4',
+          kind: 'video',
+          path: '/media/walk.mp4',
+          src: 'asset:///media/walk.mp4',
+          sizeBytes: 4096,
+          durationMs: 31_500,
+        },
+      },
+    });
+
+    useEditor.getState().placeAssetOnTimeline('asset_v');
+
+    const [clip] = useEditor.getState().clips;
+    expect(clip.durationMs).toBe(31_500);
+    expect(clip.name).toBe('walk.mp4');
+  });
+
+  it('an insertion between two photos takes their failed generation with it', () => {
+    const [a, b] = binPairOnTrack();
+    const id = useEditor.getState().startCutGeneration(a.id, b.id);
+    emit({
+      generationId: id!,
+      status: 'failed',
+      progress: 0,
+      elapsedSecs: 4,
+      slow: false,
+      error: { title: 'Rate limited', message: 'rate limited', retryable: true },
+    });
+    expect(useEditor.getState().generations[id!].status).toBe('failed');
+
+    // A third photo landing between them: a→b is no longer a cut, so its chip and its card
+    // are gone and a failed render kept on that key would be state with no way out.
+    useEditor.getState().placeAssetOnTimeline('asset_c', 1);
+
+    const s = useEditor.getState();
+    expect(s.clips.map((c) => c.assetId)).toEqual(['asset_a', 'asset_c', 'asset_b']);
+    expect(s.generations[id!]).toBeUndefined();
+  });
+
+  it('an id that is not in the bin, or whose file has gone, places nothing', () => {
+    binPairOnTrack();
+    useEditor.getState().placeAssetOnTimeline('asset_gone');
+
+    // A clip on a missing file could only render as "media offline" and would block the
+    // export — the same refusal a generation makes.
+    useEditor.setState({
+      assets: {
+        ...useEditor.getState().assets,
+        asset_c: { ...useEditor.getState().assets.asset_c, missing: true },
+      },
+    });
+    useEditor.getState().placeAssetOnTimeline('asset_c');
+
+    expect(useEditor.getState().clips).toHaveLength(2);
   });
 });

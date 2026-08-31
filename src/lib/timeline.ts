@@ -808,6 +808,34 @@ export function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+/**
+ * The seconds a duration seeds its input box with: `5000` -> `"5.0"`, `4237` -> `"4.237"`.
+ *
+ * Not `formatDuration`: that rounds to a tenth, so seeding the box from it and pressing
+ * Enter on an untouched 4237 ms clip would quietly retime it to 4200. A value that is not a
+ * round tenth keeps every millisecond it has, and only the tidy ones get the trailing zero.
+ */
+export function durationInputValue(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms)) / 1000;
+  return Number.isInteger(seconds * 10) ? seconds.toFixed(1) : String(seconds);
+}
+
+/**
+ * A typed seconds string as whole milliseconds, or `null` when it is not a length.
+ *
+ * Deliberately stricter than `Number`, which reads an empty box as `0` — flooring a clip to
+ * the minimum on a stray Enter — and would also take `0x10`, `1e3` and `Infinity` as
+ * durations. A mistyped length is refused and the box goes back to what it was, rather than
+ * being guessed at. `0` is a length: it is floored by the resize, exactly as dragging an
+ * edge shut is.
+ */
+export function parseDurationInput(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+\.?\d*$|^\.\d+$/.test(trimmed)) return null;
+  const ms = Math.round(Number(trimmed) * 1000);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 function pad(v: number): string {
   return v.toString().padStart(2, '0');
 }

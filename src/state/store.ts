@@ -192,6 +192,12 @@ export interface EditorState {
   animateRun: { legs: AnimateLeg[] } | null;
   importing: number;
   importProblems: ImportProblem[];
+  /**
+   * The bin tile a pointer is currently carrying, if any. Transient, but the drag starts in
+   * one panel and lands in another, which is exactly what the one flat store is for — the
+   * timeline is the only thing that knows where a drop would land, so it owns the geometry.
+   */
+  draggingAssetId: string | null;
 
   settings: backend.SettingsView | null;
   settingsOpen: boolean;
@@ -228,10 +234,14 @@ export interface EditorState {
   addAudioViaDialog: () => Promise<void>;
   removeAsset: (assetId: string) => void;
   dismissImportProblems: () => void;
+  beginAssetDrag: (assetId: string) => void;
+  endAssetDrag: () => void;
+  placeAssetOnTimeline: (assetId: string, index?: number, audioStartMs?: number) => void;
 
   // ---- audio tracks
   moveAudioTrack: (trackId: string, startMs: number) => void;
   resizeAudioTrack: (trackId: string, edge: ClipEdge, deltaMs: number) => void;
+  setAudioDuration: (trackId: string, durationMs: number) => void;
   setAudioVolume: (trackId: string, volume: number) => void;
   toggleAudioMute: (trackId: string) => void;
 
@@ -241,6 +251,7 @@ export interface EditorState {
   splitAtPlayhead: () => void;
   moveClipTo: (clipId: string, startMs: number) => void;
   resizeClip: (clipId: string, edge: ClipEdge, deltaMs: number) => void;
+  setClipDuration: (clipId: string, durationMs: number) => void;
   toggleSnapping: () => void;
 
   // ---- playback
@@ -315,6 +326,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   animateRun: null,
   importing: 0,
   importProblems: [],
+  draggingAssetId: null,
 
   settings: null,
   settingsOpen: false,
@@ -472,6 +484,33 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   dismissImportProblems: () => set({ importProblems: [] }),
 
+  beginAssetDrag: (assetId) => set({ draggingAssetId: assetId }),
+  endAssetDrag: () => set({ draggingAssetId: null }),
+
+  /**
+   * Put an asset that is already in the bin onto the timeline — the drag out of the bin, and
+   * the keyboard path beside it. Where it lands is the import's rule, not a second one:
+   * `index` is a boundary on the visual track and `audioStartMs` an exact time on a new lane.
+   * Both default to the playhead, which is what a caller with no pointer to speak of wants.
+   *
+   * The asset's own length is passed through, so a video whose file has been probed lands at
+   * its real length: nothing would ever correct it later, since `probeDurations` only patches
+   * the clip its own import created.
+   */
+  placeAssetOnTimeline(assetId, index, audioStartMs) {
+    const { assets, clips, playheadMs } = get();
+    const asset = assets[assetId];
+    // An asset whose file has gone is refused here, the way a generation refuses one: a clip
+    // on it could only render as "media offline" and would block the export.
+    if (!asset || asset.missing) return;
+    commitImport(
+      set,
+      [placed(asset, audioStartMs ?? playheadMs, asset.durationMs)],
+      [],
+      index ?? insertIndexAtTime(clips, playheadMs),
+    );
+  },
+
   // ------------------------------------------------------------------ audio tracks
 
   /** Drag a sound along its lane: `startMs` is where it should begin. */
@@ -499,6 +538,13 @@ export const useEditor = create<EditorState>((set, get) => ({
       audioTracks: next,
       playheadMs: Math.min(playheadMs, timelineEndMs(clips, next)),
     });
+  },
+
+  /** The same as `setClipDuration`, for a sound on its lane. */
+  setAudioDuration(trackId, durationMs) {
+    const track = get().audioTracks.find((t) => t.id === trackId);
+    if (!track) return;
+    get().resizeAudioTrack(trackId, 'end', Math.round(durationMs) - track.durationMs);
   },
 
   setAudioVolume(trackId, volume) {
@@ -599,6 +645,21 @@ export const useEditor = create<EditorState>((set, get) => ({
       playheadMs: Math.min(playheadMs, timelineEndMs(next, audioTracks)),
       ...prunedAfterEdit(next, generations, cutPrompts, cutModes),
     });
+  },
+
+  /**
+   * Set a clip's length outright — what the inspector's Duration box commits.
+   *
+   * Expressed as a tail-edge delta rather than written straight onto the clip, so the box
+   * and the drag handle are one behaviour: the floors, the ceilings, the push on the clips
+   * behind it and the pruning all come from `resizeClip` and cannot drift from it. The
+   * delta is taken from the live clip, so the number the user typed is what lands even if
+   * the timeline moved under them while they were typing.
+   */
+  setClipDuration(clipId, durationMs) {
+    const clip = get().clips.find((c) => c.id === clipId);
+    if (!clip) return;
+    get().resizeClip(clipId, 'end', Math.round(durationMs) - clip.durationMs);
   },
 
   toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
@@ -1306,16 +1367,19 @@ type Setter = (partial: Partial<EditorState> | ((s: EditorState) => Partial<Edit
 /** One accepted import: a clip bound for the visual track, or a sound bound for a lane. */
 type Imported = { asset: MediaAsset; clip?: Clip; track?: AudioTrack };
 
-function placed(asset: MediaAsset, audioStartMs: number): Imported {
+function placed(asset: MediaAsset, audioStartMs: number, sourceDurationMs?: number): Imported {
   if (asset.kind === 'audio') {
-    return { asset, track: audioTrack(asset, audioStartMs, DEFAULT_AUDIO_DURATION_MS) };
+    return {
+      asset,
+      track: audioTrack(asset, audioStartMs, sourceDurationMs ?? DEFAULT_AUDIO_DURATION_MS),
+    };
   }
   return {
     asset,
     clip:
       asset.kind === 'photo'
         ? photoClip(asset, DEFAULT_PHOTO_DURATION_MS)
-        : videoClip(asset, DEFAULT_VIDEO_DURATION_MS),
+        : videoClip(asset, sourceDurationMs ?? DEFAULT_VIDEO_DURATION_MS),
   };
 }
 
@@ -1341,6 +1405,10 @@ function commitImport(set: Setter, accepted: Imported[], problems: ImportProblem
       assets,
       clips,
       audioTracks,
+      // An insertion is an edit like any other: landing a clip between two photos breaks
+      // their cut, and a failed generation keyed on that pair would be left with no chip and
+      // no card to dismiss it from. Nothing else is dropped — an insertion removes no clip.
+      ...prunedAfterEdit(clips, s.generations, s.cutPrompts, s.cutModes),
       importProblems: [...s.importProblems, ...problems],
       selection: first?.clip
         ? { kind: 'clip', clipId: first.clip.id }

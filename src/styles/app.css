@@ -200,11 +200,19 @@ input {
   border: 1px solid var(--line);
   background: var(--sunken);
   padding: 0;
+  cursor: grab;
+}
+/* The one thing that says which tile the pointer is carrying. */
+.bin__tile--dragging {
+  cursor: grabbing;
+  opacity: 0.5;
 }
 /* Restored media whose file has gone. It stays in the bin — its clips are still on the
    track and still say what the timeline is — but it can neither draw nor export. */
 .bin__tile--missing {
   opacity: 0.45;
+  /* Not a drag source: its file is gone, so there is nothing to put on the track. */
+  cursor: default;
 }
 .bin__tile img,
 .bin__tile video {
@@ -557,6 +565,29 @@ input {
   color: var(--ink-2);
   text-align: right;
   word-break: break-all;
+}
+/* A `.kv` value that is typed rather than read: the box is dressed as the `<b>` it stands
+   in for, so the card's rhythm does not change when a row becomes editable. */
+.kv .num {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-3);
+}
+.kv .num input {
+  font: 600 10.5px/1 var(--mono);
+  color: var(--ink-2);
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 4px 6px;
+  width: 62px;
+  text-align: right;
+  outline: none;
+}
+.kv .num input:focus {
+  border-color: var(--accent-line);
+  color: var(--ink);
 }
 
 .prompt {
