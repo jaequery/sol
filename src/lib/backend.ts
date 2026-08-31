@@ -11,19 +11,16 @@ import { listen } from '@tauri-apps/api/event';
 import { AUDIO_EXTS, type MediaKind } from '../types/project';
 
 export interface SettingsView {
+  /** The Higgsfield CLI binary was found — generation can at least be attempted. */
   configured: boolean;
-  apiKeyIdHint: string;
-  hasSecret: boolean;
-  baseUrl: string;
-  /** The model endpoint, e.g. `/minimax/hailuo-02/standard/image-to-video`. */
-  endpoint: string;
+  /** Where it was found, for the dialog to show; null when it wasn't. */
+  cliPath: string | null;
+  /** A CLI model id offered as the Model picker's Custom entry; blank for none. */
+  customModel: string;
 }
 
 export interface SettingsInput {
-  apiKeyId?: string;
-  apiKeySecret?: string;
-  baseUrl?: string;
-  endpoint?: string;
+  customModel?: string;
 }
 
 export interface ImportedMedia {
@@ -49,15 +46,15 @@ export interface GenerateInput {
   prompt: string;
   startFrame: string;
   endFrame?: string;
-  /** The model endpoint chosen for THIS render — the selector's pick, resolved. */
-  endpoint: string;
+  /** The CLI model id chosen for THIS render — the selector's pick, resolved. */
+  model: string;
 }
 
 export interface GenerationUpdate {
   generationId: string;
   status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
   progress: number;
-  /** The Higgsfield `request_id`, once the API has accepted the submission. */
+  /** The CLI's job id, once the submission has been accepted. */
   jobId?: string;
   elapsedSecs: number;
   slow: boolean;
@@ -72,75 +69,65 @@ export interface ExportProgress {
 
 const DESKTOP_ONLY = 'This needs the SolCut desktop app — run it with `pnpm tauri dev`.';
 
-/** Kept in step with `solcut_higgsfield::DEFAULT_BASE_URL` / `DEFAULT_ENDPOINT`. */
-export const DEFAULT_BASE_URL = 'https://api.higgsfield.ai';
-export const DEFAULT_ENDPOINT = '/minimax/hailuo-02/standard/image-to-video';
+/** How the CLI is installed and signed in, quoted wherever the app has to say so. */
+export const CLI_INSTALL = 'npm i -g @higgsfield/cli';
+export const CLI_LOGIN = 'higgsfield auth login';
+export const CLI_WORKSPACE = 'higgsfield workspace set <workspace_id>';
 
-/** One model the per-render selector offers: a label for humans, an endpoint for the API. */
+/** One model the per-render selector offers: a label for humans, a job id for the CLI. */
 export interface RenderModel {
   /** Stable id — what the store holds and a generation records. */
   id: string;
   label: string;
-  /** The model endpoint posted to, appended to the base URL. */
-  endpoint: string;
+  /** The CLI job type, e.g. `seedance_2_5` — what `higgsfield generate create` takes. */
+  job: string;
 }
 
 /**
  * The models the per-render selector offers, in menu order.
  *
- * Every entry's contract is a SolCut segment: a first frame, a last frame
- * (`image_url`/`end_image_url`, or the veo pair's own names) and a prompt, with nothing
- * else required — and every entry's route appears in the published OpenAPI document
- * (<https://docs.higgsfield.ai/docs/openapi.json>). Anything else can still be reached
- * through the Custom entry, which sends whatever endpoint Settings stores.
- *
- * Deliberately absent: Seedance — 2.5 has no route in the API (an earlier build guessed
- * `/bytedance/seedance/v2.5/pro/image-to-video` from the naming convention, and every
- * default render died on `404: model_not_found`), and the seedance v1 and kling
- * operations take no last frame at all, so a "transition" would never land on the second
- * photo. Also absent: the `higgsfield-ai/dop` trio, whose live endpoints are the API
- * face of a single-image motion-preset product and reject two-frame submissions in a way
- * their published schema does not predict.
+ * Every entry's contract is a SolCut segment: a first frame, a last frame and a prompt,
+ * with nothing else required — every non-default entry documents `--start-image` and
+ * `--end-image` in the CLI's own MODELS.md, and the default is the id Higgsfield's site
+ * opens Seedance 2.5 with (`/ai/video?model=seedance_2_5`). The CLI checks each id
+ * against the live catalog, so a wrong one fails by name instead of by 404. Anything
+ * else the catalog offers (`higgsfield model list --video`) can still be reached through
+ * the Custom entry, which sends whatever model id Settings stores.
  */
 export const RENDER_MODELS: RenderModel[] = [
-  { id: 'hailuo-02-standard', label: 'MiniMax Hailuo-02 Standard', endpoint: '/minimax/hailuo-02/standard/image-to-video' },
-  { id: 'hailuo-02-pro', label: 'MiniMax Hailuo-02 Pro', endpoint: '/minimax/hailuo-02/pro/image-to-video' },
-  { id: 'veo-3.1', label: 'Veo 3.1', endpoint: '/veo3.1/first-last-frame-to-video' },
-  { id: 'veo-3.1-fast', label: 'Veo 3.1 Fast', endpoint: '/veo3.1/fast/first-last-frame-to-video' },
+  { id: 'seedance-2.5', label: 'Seedance 2.5', job: 'seedance_2_5' },
+  { id: 'seedance-2.0', label: 'Seedance 2.0', job: 'seedance_2_0' },
+  { id: 'seedance-1.5-pro', label: 'Seedance 1.5 Pro', job: 'seedance1_5' },
+  { id: 'kling-3.0', label: 'Kling v3.0', job: 'kling3_0' },
+  { id: 'veo-3.1-lite', label: 'Veo 3.1 Lite', job: 'veo3_1_lite' },
 ];
 
 /** What a render uses when the user never touches the selector. */
-export const DEFAULT_MODEL_ID = 'hailuo-02-standard';
+export const DEFAULT_MODEL_ID = 'seedance-2.5';
 
-/** The selector entry that sends the endpoint typed into Settings instead of a known model. */
+/** The selector entry that sends the model id typed into Settings instead of a known model. */
 export const CUSTOM_MODEL_ID = 'custom';
 
 /**
- * The endpoint a model choice resolves to at render time. `custom` reads the endpoint
+ * The CLI job id a model choice resolves to at render time. `custom` reads the model id
  * Settings stores; an unknown id falls back to the default model rather than sending
- * nothing, so a stale stored choice can never produce an endpoint-less request.
+ * nothing, so a stale stored choice can never produce a model-less request.
  */
-export function modelEndpoint(modelId: string, customEndpoint?: string): string {
+export function modelJob(modelId: string, customModel?: string): string {
   if (modelId === CUSTOM_MODEL_ID) {
-    const typed = customEndpoint?.trim();
+    const typed = customModel?.trim();
     if (typed) return typed;
   }
   const model = RENDER_MODELS.find((m) => m.id === modelId);
   const fallback = RENDER_MODELS.find((m) => m.id === DEFAULT_MODEL_ID) ?? RENDER_MODELS[0];
-  return (model ?? fallback).endpoint;
+  return (model ?? fallback).job;
 }
 
 /** The human name for a model choice, for cards that show what is rendering. */
 export function modelLabel(modelId: string): string {
-  if (modelId === CUSTOM_MODEL_ID) return 'Custom endpoint';
+  if (modelId === CUSTOM_MODEL_ID) return 'Custom model';
   return RENDER_MODELS.find((m) => m.id === modelId)?.label ?? modelId;
 }
-
-/**
- * Offered as suggestions on the Settings endpoint box, so pointing at another model does
- * not mean reading the API reference first; anything else can still be typed in.
- */
-export const KNOWN_ENDPOINTS = RENDER_MODELS.map((m) => m.endpoint);
 
 export function isDesktop(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -162,13 +149,7 @@ export function assetSrc(path: string): string {
 
 export async function getSettings(): Promise<SettingsView> {
   if (!isDesktop()) {
-    return {
-      configured: false,
-      apiKeyIdHint: '',
-      hasSecret: false,
-      baseUrl: DEFAULT_BASE_URL,
-      endpoint: DEFAULT_ENDPOINT,
-    };
+    return { configured: false, cliPath: null, customModel: '' };
   }
   return invoke<SettingsView>('get_settings');
 }
@@ -179,14 +160,12 @@ export async function saveSettings(input: SettingsInput): Promise<SettingsView> 
 }
 
 /**
- * Prove a credential before committing to it.
- *
- * The dialog's own fields are sent, so the key being typed is the key that gets
- * authenticated; blank fields fall back to whatever the backend has stored.
+ * Prove the CLI connection: one free, read-only CLI call that checks the binary, the
+ * login and the billing workspace, and reports the CLI's own fix when one is missing.
  */
-export async function testConnection(input: SettingsInput): Promise<string> {
+export async function testConnection(): Promise<string> {
   requireDesktop();
-  return invoke<string>('test_connection', { input });
+  return invoke<string>('test_connection');
 }
 
 export async function importPaths(paths: string[]): Promise<ImportResult> {

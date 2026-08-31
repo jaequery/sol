@@ -136,7 +136,7 @@ export interface EditorState {
 
   generations: Record<string, Generation>;
   /**
-   * The model the next render uses — a `RenderModel` id, or `custom` for the endpoint
+   * The model the next render uses — a `RenderModel` id, or `custom` for the model id
    * Settings stores. Chosen at any render entry point and sent with every request; never
    * persisted, so a fresh session is back on the default (MiniMax Hailuo-02 Standard).
    */
@@ -224,7 +224,7 @@ export interface EditorState {
   openSettings: () => void;
   closeSettings: () => void;
   saveSettings: (input: backend.SettingsInput) => Promise<void>;
-  testConnection: (input: backend.SettingsInput) => Promise<void>;
+  testConnection: () => Promise<void>;
   runExport: () => Promise<void>;
   setExportProgress: (stage: string, fraction: number) => void;
   pushToast: (toast: Omit<Toast, 'id'>) => void;
@@ -826,9 +826,9 @@ export const useEditor = create<EditorState>((set, get) => ({
   /**
    * Three photos in, one film out: two Higgsfield transitions run side by side.
    *
-   * Nothing is sent — and no film is created — without a credential. There is no local
-   * renderer to fall back to, so a film with no Higgsfield behind it is refused where the
-   * user asked for it rather than two legs later.
+   * Nothing is sent — and no film is created — without the Higgsfield CLI. There is no
+   * local renderer to fall back to, so a film with no Higgsfield behind it is refused
+   * where the user asked for it rather than two legs later.
    */
   async startFilm(assetIds, prompts) {
     const { assets, settings, pushToast } = get();
@@ -949,9 +949,9 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
   },
 
-  async testConnection(input) {
+  async testConnection() {
     try {
-      set({ connectionMessage: { ok: true, text: await backend.testConnection(input) } });
+      set({ connectionMessage: { ok: true, text: await backend.testConnection() } });
     } catch (error) {
       set({ connectionMessage: { ok: false, text: message(error) } });
     }
@@ -1334,7 +1334,7 @@ function launchGeneration(
   // The choice is read at launch, so a render carries the model that was showing when its
   // button was pressed — switching the selector afterwards changes the next render only.
   const { modelId, settings } = get();
-  const endpoint = backend.modelEndpoint(modelId, settings?.endpoint);
+  const model = backend.modelJob(modelId, settings?.customModel);
   const generation: Generation = {
     id: generationId,
     target,
@@ -1351,7 +1351,7 @@ function launchGeneration(
     try {
       const startFrame = await renderPhotoJpeg(frames.fromSrc);
       const endFrame = await renderPhotoJpeg(frames.toSrc);
-      await backend.generateAnimation({ generationId, prompt, startFrame, endFrame, endpoint });
+      await backend.generateAnimation({ generationId, prompt, startFrame, endFrame, model });
     } catch (error) {
       const existing = get().generations[generationId];
       if (existing) {

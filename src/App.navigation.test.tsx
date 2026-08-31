@@ -24,10 +24,8 @@ let emitGenerationUpdate: (u: GenerationUpdate) => void = () => {};
 
 const STORED_SETTINGS = {
   configured: true,
-  apiKeyIdHint: '••••7fa2',
-  hasSecret: true,
-  baseUrl: 'https://api.higgsfield.ai',
-  endpoint: '/higgsfield-ai/dop/standard',
+  cliPath: '/usr/local/bin/higgsfield',
+  customModel: '',
 };
 let storedSettings = { ...STORED_SETTINGS };
 /** Mutable so the browser-only branches are reachable, unlike the hard `true` next door. */
@@ -432,12 +430,11 @@ describe('settings dialog', () => {
     await mount();
     await user.click(screen.getByRole('button', { name: '✦ Higgsfield' }));
 
-    expect(screen.getByLabelText('API key ID')).toHaveFocus();
+    const field = screen.getByLabelText('Custom model');
+    expect(field).toHaveFocus();
 
-    const base = screen.getByLabelText('Base URL');
-    await user.clear(base);
-    await user.type(base, 'https://example.test');
-    expect(base).toHaveValue('https://example.test');
+    await user.type(field, 'wan2_7');
+    expect(field).toHaveValue('wan2_7');
 
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog', { name: 'Higgsfield connection' })).not.toBeInTheDocument();
@@ -754,7 +751,7 @@ describe('keyboard', () => {
     const user = userEvent.setup();
     await mount();
     await user.click(screen.getByRole('button', { name: '✦ Higgsfield' }));
-    const field = screen.getByLabelText('API key ID');
+    const field = screen.getByLabelText('Custom model');
     await user.click(field);
 
     // The typing guard used to return before the Escape branch, so Escape did nothing in

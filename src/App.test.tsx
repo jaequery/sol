@@ -22,12 +22,10 @@ const generateAnimation = vi.fn(async (_input: GenerateInput) => {});
 let emitGenerationUpdate: (u: GenerationUpdate) => void = () => {};
 
 /** What the backend reports it has stored. Reset per test; a few of them change it. */
-const STORED_SETTINGS = {
+const STORED_SETTINGS: backend.SettingsView = {
   configured: true,
-  apiKeyIdHint: '••••7fa2',
-  hasSecret: true,
-  baseUrl: 'https://api.higgsfield.ai',
-  endpoint: '/higgsfield-ai/dop/standard',
+  cliPath: '/usr/local/bin/higgsfield',
+  customModel: '',
 };
 let storedSettings = { ...STORED_SETTINGS };
 
@@ -480,9 +478,9 @@ describe('AI transitions between photos', () => {
     expect(generateAnimation).not.toHaveBeenCalled();
   });
 
-  it('11 — with no credential the cut card explains and nothing is sent', async () => {
+  it('11 — with no Higgsfield CLI the cut card explains and nothing is sent', async () => {
     const user = userEvent.setup();
-    storedSettings = { ...STORED_SETTINGS, configured: false, hasSecret: false, apiKeyIdHint: '' };
+    storedSettings = { ...STORED_SETTINGS, configured: false, cliPath: null };
     render(<App />);
     await dropPhotoPair();
 
@@ -530,68 +528,66 @@ describe('AI transitions between photos', () => {
 });
 
 describe('the Higgsfield connection', () => {
-  it('Test connection authenticates with the credential typed into the dialog', async () => {
+  it('Test connection proves the CLI sign-in and reports it', async () => {
     const user = userEvent.setup();
     const testConnection = vi.mocked(backend.testConnection);
     testConnection.mockClear();
-    testConnection.mockResolvedValue('Authenticated with Higgsfield in 91 ms.');
+    testConnection.mockResolvedValue(
+      'Signed in through the Higgsfield CLI — 22 video models available (91 ms).',
+    );
 
     render(<App />);
     await user.click(await screen.findByRole('button', { name: /Higgsfield/ }));
-
-    await user.type(screen.getByLabelText('API key ID'), 'hf-key-id');
-    await user.type(screen.getByLabelText('API key secret'), 'hf-key-secret');
     await user.click(screen.getByRole('button', { name: 'Test connection' }));
 
-    // The whole point of the button: it proves the key in the boxes, not the one on disk.
     await waitFor(() => expect(testConnection).toHaveBeenCalledTimes(1));
-    expect(testConnection).toHaveBeenCalledWith({
-      apiKeyId: 'hf-key-id',
-      apiKeySecret: 'hf-key-secret',
-      baseUrl: 'https://api.higgsfield.ai',
-      endpoint: '/higgsfield-ai/dop/standard',
-    });
     expect(await screen.findByText('Connection OK')).toBeInTheDocument();
+    expect(screen.getByText(/22 video models/)).toBeInTheDocument();
   });
 
-  it('a rejected credential is reported as a failure, not as a connection', async () => {
+  it("a CLI refusal is reported as a failure, in the CLI's own words", async () => {
     const user = userEvent.setup();
     const testConnection = vi.mocked(backend.testConnection);
     testConnection.mockClear();
-    testConnection.mockRejectedValue('authentication rejected (HTTP 401): Invalid credentials');
+    testConnection.mockRejectedValue('No workspace selected. Hint: Run: hf workspace set <workspace_id>');
 
     render(<App />);
     await user.click(await screen.findByRole('button', { name: /Higgsfield/ }));
-    await user.type(screen.getByLabelText('API key ID'), 'wrong');
-    await user.type(screen.getByLabelText('API key secret'), 'wrong');
     await user.click(screen.getByRole('button', { name: 'Test connection' }));
 
     expect(await screen.findByText('Could not connect')).toBeInTheDocument();
-    expect(screen.getByText(/Invalid credentials/)).toBeInTheDocument();
+    expect(screen.getByText(/workspace set/)).toBeInTheDocument();
   });
 
-  it('reopening the dialog shows the endpoint that is stored, not the default', async () => {
+  it('with no CLI on the machine the dialog shows the setup commands', async () => {
+    const user = userEvent.setup();
+    storedSettings = { ...STORED_SETTINGS, configured: false, cliPath: null };
+
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: /Higgsfield/ }));
+
+    expect(screen.getByText(backend.CLI_INSTALL)).toBeInTheDocument();
+    expect(screen.getByText(backend.CLI_LOGIN)).toBeInTheDocument();
+  });
+
+  it('reopening the dialog shows the custom model that is stored, not a default', async () => {
     const user = userEvent.setup();
     const saveSettings = vi.mocked(backend.saveSettings);
     saveSettings.mockClear();
 
-    // What the backend reports after the user pointed at another documented model.
-    storedSettings = { ...STORED_SETTINGS, endpoint: '/veo3.1/first-last-frame-to-video' };
+    // What the backend reports after the user pointed at another catalog model.
+    storedSettings = { ...STORED_SETTINGS, customModel: 'wan2_7' };
 
     render(<App />);
-    await waitFor(() =>
-      expect(useEditor.getState().settings?.endpoint).toBe('/veo3.1/first-last-frame-to-video'),
-    );
+    await waitFor(() => expect(useEditor.getState().settings?.customModel).toBe('wan2_7'));
     await user.click(screen.getByRole('button', { name: /Higgsfield/ }));
 
-    // Seeded once at mount, the field would still read the default — and saving would
-    // silently write that default back over the stored endpoint.
-    expect(screen.getByLabelText('Custom model endpoint')).toHaveValue('/veo3.1/first-last-frame-to-video');
+    // Seeded once at mount, the field would still read blank — and saving would
+    // silently clear the stored model.
+    expect(screen.getByLabelText('Custom model')).toHaveValue('wan2_7');
 
     await user.click(screen.getByRole('button', { name: 'Save' }));
-    expect(saveSettings).toHaveBeenCalledWith(
-      expect.objectContaining({ endpoint: '/veo3.1/first-last-frame-to-video' }),
-    );
+    expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ customModel: 'wan2_7' }));
   });
 });
 
@@ -952,12 +948,10 @@ async function dragFromTo(target: Element, fromX: number, toX: number) {
 }
 
 describe('the 3-photo film wizard', () => {
-  const NO_KEY = {
+  const NO_CLI = {
     configured: false,
-    apiKeyIdHint: '',
-    hasSecret: false,
-    baseUrl: 'https://api.higgsfield.ai',
-    endpoint: '/higgsfield-ai/dop/standard',
+    cliPath: null,
+    customModel: '',
   };
 
   /** Both ways in carry the same label: the title bar's, then the empty timeline's. */
@@ -1084,7 +1078,7 @@ describe('the 3-photo film wizard', () => {
   it('with no credential it refuses, points at settings, and sends nothing', async () => {
     const user = userEvent.setup();
     await openWizard(user);
-    act(() => useEditor.setState({ settings: NO_KEY }));
+    act(() => useEditor.setState({ settings: NO_CLI }));
 
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
@@ -1125,9 +1119,9 @@ describe('the 3-photo film wizard', () => {
     expect(first.prompt).toBe(defaultFilmPrompt(0));
     expect(second.prompt).toBe(defaultFilmPrompt(1));
 
-    // The selector was never touched, so both legs render on the default: Hailuo-02.
-    expect(first.endpoint).toBe('/minimax/hailuo-02/standard/image-to-video');
-    expect(second.endpoint).toBe(first.endpoint);
+    // The selector was never touched, so both legs render on the default: Seedance 2.5.
+    expect(first.model).toBe('seedance_2_5');
+    expect(second.model).toBe(first.model);
 
     // The photos are inputs, not shots: the track stays empty until the film lands.
     expect(useEditor.getState().clips).toHaveLength(0);
@@ -1143,12 +1137,12 @@ describe('the 3-photo film wizard', () => {
       file('three.jpg', 'image/jpeg'),
     ]);
 
-    await user.selectOptions(screen.getByLabelText('Model'), 'veo-3.1-fast');
+    await user.selectOptions(screen.getByLabelText('Model'), 'kling-3.0');
     await user.click(generateFilm());
 
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(2));
-    expect(payloadForLeg(0).endpoint).toBe('/veo3.1/fast/first-last-frame-to-video');
-    expect(payloadForLeg(1).endpoint).toBe('/veo3.1/fast/first-last-frame-to-video');
+    expect(payloadForLeg(0).model).toBe('kling3_0');
+    expect(payloadForLeg(1).model).toBe('kling3_0');
   });
 
   it('a leg that fails explains itself and offers a retry, and the app stays usable', async () => {
@@ -1344,20 +1338,18 @@ describe('the 3-photo film wizard', () => {
 });
 
 describe('the per-render model selector', () => {
-  const HAILUO_STANDARD = '/minimax/hailuo-02/standard/image-to-video';
-
-  it('a render with the selector untouched goes to Hailuo-02 Standard', async () => {
+  it('a render with the selector untouched goes to Seedance 2.5', async () => {
     const user = userEvent.setup();
     render(<App />);
     await dropPhotoPair();
     await user.click(screen.getByRole('button', { name: CUT_CHIP }));
 
     // The control stands on the cut card, already on the default — no pick required.
-    expect(await screen.findByLabelText('Model')).toHaveValue('hailuo-02-standard');
+    expect(await screen.findByLabelText('Model')).toHaveValue('seedance-2.5');
 
     await user.click(screen.getByRole('button', { name: /generate transition/i }));
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
-    expect(generateAnimation.mock.calls[0][0].endpoint).toBe(HAILUO_STANDARD);
+    expect(generateAnimation.mock.calls[0][0].model).toBe('seedance_2_5');
   });
 
   it('a non-default pick is what that render submits', async () => {
@@ -1366,45 +1358,41 @@ describe('the per-render model selector', () => {
     await dropPhotoPair();
     await user.click(screen.getByRole('button', { name: CUT_CHIP }));
 
-    await user.selectOptions(await screen.findByLabelText('Model'), 'veo-3.1');
+    await user.selectOptions(await screen.findByLabelText('Model'), 'veo-3.1-lite');
     await user.click(screen.getByRole('button', { name: /generate transition/i }));
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
-    expect(generateAnimation.mock.calls[0][0].endpoint).toBe('/veo3.1/first-last-frame-to-video');
+    expect(generateAnimation.mock.calls[0][0].model).toBe('veo3_1_lite');
   });
 
   it('Regenerate carries the same control, and submits its pick', async () => {
     const user = userEvent.setup();
     render(<App />);
     const id = await runCutGeneration(user);
-    expect(generateAnimation.mock.calls[0][0].endpoint).toBe(HAILUO_STANDARD);
+    expect(generateAnimation.mock.calls[0][0].model).toBe('seedance_2_5');
     await succeed(id);
 
     // The landed transition clip is selected, so its card is showing now.
     generateAnimation.mockClear();
-    await user.selectOptions(await screen.findByLabelText('Model'), 'hailuo-02-pro');
+    await user.selectOptions(await screen.findByLabelText('Model'), 'seedance-2.0');
     await user.click(screen.getByRole('button', { name: /regenerate transition/i }));
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
-    expect(generateAnimation.mock.calls[0][0].endpoint).toBe(
-      '/minimax/hailuo-02/pro/image-to-video',
-    );
+    expect(generateAnimation.mock.calls[0][0].model).toBe('seedance_2_0');
   });
 
-  it('an endpoint typed into Settings is reachable as the Custom entry', async () => {
+  it('a model id typed into Settings is reachable as the Custom entry', async () => {
     const user = userEvent.setup();
-    storedSettings = { ...STORED_SETTINGS, endpoint: '/wan-25-preview/image-to-video' };
+    storedSettings = { ...STORED_SETTINGS, customModel: 'wan2_7' };
     render(<App />);
     await dropPhotoPair();
     await user.click(screen.getByRole('button', { name: CUT_CHIP }));
 
     const select = await screen.findByLabelText('Model');
-    expect(
-      within(select).getByRole('option', { name: 'Custom — /wan-25-preview/image-to-video' }),
-    ).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Custom — wan2_7' })).toBeInTheDocument();
 
     await user.selectOptions(select, 'custom');
     await user.click(screen.getByRole('button', { name: /generate transition/i }));
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
-    expect(generateAnimation.mock.calls[0][0].endpoint).toBe('/wan-25-preview/image-to-video');
+    expect(generateAnimation.mock.calls[0][0].model).toBe('wan2_7');
   });
 });
 

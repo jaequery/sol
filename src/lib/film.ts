@@ -20,7 +20,7 @@ export const FILM_SEGMENT_COUNT = FILM_IMAGE_COUNT - 1;
 /**
  * How long a leg is taken to be until the file says otherwise.
  *
- * No Higgsfield endpoint accepts a free-form duration — the model decides — so this is not
+ * No Higgsfield model accepts a free-form duration — the model decides — so this is not
  * something the request asks for. It is what a leg is drawn as before its MP4 has been
  * probed, and what it falls back to when the probe cannot tell.
  */

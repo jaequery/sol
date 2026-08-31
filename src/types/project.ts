@@ -93,7 +93,7 @@ export interface Generation {
   id: string;
   target: GenerationTarget;
   prompt: string;
-  /** The model that renders it: a `RenderModel` id, or `custom` for the Settings endpoint. */
+  /** The model that renders it: a `RenderModel` id, or `custom` for the Settings model id. */
   modelId: string;
   status: GenerationStatus;
   /** 0..1 */

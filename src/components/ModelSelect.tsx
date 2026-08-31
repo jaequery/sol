@@ -5,11 +5,11 @@
  * transition card's Regenerate, the film wizard. They all read and write the same
  * selection: the model is a per-render choice (whatever the selector shows when the
  * button is pressed is what that render uses), not a saved setting, so a fresh session
- * is back on the default — MiniMax Hailuo-02 Standard.
+ * is back on the default — Seedance 2.5.
  *
- * A Custom entry appears only when Settings stores an endpoint that is not already in
- * the list: that endpoint exists precisely so an undocumented model or an API revision
- * can be pointed at without a new build, and a selector that could not reach it would
+ * A Custom entry appears only when Settings stores a model id that is not already in
+ * the list: that id exists precisely so any job type the CLI's live catalog offers can
+ * be pointed at without a new build, and a selector that could not reach it would
  * quietly retire the escape hatch.
  */
 
@@ -21,8 +21,8 @@ export function ModelSelect({ id }: { id: string }) {
   const setModel = useEditor((s) => s.setModel);
   const settings = useEditor((s) => s.settings);
 
-  const custom = (settings?.endpoint ?? '').trim();
-  const customIsItsOwn = custom !== '' && RENDER_MODELS.every((m) => m.endpoint !== custom);
+  const custom = (settings?.customModel ?? '').trim();
+  const customIsItsOwn = custom !== '' && RENDER_MODELS.every((m) => m.job !== custom);
 
   return (
     <div className="field">
@@ -34,9 +34,9 @@ export function ModelSelect({ id }: { id: string }) {
           </option>
         ))}
         {/* Kept while selected even if Settings has since matched a listed model, so the
-            control never shows an empty value; it resolves to the same endpoint anyway. */}
+            control never shows an empty value; it resolves to the same job id anyway. */}
         {(customIsItsOwn || modelId === CUSTOM_MODEL_ID) && (
-          <option value={CUSTOM_MODEL_ID}>Custom — {custom || 'Settings endpoint'}</option>
+          <option value={CUSTOM_MODEL_ID}>Custom — {custom || 'Settings model'}</option>
         )}
       </select>
     </div>

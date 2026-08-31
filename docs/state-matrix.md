@@ -29,13 +29,13 @@ hi-fi walkthrough artifact.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 13 | **No credential** | Generate clicked with no key ID *and* secret stored | Inline callout in the cut card: "Connect Higgsfield to generate" + Open settings; nothing is sent | Save both halves of the key |
-| 14 | **Settings dialog** | Open settings | Key ID/secret fields (masked, the first one focused), base URL, custom model endpoint (what the render cards’ Custom entry sends); Test connection reports pass/fail inline | Save / Cancel / Escape — Escape discards, exactly as Cancel does |
+| 13 | **No CLI** | Generate clicked with no Higgsfield CLI found on the machine | Inline callout in the cut card: "Connect Higgsfield to generate" + Open settings; nothing is sent | Install the CLI (`npm i -g @higgsfield/cli`) and sign in (`higgsfield auth login`) |
+| 14 | **Settings dialog** | Open settings | CLI status (found + path, or the three setup commands) and the custom model id (what the render cards’ Custom entry sends, first focused); Test connection reports pass/fail inline in the CLI's own words | Save / Cancel / Escape — Escape discards, exactly as Cancel does |
 | 15 | **Queued** | Job accepted by the API | The cut's ✦ chip becomes the progress surface reading ◐ QUEUED; the inspector shows the job id | Cancel |
 | 16 | **Running (partial/slow)** | Poll returns progress | The chip shows a live percentage; **the rest of the app stays fully usable** — you can select other clips, edit the track, start a second generation | Cancel, or wait |
 | 17 | **Slow (> 90 s)** | Still running past the soft threshold | The card adds "Taking longer than usual — you can keep editing"; no spinner-lock, no modal | Cancel, or wait |
 | 18 | **Failed — rate limited (429)** | API returns 429 | The chip turns error-red with "Rate limited"; inspector shows the message and a Retry (with the same prompt preserved) | Retry / dismiss |
-| 19 | **Failed — auth (401/403)** | Bad key | Same error affordance, message points at settings | Fix key, retry |
+| 19 | **Failed — not signed in** | The CLI's login expired or no billing workspace is selected | Same error affordance, message carries the CLI's own fix (`higgsfield auth login`, `hf workspace set …`) | Run the named command, retry |
 | 20 | **Failed — network / timeout** | Transport error | Same error affordance with the transport reason | Retry |
 | 21 | **Succeeded** | Poll returns a video URL and the download completes | The generated clip lands at its cut on the timeline, carries an "AI" badge, and is immediately playable in the preview | Play, or regenerate |
 
@@ -109,7 +109,7 @@ credits and staleness never re-renders on its own.
 | 46 | **Idle chip** | Two photos sit side by side on the track — edge to edge, or with a gap between them | A small ✦ chip vertically centred on the shared edge, or floating in the middle of the gap (its tooltip names the gap's length); the toolbar shows ✦ Animate all · n when at least one cut is fillable | Tap the chip, or Animate all |
 | 47 | **Chip disabled (media offline)** | A photo on the cut lost its source file | The chip dims with the reason in its tooltip; nothing can be sent for a frame that cannot be rendered | Re-import the photo |
 | 48 | **Cut selected** | Chip tapped | The chip takes the accent ring; the inspector shows the transition card naming both photos, an *optional* prompt (empty means the default `Smooth cinematic motion transition`), suggestion chips, a model selector (default Seedance 2.5), and one ✦ Generate transition button | Generate, type first, or click elsewhere |
-| 49 | **No credential** | Cut selected with no key stored | The card's button is replaced by the "Connect Higgsfield to generate" callout; nothing is sent | Save the key in settings |
+| 49 | **No CLI** | Cut selected with no Higgsfield CLI found | The card's button is replaced by the "Connect Higgsfield to generate" callout; nothing is sent | Install and sign in to the CLI |
 | 50 | **Queued** | Generate pressed, job accepted | The chip widens into a dashed mono pill reading ◐ QUEUED — the cut has no width on the track, so the chip itself is the progress surface; the title bar counts the render | Cancel, or wait |
 | 51 | **Running** | Poll returns progress | The pill shows ◐ n% (or elapsed seconds when the API reports no percentage); **the rest of the app stays fully usable** | Cancel, or wait |
 | 52 | **Slow (> 90 s)** | Still running past the soft threshold | The pill takes an amber tint and the card adds the calm "taking longer than usual" advisory — no modal, no lock | Cancel, or wait |
@@ -134,7 +134,7 @@ in one piece, and the only thing left between three photos and an .mp4 is the sa
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
 | 61 | **Film idle** | Three photos chosen | Each leg carries a prefilled, editable prompt; nothing has been sent | Start, or edit a prompt |
-| 62 | **Film refused — no credential** | Start with no key ID *and* secret stored | An error toast pointing at settings. No film is created and nothing is sent — there is no local renderer to fall back to | Save both halves of the key |
+| 62 | **Film refused — no CLI** | Start with no Higgsfield CLI found | An error toast pointing at settings. No film is created and nothing is sent — there is no local renderer to fall back to | Install and sign in to the CLI |
 | 63 | **Film running** | Both legs queued | Each leg shows its own status and progress; the film shows a combined bar and its own count | Cancel, or wait |
 | 64 | **Leg landed, film unfinished** | One leg succeeded | The finished MP4 is **parked in film state, not placed on the timeline**; the film still reads "1 of 2 succeeded" | Wait for the other leg |
 | 65 | **Film partial — a leg failed** | A leg returns an error | The failed leg carries the API's own message (rows 18–20) and a retry that re-runs **only** that leg; the leg that landed keeps its file | Retry the leg, or dismiss |
@@ -163,8 +163,8 @@ own states; what the film underneath is doing is rows 61–67c.
 | 74 | **Reordering** | ↑ / ↓ on a filled slot | The slot swaps with its neighbour and the numbers follow: slot order *is* the film's running order, so it is what decides the two transition pairs | Move it back |
 | 75 | **Removing a photo** | ✕ on a filled slot | The slot empties, the ones after it move up, and the panel falls back to row 71 | Add another |
 | 76 | **Prompts** | Panel open | One editable textarea per transition, headed "Transition 1 · photo 1 → photo 2", pre-filled from `defaultFilmPrompt` — zero typing is required to generate | Edit, or leave as is |
-| 77 | **Refused — no credential** | No key ID *and* secret stored | A "Connect Higgsfield to generate" callout with **Open settings →**, and **Generate film** stays disabled. Nothing is imported and nothing is sent — there is no local renderer to fall back on. In a plain browser the same callout says rendering needs the desktop app | Save both halves of the key |
-| 78 | **Ready** | Exactly 3 photos and a credential | **Generate film** enables. Pressing it imports the three photos into the media bin — **assets only, nothing on the track**, because a film's material is the transitions and the photos are inputs — then starts both legs | Generate, or Close |
+| 77 | **Refused — no CLI** | No Higgsfield CLI found | A "Connect Higgsfield to generate" callout with **Open settings →**, and **Generate film** stays disabled. Nothing is imported and nothing is sent — there is no local renderer to fall back on. In a plain browser the same callout says rendering needs the desktop app | Install and sign in to the CLI |
+| 78 | **Ready** | Exactly 3 photos and the CLI found | **Generate film** enables. Pressing it imports the three photos into the media bin — **assets only, nothing on the track**, because a film's material is the transitions and the photos are inputs — then starts both legs | Generate, or Close |
 | 79 | **Import refused** | The backend will not take one of the files | The panel keeps the run view out and shows "The film could not start" with the backend's own per-file reason; no film is created | Remove the file, retry |
 | 80 | **Watching the run** | A film is under way | The panel switches to the run view: the three photos as a strip, a combined bar with "n of 2 succeeded", and a row per leg with its own status, bar, error (rows 18–20) and **Retry this transition**. The editor behind it stays fully usable, and the title bar's "n rendering" chip counts the legs | Cancel film, or Close (the film keeps running) |
 | 81 | **Reopening mid-film** | Entry action clicked while a film runs | The same panel comes back on the in-flight run, not on a fresh intake — one film at a time, and the panel says so | Cancel film, or wait |

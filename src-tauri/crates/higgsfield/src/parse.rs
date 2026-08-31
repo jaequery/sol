@@ -1,82 +1,51 @@
-//! Readers for the documented Higgsfield response envelopes.
+//! Readers for the Higgsfield CLI's `--json` output.
 //!
-//! Both shapes come straight from the published OpenAPI document
-//! (<https://docs.higgsfield.ai/docs/openapi.json>, `Request`/`MediaOutput`):
-//!
-//! ```json
-//! { "status": "queued", "request_id": "…", "status_url": "…", "cancel_url": "…" }
-//! { "status": "completed", "request_id": "…", "video": { "url": "https://…/out.mp4" } }
-//! ```
-//!
-//! The documented object is also accepted through one layer of packaging — the one
-//! request wrapped in a one-element array — because a 2xx means the API accepted (and
-//! charges for) the generation, and abandoning a running job over harmless packaging is
-//! strictly worse than reading it. Anything without an unambiguous reading is refused
-//! with the evidence attached: the JSON type and a truncated echo of the body, so the
-//! error card carries its own diagnosis.
+//! The CLI's documented contract (its README and `--help`) promises jobs with a `status`
+//! and, on completion, a `result_url`. The exact packaging of a job object is not pinned
+//! by the docs — a create can answer with the job, or with a job set listing it — so the
+//! readers here accept the documented object through those harmless layers: a one-job
+//! array, or a `jobs` list holding it. Anything without an unambiguous reading is refused
+//! with the evidence attached — the keys present, or the JSON type and a truncated echo —
+//! so the error card carries its own diagnosis.
 //!
 //! Every function here is pure, so the behaviour is pinned by unit tests instead of by a
-//! live endpoint.
+//! live CLI.
 
 use crate::error::{HiggsfieldError, JobState, Result};
 use crate::preview;
 use serde_json::Value;
 
-/// What a submission returns: the id plus the URLs the API asks callers to use verbatim
-/// rather than build themselves.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Accepted {
-    pub request_id: String,
-    pub status_url: String,
-    pub cancel_url: String,
+/// The keys under which the CLI names a job's id, in the order they are trusted.
+const ID_KEYS: &[&str] = &["id", "job_id", "job_set_id", "request_id"];
+
+/// The id of the created job, from `generate create … --json`.
+pub fn parse_create(stdout: &str) -> Result<String> {
+    let body = parse_stdout(stdout, "generate create")?;
+    let body = unwrapped(&body);
+    job_id_of(body)
+        .ok_or_else(|| unreadable("job id", "generate create", body))
+        .map(str::to_string)
 }
 
-/// Read an accepted submission.
-///
-/// `status_url` and `cancel_url` are documented as always present, but they are cheap to
-/// derive from `request_id`, so a response that omits them still works.
-pub fn parse_submit(body: &Value, base_url: &str) -> Result<Accepted> {
-    let body = unwrapped(body);
-    let request_id = body
-        .get("request_id")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| unreadable("request_id", "submit", body))?
-        .to_string();
-
-    let base = base_url.trim_end_matches('/');
-    Ok(Accepted {
-        status_url: url_field(body, "status_url")
-            .unwrap_or_else(|| format!("{base}/requests/{request_id}/status")),
-        cancel_url: url_field(body, "cancel_url")
-            .unwrap_or_else(|| format!("{base}/requests/{request_id}/cancel")),
-        request_id,
-    })
-}
-
-/// Reduce a `GET /requests/{id}/status` body to a single [`JobState`].
-///
-/// The documented statuses are `queued`, `in_progress`, `completed`, `failed`, `nsfw` and
-/// `canceled`; anything else is reported as malformed rather than silently polled forever.
-pub fn parse_state(body: &Value) -> Result<JobState> {
-    let body = unwrapped(body);
-    let status = body
-        .get("status")
-        .and_then(Value::as_str)
-        .ok_or_else(|| unreadable("status", "request status", body))?
+/// Reduce a `generate get <job_id> --json` body to a single [`JobState`].
+pub fn parse_job(stdout: &str) -> Result<JobState> {
+    let body = parse_stdout(stdout, "generate get")?;
+    let body = unwrapped(&body);
+    let status = status_of(body)
+        .ok_or_else(|| unreadable("status", "generate get", body))?
         .to_ascii_lowercase();
 
     match status.as_str() {
-        "queued" => Ok(JobState::Queued),
-        "in_progress" => Ok(JobState::Running {
+        "queued" | "pending" => Ok(JobState::Queued),
+        "in_progress" | "running" | "processing" => Ok(JobState::Running {
             progress: progress_of(body),
         }),
-        "completed" => match find_video_url(body) {
+        "completed" => match find_result_url(body) {
             Some(video_url) => Ok(JobState::Succeeded { video_url }),
-            // The docs promise output URLs on `completed`, so an empty one is a real
-            // failure rather than something another poll would fix.
+            // A completed job is documented to carry its result URL, so an empty one is
+            // a real failure rather than something another poll would fix.
             None => Err(HiggsfieldError::JobFailed(
-                "the request completed without a video output".into(),
+                "the job completed without a result URL".into(),
             )),
         },
         "failed" => Ok(JobState::Failed {
@@ -88,60 +57,125 @@ pub fn parse_state(body: &Value) -> Result<JobState> {
         }),
         "canceled" | "cancelled" => Ok(JobState::Cancelled),
         other => Err(HiggsfieldError::Malformed(format!(
-            "unrecognised request status {other:?}"
+            "unrecognised job status {other:?}"
         ))),
     }
 }
 
-/// The video output of a completed request.
-///
-/// `video.url` is the documented place for a video model. Some operations return extra
-/// artifacts (`mov`, `zip`, …) alongside it, so a named-object fallback covers the ones
-/// that carry the clip under a different key.
-pub fn find_video_url(body: &Value) -> Option<String> {
-    if let Some(url) = media_url(body.get("video")) {
-        return Some(url);
+/// How many models `model list --video --json` reports, when the shape is countable.
+/// Used only to phrase the connection-check message, so an unexpected shape is `None`,
+/// never an error — the successful exit already proved what the probe asks.
+pub fn parse_model_count(stdout: &str) -> Option<usize> {
+    let body = parse_stdout(stdout, "model list").ok()?;
+    if let Some(items) = body.as_array() {
+        return Some(items.len());
     }
-    for key in ["videos", "mov", "output", "outputs"] {
-        let Some(node) = body.get(key) else { continue };
-        let found = match node {
-            Value::Array(items) => items.iter().find_map(|i| media_url(Some(i))),
-            other => media_url(Some(other)),
-        };
-        if found.is_some() {
-            return found;
+    for key in ["models", "job_types", "data", "items"] {
+        if let Some(items) = body.get(key).and_then(Value::as_array) {
+            return Some(items.len());
         }
     }
     None
 }
 
-/// A `MediaOutput` is `{ "url": "…" }`; a bare string is accepted for the artifact keys
-/// that are documented as plain URLs.
-fn media_url(node: Option<&Value>) -> Option<String> {
-    let node = node?;
-    let url = match node {
-        Value::String(s) => s.as_str(),
-        _ => node.get("url").and_then(Value::as_str)?,
-    };
-    looks_like_video(url).then(|| url.to_string())
+/// The CLI's stdout as one JSON value.
+///
+/// `--json` output is a single value, but a stray notice line above it must not turn a
+/// finished job into a dead one — so when the whole of stdout does not parse, the last
+/// line that parses on its own is read instead.
+fn parse_stdout(stdout: &str, place: &str) -> Result<Value> {
+    let trimmed = stdout.trim();
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        return Ok(value);
+    }
+    trimmed
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
+        .ok_or_else(|| {
+            HiggsfieldError::Malformed(format!(
+                "the {place} output is not JSON (started with: {})",
+                preview(trimmed)
+            ))
+        })
 }
 
-fn looks_like_video(s: &str) -> bool {
-    s.starts_with("http://") || s.starts_with("https://")
+/// The job's id, wherever the CLI put it.
+fn job_id_of(body: &Value) -> Option<&str> {
+    for key in ID_KEYS {
+        if let Some(id) = body
+            .get(*key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(id);
+        }
+    }
+    // A create that answers with the job set carrying its jobs.
+    body.get("jobs")
+        .and_then(Value::as_array)
+        .and_then(|jobs| jobs.first())
+        .and_then(job_id_of)
 }
 
-/// `error` is the documented field on a terminal failure; `detail` is the FastAPI
-/// envelope the same service uses for synchronous errors.
+fn status_of(body: &Value) -> Option<&str> {
+    for key in ["status", "job_status"] {
+        if let Some(status) = body
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(status);
+        }
+    }
+    None
+}
+
+/// The result URL of a completed job, under the names the CLI uses.
+///
+/// `result_url` is the documented key; `min_result_url` is its lower-resolution sibling
+/// and only trusted when the full one is absent. `results` and `video_url` cover jobs
+/// that report a list or a typed field instead.
+pub fn find_result_url(body: &Value) -> Option<String> {
+    for key in ["result_url", "video_url", "min_result_url", "url"] {
+        if let Some(url) = http_url(body.get(key)) {
+            return Some(url);
+        }
+    }
+    if let Some(results) = body.get("results").and_then(Value::as_array) {
+        for item in results {
+            if let Some(url) = http_url(Some(item)) {
+                return Some(url);
+            }
+            for key in ["result_url", "video_url", "url"] {
+                if let Some(url) = http_url(item.get(key)) {
+                    return Some(url);
+                }
+            }
+        }
+    }
+    // A job set that lists its jobs: the first job holding a result answers.
+    body.get("jobs")
+        .and_then(Value::as_array)
+        .and_then(|jobs| jobs.iter().find_map(find_result_url))
+}
+
+fn http_url(node: Option<&Value>) -> Option<String> {
+    let url = node?.as_str()?;
+    (url.starts_with("http://") || url.starts_with("https://")).then(|| url.to_string())
+}
+
+/// The job's own words for why it failed, wherever the CLI put them.
 fn error_of(body: &Value) -> Option<String> {
-    ["error", "detail", "message"]
+    ["error", "detail", "message", "failure_reason"]
         .iter()
         .find_map(|k| body.get(k).and_then(Value::as_str))
         .map(str::to_owned)
         .filter(|s| !s.is_empty())
 }
 
-/// The status schema has no progress field, so a running request reports 0 unless the API
-/// volunteers one — better an honest 0 than an invented estimate.
+/// The job schema has no promised progress field, so a running job reports 0 unless the
+/// CLI volunteers one — better an honest 0 than an invented estimate.
 fn progress_of(body: &Value) -> f32 {
     ["progress", "percent", "percentage"]
         .iter()
@@ -153,18 +187,8 @@ fn progress_of(body: &Value) -> f32 {
         .unwrap_or(0.0)
 }
 
-fn url_field(body: &Value, key: &str) -> Option<String> {
-    body.get(key)
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-}
-
-/// The documented object through one harmless layer of packaging.
-///
-/// SolCut submits exactly one request, so a response that *lists* that one request —
-/// `[{…}]` — reads unambiguously as the documented object. Several entries, or an entry
-/// that is not an object, have no safe reading and are left for [`unreadable`].
+/// The documented object through one harmless layer of packaging: SolCut creates exactly
+/// one job, so an answer that *lists* that one job reads unambiguously as the job itself.
 fn unwrapped(body: &Value) -> &Value {
     match body.as_array() {
         Some(items) if items.len() == 1 && items[0].is_object() => &items[0],
@@ -174,15 +198,15 @@ fn unwrapped(body: &Value) -> &Value {
 
 /// Why a body could not be read, with the evidence attached: the missing field and the
 /// keys present for an object, the JSON type and a truncated echo of the body for
-/// anything else — so a failure report says what the API sent, not only what it didn't.
+/// anything else — so a failure report says what the CLI printed, not only what it didn't.
 fn unreadable(field: &str, place: &str, body: &Value) -> HiggsfieldError {
     HiggsfieldError::Malformed(match body.as_object() {
         Some(map) => format!(
-            "no {field} in the {place} response (keys: {})",
+            "no {field} in the {place} output (keys: {})",
             map.keys().cloned().collect::<Vec<_>>().join(", ")
         ),
         None => format!(
-            "the {place} response is {} rather than the documented request object: {}",
+            "the {place} output is {} rather than a job object: {}",
             json_kind(body),
             preview(&body.to_string())
         ),
@@ -205,163 +229,159 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const BASE: &str = "https://api.higgsfield.ai";
+    #[test]
+    fn reads_the_job_id_from_a_create_ack() {
+        let id = parse_create(r#"{"id":"job-1","status":"queued"}"#).unwrap();
+        assert_eq!(id, "job-1");
+
+        let id = parse_create(r#"{"job_id":"job-2"}"#).unwrap();
+        assert_eq!(id, "job-2");
+
+        let id = parse_create(r#"{"job_set_id":"set-3","status":"queued"}"#).unwrap();
+        assert_eq!(id, "set-3");
+    }
 
     #[test]
-    fn reads_the_documented_submit_envelope() {
-        let body = json!({
-            "status": "queued",
-            "request_id": "d7e6c0f3-6699-4f6c-bb45-2ad7fd9158ff",
-            "status_url": "https://api.higgsfield.ai/requests/d7e6c0f3/status",
-            "cancel_url": "https://api.higgsfield.ai/requests/d7e6c0f3/cancel"
-        });
-        let accepted = parse_submit(&body, BASE).unwrap();
-        assert_eq!(accepted.request_id, "d7e6c0f3-6699-4f6c-bb45-2ad7fd9158ff");
+    fn a_create_answering_with_a_job_set_still_names_its_job() {
+        let id = parse_create(
+            r#"{"jobs":[{"id":"job-9","status":"queued"}],"job_set_type":"seedance_2_5"}"#,
+        )
+        .unwrap();
+        assert_eq!(id, "job-9");
+    }
+
+    #[test]
+    fn the_one_job_wrapped_in_a_list_is_read() {
+        let id = parse_create(r#"[{"id":"job-4","status":"queued"}]"#).unwrap();
+        assert_eq!(id, "job-4");
+
         assert_eq!(
-            accepted.status_url, "https://api.higgsfield.ai/requests/d7e6c0f3/status",
-            "the URL the API handed back is used verbatim"
+            parse_job(r#"[{"id":"job-4","status":"queued"}]"#).unwrap(),
+            JobState::Queued
         );
     }
 
     #[test]
-    fn derives_the_urls_when_only_an_id_comes_back() {
-        let accepted = parse_submit(&json!({"request_id": "abc"}), "https://api.higgsfield.ai/")
-            .expect("submit");
-        assert_eq!(
-            accepted.status_url,
-            "https://api.higgsfield.ai/requests/abc/status"
-        );
-        assert_eq!(
-            accepted.cancel_url,
-            "https://api.higgsfield.ai/requests/abc/cancel"
-        );
+    fn a_notice_line_above_the_json_does_not_kill_the_job() {
+        let id =
+            parse_create("A new version of the CLI is available.\n{\"id\":\"job-5\"}").unwrap();
+        assert_eq!(id, "job-5");
     }
 
     #[test]
-    fn reports_a_missing_request_id_with_context() {
-        let err = parse_submit(&json!({"detail": "nope"}), BASE).unwrap_err();
-        assert!(matches!(err, HiggsfieldError::Malformed(_)));
+    fn a_create_ack_without_an_id_reports_its_keys() {
+        let err = parse_create(r#"{"detail":"nope"}"#).unwrap_err();
+        assert!(matches!(err, HiggsfieldError::Malformed(_)), "{err:?}");
         assert!(err.to_string().contains("detail"), "{err}");
     }
 
-    /// The regression behind "error in the generating transition": a 2xx ack whose JSON
-    /// was not the documented object died as "keys: <not an object>" — no type, no body,
-    /// nothing for a bug report to carry. The one request wrapped in a one-element array
-    /// is readable without guessing, and everything else must quote what actually came.
     #[test]
-    fn the_one_request_wrapped_in_a_list_is_read() {
-        let accepted = parse_submit(
-            &json!([{
-                "status": "queued",
-                "request_id": "abc",
-                "status_url": "https://api.higgsfield.ai/requests/abc/status"
-            }]),
-            BASE,
-        )
-        .expect("one listed request is the documented object, packaged");
-        assert_eq!(accepted.request_id, "abc");
-        assert_eq!(
-            accepted.status_url,
-            "https://api.higgsfield.ai/requests/abc/status"
-        );
-    }
-
-    #[test]
-    fn a_status_wrapped_in_a_list_is_read() {
-        assert_eq!(
-            parse_state(&json!([{"status": "queued", "request_id": "x"}])).unwrap(),
-            JobState::Queued
-        );
-        assert_eq!(
-            parse_state(&json!([{
-                "status": "completed",
-                "request_id": "x",
-                "video": {"url": "https://cdn.example.com/video.mp4"}
-            }]))
-            .unwrap(),
-            JobState::Succeeded {
-                video_url: "https://cdn.example.com/video.mp4".into()
-            }
-        );
+    fn non_json_output_is_quoted_back() {
+        let err = parse_create("spinner output, no json").unwrap_err();
+        assert!(err.to_string().contains("spinner output"), "{err}");
     }
 
     #[test]
     fn a_non_object_ack_reports_its_type_and_body() {
-        let err = parse_submit(&json!("r-123"), BASE).unwrap_err();
-        assert!(matches!(err, HiggsfieldError::Malformed(_)), "{err:?}");
+        let err = parse_create(r#""job-1""#).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("a JSON string"), "{msg}");
-        assert!(msg.contains("r-123"), "the body is quoted back: {msg}");
-
-        let err = parse_state(&json!(null)).unwrap_err();
-        assert!(err.to_string().contains("JSON null"), "{err}");
+        assert!(msg.contains("job-1"), "the body is quoted back: {msg}");
     }
 
     #[test]
-    fn an_ack_listing_several_requests_is_refused_with_the_evidence() {
-        // SolCut submitted one request; an ack listing two has no safe reading.
-        let err =
-            parse_submit(&json!([{"request_id": "a"}, {"request_id": "b"}]), BASE).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("a JSON array"), "{msg}");
-        assert!(msg.contains(r#""request_id":"a""#), "{msg}");
-    }
-
-    #[test]
-    fn a_listed_non_object_keeps_the_list_as_evidence() {
-        let err = parse_submit(&json!(["r-123"]), BASE).unwrap_err();
-        assert!(err.to_string().contains("a JSON array"), "{err}");
-    }
-
-    #[test]
-    fn queued_and_in_progress_are_not_terminal() {
-        assert_eq!(
-            parse_state(&json!({"status": "queued", "request_id": "x"})).unwrap(),
-            JobState::Queued
-        );
-        assert_eq!(
-            parse_state(&json!({"status": "in_progress", "request_id": "x"})).unwrap(),
-            JobState::Running { progress: 0.0 }
-        );
+    fn queued_pending_and_the_running_statuses_are_not_terminal() {
+        for s in ["queued", "pending"] {
+            assert_eq!(
+                parse_job(&json!({"id": "x", "status": s}).to_string()).unwrap(),
+                JobState::Queued,
+                "{s}"
+            );
+        }
+        for s in ["in_progress", "running", "processing"] {
+            assert_eq!(
+                parse_job(&json!({"id": "x", "status": s}).to_string()).unwrap(),
+                JobState::Running { progress: 0.0 },
+                "{s}"
+            );
+        }
     }
 
     #[test]
     fn a_volunteered_progress_is_used_and_normalised() {
-        let body = json!({"status": "in_progress", "request_id": "x", "progress": 46});
+        let body = json!({"id": "x", "status": "in_progress", "progress": 46});
         assert_eq!(
-            parse_state(&body).unwrap(),
+            parse_job(&body.to_string()).unwrap(),
             JobState::Running { progress: 0.46 }
         );
     }
 
     #[test]
-    fn completed_reads_the_video_output() {
-        let body = json!({
-            "status": "completed",
-            "request_id": "x",
-            "video": {"url": "https://cdn.example.com/video.mp4"}
-        });
+    fn completed_reads_the_documented_result_url() {
+        let body =
+            json!({"id": "x", "status": "completed", "result_url": "https://cdn.test/v.mp4"});
         assert_eq!(
-            parse_state(&body).unwrap(),
+            parse_job(&body.to_string()).unwrap(),
             JobState::Succeeded {
-                video_url: "https://cdn.example.com/video.mp4".into()
+                video_url: "https://cdn.test/v.mp4".into()
             }
         );
     }
 
     #[test]
-    fn completed_without_an_output_is_a_failure_not_an_endless_poll() {
-        let err = parse_state(&json!({"status": "completed", "request_id": "x"})).unwrap_err();
+    fn the_full_result_is_preferred_over_its_preview_sibling() {
+        let body = json!({
+            "id": "x",
+            "status": "completed",
+            "min_result_url": "https://cdn.test/small.mp4",
+            "result_url": "https://cdn.test/full.mp4"
+        });
+        assert_eq!(
+            parse_job(&body.to_string()).unwrap(),
+            JobState::Succeeded {
+                video_url: "https://cdn.test/full.mp4".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_result_listed_under_results_is_found() {
+        let body = json!({"id": "x", "status": "completed", "results": [{"url": "https://cdn.test/v.mp4"}]});
+        assert_eq!(
+            parse_job(&body.to_string()).unwrap(),
+            JobState::Succeeded {
+                video_url: "https://cdn.test/v.mp4".into()
+            }
+        );
+
+        let body = json!({"id": "x", "status": "completed", "results": ["https://cdn.test/w.mp4"]});
+        assert_eq!(
+            parse_job(&body.to_string()).unwrap(),
+            JobState::Succeeded {
+                video_url: "https://cdn.test/w.mp4".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_job_status_key_is_as_good_as_status() {
+        let body = json!({"job_id": "x", "job_status": "queued"});
+        assert_eq!(parse_job(&body.to_string()).unwrap(), JobState::Queued);
+    }
+
+    #[test]
+    fn completed_without_a_result_is_a_failure_not_an_endless_poll() {
+        let err = parse_job(&json!({"id": "x", "status": "completed"}).to_string()).unwrap_err();
         assert!(matches!(err, HiggsfieldError::JobFailed(_)), "{err:?}");
     }
 
     #[test]
-    fn failed_carries_the_documented_error_field() {
-        let body = json!({"status": "failed", "request_id": "x", "error": "Generation failed"});
+    fn failed_carries_the_jobs_own_words() {
+        let body = json!({"id": "x", "status": "failed", "error": "model rejected the frames"});
         assert_eq!(
-            parse_state(&body).unwrap(),
+            parse_job(&body.to_string()).unwrap(),
             JobState::Failed {
-                message: "Generation failed".into()
+                message: "model rejected the frames".into()
             }
         );
     }
@@ -369,7 +389,7 @@ mod tests {
     #[test]
     fn nsfw_explains_itself_even_with_no_error_field() {
         let JobState::Failed { message } =
-            parse_state(&json!({"status": "nsfw", "request_id": "x"})).unwrap()
+            parse_job(&json!({"id": "x", "status": "nsfw"}).to_string()).unwrap()
         else {
             panic!("expected a failure");
         };
@@ -379,30 +399,30 @@ mod tests {
     #[test]
     fn canceled_is_its_own_state() {
         assert_eq!(
-            parse_state(&json!({"status": "canceled", "request_id": "x"})).unwrap(),
+            parse_job(&json!({"id": "x", "status": "canceled"}).to_string()).unwrap(),
             JobState::Cancelled
         );
     }
 
     #[test]
     fn an_unknown_status_is_reported_rather_than_polled_forever() {
-        let err = parse_state(&json!({"status": "wat", "request_id": "x"})).unwrap_err();
+        let err = parse_job(&json!({"id": "x", "status": "wat"}).to_string()).unwrap_err();
         assert!(matches!(err, HiggsfieldError::Malformed(_)), "{err:?}");
+        assert!(err.to_string().contains("wat"), "{err}");
     }
 
     #[test]
-    fn an_image_only_response_is_not_mistaken_for_a_video() {
-        let body = json!({
-            "status": "completed",
-            "request_id": "x",
-            "images": [{"url": "https://cdn.example.com/still.jpg"}]
-        });
-        assert!(parse_state(&body).is_err());
+    fn relative_urls_are_never_a_result() {
+        let body = json!({"id": "x", "status": "completed", "result_url": "/tmp/local.mp4"});
+        assert!(parse_job(&body.to_string()).is_err());
     }
 
     #[test]
-    fn ignores_relative_urls() {
-        assert!(!looks_like_video("/tmp/local.mp4"));
-        assert!(looks_like_video("https://x.test/a.mp4?sig=abc"));
+    fn the_model_count_reads_the_shapes_a_listing_can_take() {
+        assert_eq!(parse_model_count(r#"[{"id":"a"},{"id":"b"}]"#), Some(2));
+        assert_eq!(parse_model_count(r#"{"models":[{"id":"a"}]}"#), Some(1));
+        assert_eq!(parse_model_count(r#"{"job_types":[1,2,3]}"#), Some(3));
+        assert_eq!(parse_model_count(r#"{"something":"else"}"#), None);
+        assert_eq!(parse_model_count("not json"), None);
     }
 }
