@@ -29,6 +29,7 @@ import {
   type FilmPhotoSource,
   type ImportProblem,
 } from '../state/store';
+import { ModelSelect } from './ModelSelect';
 
 /** A photo the wizard is holding: chosen, ordered, but not imported until Generate. */
 interface Pick extends FilmPhotoSource {
@@ -353,6 +354,10 @@ export function FilmWizard() {
                 />
               </div>
             ))}
+
+            {/* One model for the whole film: both legs render with it, so the two
+                transitions match instead of each wearing a different model's look. */}
+            <ModelSelect id="film-model" />
 
             {!connected && (
               <div className="callout" role="status">

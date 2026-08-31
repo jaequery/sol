@@ -91,6 +91,8 @@ export interface Generation {
   id: string;
   target: GenerationTarget;
   prompt: string;
+  /** The model that renders it: a `RenderModel` id, or `custom` for the Settings endpoint. */
+  modelId: string;
   status: GenerationStatus;
   /** 0..1 */
   progress: number;

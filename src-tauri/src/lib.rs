@@ -118,6 +118,11 @@ pub struct GenerateInput {
     pub start_frame: String,
     /// The same for the photo the motion ends on, when there is one.
     pub end_frame: Option<String>,
+    /// The model endpoint the frontend's per-render selector chose for THIS request.
+    /// Absent or blank, the render falls back to the endpoint Settings stores — the model
+    /// choice travels with the request, it is not a saved setting.
+    #[serde(default)]
+    pub endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -188,7 +193,7 @@ async fn generate_animation(
     input: GenerateInput,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let config = state.config();
+    let config = state.config().with_endpoint(input.endpoint.as_deref());
     if !config.is_configured() {
         return Err(HiggsfieldError::NotConfigured.to_string());
     }
@@ -418,4 +423,28 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running SolCut");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_generate_input_without_an_endpoint_still_deserializes() {
+        // The field is new; an input shaped like the previous build's must keep working.
+        let input: GenerateInput = serde_json::from_str(
+            r#"{"generationId":"gen_1","prompt":"drift","startFrame":"data:image/jpeg;base64,AA=="}"#,
+        )
+        .expect("legacy input");
+        assert!(input.endpoint.is_none());
+
+        let input: GenerateInput = serde_json::from_str(
+            r#"{"generationId":"gen_1","prompt":"drift","startFrame":"data:image/jpeg;base64,AA==","endpoint":"/veo3.1/first-last-frame-to-video"}"#,
+        )
+        .expect("input with a model choice");
+        assert_eq!(
+            input.endpoint.as_deref(),
+            Some("/veo3.1/first-last-frame-to-video")
+        );
+    }
 }

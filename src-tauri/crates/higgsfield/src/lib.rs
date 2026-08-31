@@ -175,6 +175,19 @@ impl Config {
         self
     }
 
+    /// This configuration with one render's model choice overlaid.
+    ///
+    /// The editor's per-render model selector resolves to a concrete endpoint and sends
+    /// it with each request; the stored endpoint answers only when the request names none
+    /// (or a blank one). A model choice therefore never has to be written to disk — and
+    /// never disturbs the endpoint the user typed into Settings.
+    pub fn with_endpoint(mut self, endpoint: Option<&str>) -> Self {
+        if let Some(endpoint) = endpoint.map(str::trim).filter(|e| !e.is_empty()) {
+            self.endpoint = endpoint.to_string();
+        }
+        self
+    }
+
     fn url(&self, path: &str) -> String {
         let base = self.base_url.trim_end_matches('/');
         let path = path.trim_start_matches('/');
@@ -758,6 +771,34 @@ mod tests {
             AUTH_SCHEME, "Key",
             "the documented scheme is `Key id:secret`, not a bearer token"
         );
+    }
+
+    #[test]
+    fn a_request_carries_its_own_model_choice() {
+        let config = cfg().with_endpoint(Some("/bytedance/seedance/v2.5/pro/image-to-video"));
+        assert_eq!(
+            config.endpoint,
+            "/bytedance/seedance/v2.5/pro/image-to-video"
+        );
+        assert_eq!(
+            config.api_key_id, "id",
+            "only the endpoint is the request's to change"
+        );
+        assert_eq!(config.base_url, DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn a_request_naming_no_model_falls_back_to_the_stored_endpoint() {
+        for absent in [None, Some(""), Some("   ")] {
+            let config = cfg().with_endpoint(absent);
+            assert_eq!(config.endpoint, DEFAULT_ENDPOINT);
+        }
+    }
+
+    #[test]
+    fn a_per_request_endpoint_is_trimmed_like_a_typed_one() {
+        let config = cfg().with_endpoint(Some("  /veo3.1/first-last-frame-to-video \n"));
+        assert_eq!(config.endpoint, "/veo3.1/first-last-frame-to-video");
     }
 
     #[test]

@@ -7,6 +7,7 @@
  * between tests in ways that only show up as a mystery failure three files later.
  */
 
+import { DEFAULT_MODEL_ID } from '../lib/backend';
 import { useEditor } from '../state/store';
 
 /**
@@ -27,6 +28,7 @@ export function resetEditor(): void {
     playheadMs: 0,
     playing: false,
     generations: {},
+    modelId: DEFAULT_MODEL_ID,
     cutPrompts: {},
     animateQueue: null,
     animateSubmittingId: null,

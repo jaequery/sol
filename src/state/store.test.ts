@@ -9,13 +9,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEditor } from './store';
 import { assembleFilm, defaultFilmPrompt, FILM_SEGMENT_DURATION_MS } from '../lib/film';
-import type { GenerateInput, GenerationUpdate } from '../lib/backend';
+import { DEFAULT_MODEL_ID, type GenerateInput, type GenerationUpdate } from '../lib/backend';
 import type { MediaAsset } from '../types/project';
 
 const generateAnimation = vi.fn(async (_input: GenerateInput) => {});
 const cancelGeneration = vi.fn(async (_id: string) => {});
 
-vi.mock('../lib/backend', () => ({
+// The real module's pure exports (the model registry above all) come through untouched;
+// only the pieces that would reach for Tauri are stubbed.
+vi.mock('../lib/backend', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/backend')>()),
   isDesktop: () => true,
   assetSrc: (p: string) => `asset://${p}`,
   getSettings: async () => ({
@@ -25,9 +28,6 @@ vi.mock('../lib/backend', () => ({
     baseUrl: 'https://api.higgsfield.ai',
     endpoint: '/higgsfield-ai/dop/standard',
   }),
-  DEFAULT_BASE_URL: 'https://api.higgsfield.ai',
-  DEFAULT_ENDPOINT: '/higgsfield-ai/dop/standard',
-  KNOWN_ENDPOINTS: ['/higgsfield-ai/dop/standard'],
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
   importPaths: vi.fn(),
@@ -75,6 +75,7 @@ beforeEach(() => {
     playheadMs: 0,
     playing: false,
     generations: {},
+    modelId: DEFAULT_MODEL_ID,
     film: null,
     importProblems: [],
     importing: 0,

@@ -65,7 +65,7 @@ function ConnectionForm() {
             <input id="base-url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
           </div>
           <div className="field">
-            <label htmlFor="endpoint">Model endpoint</label>
+            <label htmlFor="endpoint">Custom model endpoint</label>
             <input
               id="endpoint"
               list="higgsfield-endpoints"
@@ -91,9 +91,9 @@ function ConnectionForm() {
             the desktop backend in an owner-only file that never reaches this window. Pasting the
             whole <code>key_id:key_secret</code> string into the ID box works too — it is split
             back apart. <b>Test connection</b> authenticates with whatever is in these fields, so a
-            key can be proved before it is saved. The model endpoint picks which model renders the
-            segment — it is the path from the API reference, so a new model can be pointed at
-            without a new build.
+            key can be proved before it is saved. The model itself is picked where a render is
+            started; the custom endpoint here is what that picker's <b>Custom</b> entry sends — a
+            path from the API reference, so a new model can be pointed at without a new build.
           </p>
         </div>
         <div className="modal__foot">

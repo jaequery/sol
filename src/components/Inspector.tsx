@@ -6,6 +6,8 @@ import {
   type Generation,
 } from '../types/project';
 import { formatDuration, formatTimecode, photoCuts, transitionStaleness } from '../lib/timeline';
+import { modelLabel } from '../lib/backend';
+import { ModelSelect } from './ModelSelect';
 
 const TRANSITION_SUGGESTIONS = ['crossfade morph', 'whip pan', 'zoom through', 'dreamy dissolve'];
 
@@ -186,6 +188,10 @@ function RunningCard({ generation, heading }: { generation: Generation; heading:
           <span>Status</span>
           <b>{generation.status.toUpperCase()}</b>
         </div>
+        <div className="kv">
+          <span>Model</span>
+          <b>{modelLabel(generation.modelId)}</b>
+        </div>
         {generation.jobId && (
           <div className="kv">
             <span>Job</span>
@@ -320,6 +326,8 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
           ))}
         </div>
 
+        <ModelSelect id="cut-model" />
+
         {!connected ? (
           <div className="callout">
             <b>Connect Higgsfield to generate</b>
@@ -408,6 +416,8 @@ function TransitionCard({ clip }: { clip: Clip }) {
           value={transition.prompt}
           onChange={(e) => setTransitionPrompt(clip.id, e.target.value)}
         />
+
+        <ModelSelect id="transition-model" />
 
         {staleness === 'stale' && (
           <div className="callout">

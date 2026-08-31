@@ -34,13 +34,13 @@ let storedSettings = { ...STORED_SETTINGS };
 let desktop = true;
 let ffmpegProbe: () => Promise<boolean> = async () => true;
 
-vi.mock('./lib/backend', () => ({
+// The real module's pure exports (the model registry above all) come through untouched;
+// only the pieces that would reach for Tauri are stubbed.
+vi.mock('./lib/backend', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./lib/backend')>()),
   isDesktop: () => desktop,
   assetSrc: (p: string) => `asset://${p}`,
   getSettings: async () => storedSettings,
-  DEFAULT_BASE_URL: 'https://api.higgsfield.ai',
-  DEFAULT_ENDPOINT: '/higgsfield-ai/dop/standard',
-  KNOWN_ENDPOINTS: ['/higgsfield-ai/dop/standard'],
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
   importPaths: vi.fn(),
