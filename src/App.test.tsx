@@ -1231,14 +1231,15 @@ describe('the 3-photo film wizard', () => {
     apiKeyIdHint: '',
   };
 
-  /** The one way in: the empty timeline's own call to action. */
-  const entryPoint = () => screen.getByRole('button', { name: '✦ New film from 3 photos' });
-
-  /** Open the panel and wait for the settings load to have landed. */
-  async function openWizard(user: ReturnType<typeof userEvent.setup>) {
+  /**
+   * Open the panel and wait for the settings load to have landed. Nothing in the UI opens it
+   * any more — the empty timeline's call to action was the last button that did — so this
+   * drives the store action that button called, the same way the film flow itself reopens it.
+   */
+  async function openWizard() {
     render(<App />);
     await waitFor(() => expect(useEditor.getState().settings).not.toBeNull());
-    await user.click(entryPoint());
+    await act(async () => useEditor.getState().openFilmWizard());
     return screen.getByRole('dialog', { name: 'New film from 3 photos' });
   }
 
@@ -1268,13 +1269,16 @@ describe('the 3-photo film wizard', () => {
     return (call as [GenerateInput])[0];
   }
 
-  it('opens from the empty timeline, the one place a first run meets it', async () => {
+  it('has no button left anywhere that opens it, and closing it is still not a cancel', async () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => expect(useEditor.getState().settings).not.toBeNull());
-    expect(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })).toHaveLength(1);
+    // The empty timeline's call to action was the last one, and nothing took its place: the
+    // panel is reachable only from the film flow's own store action. Asserted rather than
+    // assumed, so putting a button back is a deliberate act and not an accident.
+    expect(screen.queryByRole('button', { name: '✦ New film from 3 photos' })).toBeNull();
 
-    await user.click(entryPoint());
+    await act(async () => useEditor.getState().openFilmWizard());
     expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).toBeInTheDocument();
 
     // Closing only hides the panel — it is a way out, not a cancel.
@@ -1283,8 +1287,7 @@ describe('the 3-photo film wizard', () => {
   });
 
   it('two photos are not a film, and it says how many are still missing', async () => {
-    const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
 
     await dropOnWizard([file('one.jpg', 'image/jpeg'), file('two.jpg', 'image/jpeg')]);
 
@@ -1294,8 +1297,7 @@ describe('the 3-photo film wizard', () => {
   });
 
   it('a fourth photo is left out, and named with the reason', async () => {
-    const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
 
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
@@ -1312,8 +1314,7 @@ describe('the 3-photo film wizard', () => {
   });
 
   it('a video cannot be one of the three photos, and is told so', async () => {
-    const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
 
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
@@ -1332,7 +1333,7 @@ describe('the 3-photo film wizard', () => {
 
   it('both prompts arrive filled in from the default, and take an edit', async () => {
     const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
       file('two.jpg', 'image/jpeg'),
@@ -1353,7 +1354,7 @@ describe('the 3-photo film wizard', () => {
 
   it('with no credential it refuses, points at settings, and sends nothing', async () => {
     const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
     act(() => useEditor.setState({ settings: NO_CLI }));
 
     await dropOnWizard([
@@ -1373,7 +1374,7 @@ describe('the 3-photo film wizard', () => {
 
   it('generate starts two transitions pairing the photos in the chosen order', async () => {
     const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
       file('two.jpg', 'image/jpeg'),
@@ -1406,7 +1407,7 @@ describe('the 3-photo film wizard', () => {
 
   it('the model picked in the wizard rides with both legs', async () => {
     const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
       file('two.jpg', 'image/jpeg'),
@@ -1423,7 +1424,7 @@ describe('the 3-photo film wizard', () => {
 
   it('a leg that fails explains itself and offers a retry, and the app stays usable', async () => {
     const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
       file('two.jpg', 'image/jpeg'),
@@ -1477,7 +1478,7 @@ describe('the 3-photo film wizard', () => {
 
   /** Three photos chosen and both legs sent. Resolves to the two generation ids, in order. */
   async function startWholeFilm(user: ReturnType<typeof userEvent.setup>): Promise<string[]> {
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
       file('two.jpg', 'image/jpeg'),
