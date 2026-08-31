@@ -85,7 +85,7 @@ What actually runs, per render:
 
 | | |
 |---|---|
-| Submit | `higgsfield generate create <model> --prompt … --start-image … --end-image … --json` — the CLI uploads the two stills itself; Seedance 2.5 additionally gets `--mode omni_reference`, the one mode in which it accepts frame inputs |
+| Submit | `higgsfield generate create <model> --prompt … --start-image … --end-image … --json` — the CLI uploads the two stills itself; Seedance 2.5 additionally gets `--mode omni_reference`, the one mode in which it accepts frame inputs. The ack is the list of ids it queued (`["d2f79a31-…"]`) |
 | Poll | `higgsfield generate get <job_id> --json`, backing off 2s → 10s |
 | Result | the job's `result_url` on completion, downloaded next to the project |
 

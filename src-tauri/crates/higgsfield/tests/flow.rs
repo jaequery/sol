@@ -95,7 +95,8 @@ async fn a_job_is_created_polled_and_its_result_downloaded() {
     let video_url = format!("{}/out/video.mp4", server.base_url());
 
     let stub = StubCli::new("happy");
-    stub.put("create.out", r#"{"id":"job-42","status":"queued"}"#);
+    // The shipped CLI's own ack: pretty-printed, and nothing but the ids it queued.
+    stub.put("create.out", "[\n  \"job-42\"\n]\n");
     stub.put("get.1", r#"{"id":"job-42","status":"queued"}"#);
     stub.put("get.2", r#"{"id":"job-42","status":"in_progress"}"#);
     stub.put(

@@ -2,9 +2,10 @@
 //!
 //! The CLI's documented contract (its README and `--help`) promises jobs with a `status`
 //! and, on completion, a `result_url`. The exact packaging of a job object is not pinned
-//! by the docs — a create can answer with the job, or with a job set listing it — so the
-//! readers here accept the documented object through those harmless layers: a one-job
-//! array, or a `jobs` list holding it. Anything without an unambiguous reading is refused
+//! by the docs — a create can answer with the job, with a job set listing it, or with
+//! nothing but the ids it queued — so the readers here accept the documented object
+//! through those harmless layers: a one-job array, a `jobs` list holding it, or a bare
+//! list of id strings. Anything without an unambiguous reading is refused
 //! with the evidence attached — the keys present, or the JSON type and a truncated echo —
 //! so the error card carries its own diagnosis.
 //!
@@ -21,10 +22,23 @@ const ID_KEYS: &[&str] = &["id", "job_id", "job_set_id", "request_id"];
 /// The id of the created job, from `generate create … --json`.
 pub fn parse_create(stdout: &str) -> Result<String> {
     let body = parse_stdout(stdout, "generate create")?;
+    // The shipped CLI acks a create with the bare list of ids it queued —
+    // `["d2f79a31-3b30-4e1f-960f-52e9fb1de639"]` — as readily as with the job object.
+    if let Some(id) = listed_job_id(&body) {
+        return Ok(id.to_string());
+    }
     let body = unwrapped(&body);
     job_id_of(body)
         .ok_or_else(|| unreadable("job id", "generate create", body))
         .map(str::to_string)
+}
+
+/// A create ack that is simply the ids it queued. SolCut submits exactly one generation,
+/// so the first id in the list is that generation's job.
+fn listed_job_id(body: &Value) -> Option<&str> {
+    body.as_array()?
+        .iter()
+        .find_map(|item| item.as_str().filter(|s| !s.is_empty()))
 }
 
 /// Reduce a `generate get <job_id> --json` body to a single [`JobState`].
@@ -81,12 +95,20 @@ pub fn parse_model_count(stdout: &str) -> Option<usize> {
 /// The CLI's stdout as one JSON value.
 ///
 /// `--json` output is a single value, but a stray notice line above it must not turn a
-/// finished job into a dead one — so when the whole of stdout does not parse, the last
-/// line that parses on its own is read instead.
+/// finished job into a dead one — so when the whole of stdout does not parse, the value
+/// is looked for from the first bracket onwards (the CLI pretty-prints, so the JSON
+/// spans lines), and failing that in the last line that parses on its own.
 fn parse_stdout(stdout: &str, place: &str) -> Result<Value> {
     let trimmed = stdout.trim();
     if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
         return Ok(value);
+    }
+    if let Some(from_bracket) = trimmed
+        .find(['{', '['])
+        .map(|at| trimmed[at..].trim())
+        .and_then(|rest| serde_json::from_str::<Value>(rest).ok())
+    {
+        return Ok(from_bracket);
     }
     trimmed
         .lines()
@@ -251,6 +273,25 @@ mod tests {
     }
 
     #[test]
+    fn a_create_answering_with_the_ids_it_queued_is_read() {
+        let id = parse_create(r#"["d2f79a31-3b30-4e1f-960f-52e9fb1de639"]"#).unwrap();
+        assert_eq!(id, "d2f79a31-3b30-4e1f-960f-52e9fb1de639");
+
+        // A notice above it, and more than one id: the first names SolCut's one job.
+        let id = parse_create("Update available\n[\"job-a\",\"job-b\"]").unwrap();
+        assert_eq!(id, "job-a");
+    }
+
+    #[test]
+    fn an_empty_id_list_is_refused_rather_than_polled_as_an_empty_id() {
+        let err = parse_create("[]").unwrap_err();
+        assert!(matches!(err, HiggsfieldError::Malformed(_)), "{err:?}");
+        assert!(err.to_string().contains("a JSON array"), "{err}");
+
+        assert!(parse_create(r#"[""]"#).is_err());
+    }
+
+    #[test]
     fn the_one_job_wrapped_in_a_list_is_read() {
         let id = parse_create(r#"[{"id":"job-4","status":"queued"}]"#).unwrap();
         assert_eq!(id, "job-4");
@@ -266,6 +307,11 @@ mod tests {
         let id =
             parse_create("A new version of the CLI is available.\n{\"id\":\"job-5\"}").unwrap();
         assert_eq!(id, "job-5");
+
+        // The CLI pretty-prints, so the JSON under a notice spans lines.
+        let id =
+            parse_create("A new version of the CLI is available.\n[\n  \"job-6\"\n]\n").unwrap();
+        assert_eq!(id, "job-6");
     }
 
     #[test]
