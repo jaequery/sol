@@ -117,7 +117,7 @@ dropped on the next save.)
 The shortest path through SolCut. The film is nothing but the AI transitions between the
 three photos, so no still is ever held on screen.
 
-1. **✦ New film from 3 photos**, from the title bar or the empty timeline.
+1. **✦ New film from 3 photos**, from the empty timeline's drop zone.
 2. **Drop or choose exactly three photos.** A fourth, or a video, is left out by name with
    the reason. ↑ / ↓ order them — slot order is the film's running order.
 3. **Both prompts arrive filled in.** Edit them or leave them; zero typing is required.

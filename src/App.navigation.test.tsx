@@ -131,9 +131,10 @@ describe('title bar', () => {
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
-    await user.click(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })[0]);
-    expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Close the film panel' }));
+    expect(
+      screen.queryAllByRole('button', { name: '✦ New film from 3 photos' }),
+      'the film panel is opened from the empty timeline, not from the bar',
+    ).toHaveLength(1);
 
     vi.mocked(backend.pickMediaFiles).mockResolvedValue([]);
     await user.click(screen.getByRole('button', { name: 'Import' }));
@@ -652,7 +653,7 @@ describe('film wizard', () => {
   }
 
   async function openWizard(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })[0]);
+    await user.click(screen.getByRole('button', { name: '✦ New film from 3 photos' }));
     return screen.getByRole('dialog', { name: 'New film from 3 photos' });
   }
 
@@ -881,7 +882,7 @@ describe('keyboard', () => {
   it('regression — Escape closes one layer at a time, innermost first', async () => {
     const user = userEvent.setup();
     await mount();
-    await user.click(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })[0]);
+    await user.click(screen.getByRole('button', { name: '✦ New film from 3 photos' }));
     await user.click(screen.getByRole('button', { name: 'Settings' }));
 
     await act(async () => fireEvent.keyDown(document.body, { key: 'Escape' }));
@@ -922,7 +923,10 @@ describe('keyboard', () => {
     await mount();
     await dropPhotoPair();
     await user.click(screen.getByRole('button', { name: 'sunset.jpg photo clip' }));
-    await user.click(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })[0]);
+    // With clips down, the empty timeline's call to action is gone, so the panel is opened
+    // the way the film flow itself reopens it.
+    await act(async () => useEditor.getState().openFilmWizard());
+    expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).toBeInTheDocument();
 
     await act(async () => fireEvent.keyDown(document.body, { key: 'Delete' }));
     expect(useEditor.getState().clips).toHaveLength(1);

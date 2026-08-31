@@ -155,7 +155,7 @@ own states; what the film underneath is doing is rows 61–67c.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 68 | **Two ways in** | App running | **✦ New film from 3 photos** sits in the title bar, and again inside the empty timeline's drop zone next to "Drop photos, videos and audio here". Both open the same panel | Click either |
+| 68 | **The way in** | App running, nothing on the timeline | **✦ New film from 3 photos** sits inside the empty timeline's drop zone, next to "Drop photos, videos and audio here" | Click it |
 | 69 | **Wizard open, nothing chosen** | Either entry action | A floating panel: a "Drop three photos here" zone with a **Choose photos** button, three numbered empty slots, and the two transition prompts already filled in | Choose photos, drop, or Close |
 | 70 | **Drag-over the wizard** | OS file drag over the drop zone | The zone lights up in accent, exactly as the timeline's does | Drop, or drag out |
 | 71 | **Under three photos** | 1 or 2 photos chosen | The empty slots stay visible and an inline reason reads "2 of 3 photos chosen — add 1 more."; **Generate film** is disabled | Add the rest |

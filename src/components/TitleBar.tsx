@@ -5,7 +5,6 @@ export function TitleBar() {
   const generations = useEditor((s) => s.generations);
   const importViaDialog = useEditor((s) => s.importViaDialog);
   const openSettings = useEditor((s) => s.openSettings);
-  const openFilmWizard = useEditor((s) => s.openFilmWizard);
   const runExport = useEditor((s) => s.runExport);
   const exporting = useEditor((s) => s.exporting);
 
@@ -32,13 +31,6 @@ export function TitleBar() {
         */}
         <button type="button" className="btn btn--ghost" onClick={openSettings}>
           Settings
-        </button>
-        {/*
-          Always live, even mid-film: a running film has nowhere else to be watched, and the
-          panel is where "one film at a time" is explained rather than silently enforced.
-        */}
-        <button type="button" className="btn btn--ghost" onClick={openFilmWizard}>
-          ✦ New film from 3 photos
         </button>
         <button type="button" className="btn btn--ghost" onClick={() => void importViaDialog()}>
           Import
