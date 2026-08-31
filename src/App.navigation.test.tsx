@@ -127,6 +127,31 @@ async function dropPhotoPair() {
   await screen.findByRole('button', { name: 'sunset.jpg photo clip' });
 }
 
+/**
+ * Carry a bin tile onto the track and let go of it there.
+ *
+ * The move and the release are dispatched on the track, not on `window` as the other pointer
+ * drags in this file are: a bin drag is hit-tested by the pointer's own target, which is the
+ * only hit test a harness with no layout can answer. `clientX` is where it is let go.
+ */
+async function dragTileToTrack(name: string, clientX = 0) {
+  const tile = screen.getByLabelText(`Add ${name} to the timeline`);
+  const track = screen.getByTestId('timeline-track');
+  // One act per event, as the ruler and clip drags in this file are written: the press is
+  // what puts the track in charge of the drag, and it has to land before the release does.
+  await act(async () => fireEvent.pointerDown(tile, { button: 0, clientX: 0 }));
+  await act(async () => fireEvent.pointerMove(track, { clientX }));
+  await act(async () => fireEvent.pointerUp(track, { clientX }));
+}
+
+/** A photo in the bin with nothing of it on the track — the state deleting a clip leaves. */
+async function binnedPhoto() {
+  await dropOnTimeline([file('sunset.jpg', 'image/jpeg')]);
+  await screen.findByRole('button', { name: 'sunset.jpg photo clip' });
+  act(() => useEditor.getState().deleteSelection());
+  expect(useEditor.getState().clips).toHaveLength(0);
+}
+
 // ------------------------------------------------------------------------------ title bar
 
 describe('title bar', () => {
@@ -191,6 +216,109 @@ describe('media bin', () => {
     const problem = await screen.findByRole('alert');
     await user.click(within(problem).getByRole('button', { name: 'Dismiss' }));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('a tile dragged onto the track lands there as a clip', async () => {
+    await mount();
+    // Deleting a clip used to be a one-way door: the asset stayed in the bin with no way
+    // back onto the timeline (QA sweep R6). Dragging it out is that way back.
+    await binnedPhoto();
+
+    await dragTileToTrack('sunset.jpg');
+
+    expect(useEditor.getState().clips).toHaveLength(1);
+    await screen.findByRole('button', { name: 'sunset.jpg photo clip' });
+  });
+
+  it('it lands where it was let go, not on the end of the track', async () => {
+    await mount();
+    await dropPhotoPair();
+
+    // The one place this suite has to stub geometry: jsdom lays nothing out, so the track
+    // reports a zero-width rect and every drop would read as "past the last clip".
+    const track = screen.getByTestId('timeline-track');
+    vi.spyOn(track, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 1000, bottom: 96, width: 1000, height: 96,
+      toJSON: () => ({}),
+    });
+
+    // A tenth of the way along a 10 s timeline is inside the first clip's front half, so the
+    // boundary nearest the pointer is the one before it.
+    await dragTileToTrack('cliff.png', 100);
+
+    expect(useEditor.getState().clips.map((c) => c.name)).toEqual([
+      'cliff.png',
+      'sunset.jpg',
+      'cliff.png',
+    ]);
+  });
+
+  it('a tile let go anywhere but the track adds nothing', async () => {
+    await mount();
+    await binnedPhoto();
+    const tile = screen.getByLabelText('Add sunset.jpg to the timeline');
+    const track = screen.getByTestId('timeline-track');
+
+    // Out over the track and back again: changing your mind has to be possible, and a press
+    // that never leaves the bin is not a drop either.
+    await act(async () => fireEvent.pointerDown(tile, { button: 0, clientX: 0 }));
+    await act(async () => fireEvent.pointerMove(track, { clientX: 100 }));
+    await act(async () => fireEvent.pointerMove(tile, { clientX: 0 }));
+    await act(async () => fireEvent.pointerUp(tile, { clientX: 0 }));
+
+    expect(useEditor.getState().clips).toHaveLength(0);
+    expect(useEditor.getState().draggingAssetId).toBeNull();
+  });
+
+  it('the same tile can be dragged out again — the bin is a source, not a stack', async () => {
+    await mount();
+    await binnedPhoto();
+    const assetId = Object.keys(useEditor.getState().assets)[0];
+
+    await dragTileToTrack('sunset.jpg');
+    await dragTileToTrack('sunset.jpg');
+
+    const { clips } = useEditor.getState();
+    expect(clips).toHaveLength(2);
+    expect(clips.map((c) => c.assetId)).toEqual([assetId, assetId]);
+    expect(clips[0].id).not.toBe(clips[1].id);
+  });
+
+  it('a sound dragged out lands on its own lane where it was let go', async () => {
+    const user = userEvent.setup();
+    await mount();
+    // Clips first: the drop time is measured off them, and an empty track has no such box.
+    await dropPhotoPair();
+
+    mockPick('/media/theme.mp3', 'theme.mp3', 'audio');
+    await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+    await screen.findByRole('button', { name: 'theme.mp3 audio track' });
+
+    await dragTileToTrack('theme.mp3', 300);
+
+    const { audioTracks } = useEditor.getState();
+    expect(audioTracks).toHaveLength(2);
+    expect(audioTracks[1].startMs).toBe(3000);
+  });
+
+  it('Enter on a focused tile adds it at the playhead', async () => {
+    await mount();
+    await dropPhotoPair();
+    act(() => useEditor.getState().setPlayhead(6000));
+
+    // No pointer anywhere in this test: the drag is a mouse affordance and this is the way
+    // through it without one.
+    await act(async () => {
+      fireEvent.keyDown(screen.getByLabelText('Add sunset.jpg to the timeline'), {
+        key: 'Enter',
+      });
+    });
+
+    expect(useEditor.getState().clips.map((c) => c.name)).toEqual([
+      'sunset.jpg',
+      'sunset.jpg',
+      'cliff.png',
+    ]);
   });
 
   it('a tile can be removed, and the bin returns to its first-run state', async () => {

@@ -200,11 +200,19 @@ input {
   border: 1px solid var(--line);
   background: var(--sunken);
   padding: 0;
+  cursor: grab;
+}
+/* The one thing that says which tile the pointer is carrying. */
+.bin__tile--dragging {
+  cursor: grabbing;
+  opacity: 0.5;
 }
 /* Restored media whose file has gone. It stays in the bin — its clips are still on the
    track and still say what the timeline is — but it can neither draw nor export. */
 .bin__tile--missing {
   opacity: 0.45;
+  /* Not a drag source: its file is gone, so there is nothing to put on the track. */
+  cursor: default;
 }
 .bin__tile img,
 .bin__tile video {
