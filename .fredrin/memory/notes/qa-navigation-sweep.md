@@ -109,7 +109,11 @@ next stray pointer event commits it at an arbitrary offset.
 
 **R6 — An asset in the bin can never reach the timeline.** No drag-out, no double-click; every
 path onto the track goes through the file picker or a drop. Deleting a clip is therefore a
-one-way door whose only recovery re-imports the file as a *second* asset.
+one-way door whose only recovery re-imports the file as a *second* asset. *(Resolved in
+SOL-XB7SC5: a bin tile is a pointer drag source and the track commits the drop, with Enter
+and double-click on a focused tile as the keyboard path. Deliberately **not** HTML5
+drag-and-drop — see R1 — so the affordance does not depend on what the packaged webview does
+with a drag.)*
 
 **R7 — `ffmpegAvailable` is fetched into the store and never read.** There is no pre-flight
 refusal; a missing ffmpeg is only discovered as a failed export.

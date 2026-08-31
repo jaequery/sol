@@ -89,6 +89,7 @@ beforeEach(() => {
     animateRun: null,
     importProblems: [],
     importing: 0,
+    draggingAssetId: null,
     toasts: [],
     exportState: null,
     settings: CONNECTED,
@@ -914,5 +915,82 @@ describe('the animate-all run and its terminal collapse', () => {
 
     expect(useEditor.getState().animateRun).toBeNull();
     expect(useEditor.getState().toasts).toHaveLength(before);
+  });
+});
+
+// ------------------------------------------------- placing an asset already in the bin
+
+describe('an asset placed from the bin', () => {
+  /** Two photos side by side on the track: a (0–2000) then b (2000–5000). */
+  function binPairOnTrack(): [Clip, Clip] {
+    const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 2000, 0);
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 2000);
+    useEditor.setState({ clips: [a, b] });
+    return [a, b];
+  }
+
+  it('a video placed from the bin lands at its probed length', () => {
+    // A length the importer never guesses: the asset carries it because the file was probed
+    // once, and nothing would ever correct this clip afterwards — `probeDurations` only
+    // patches the clip its own import created.
+    useEditor.setState({
+      assets: {
+        ...useEditor.getState().assets,
+        asset_v: {
+          id: 'asset_v',
+          name: 'walk.mp4',
+          kind: 'video',
+          path: '/media/walk.mp4',
+          src: 'asset:///media/walk.mp4',
+          sizeBytes: 4096,
+          durationMs: 31_500,
+        },
+      },
+    });
+
+    useEditor.getState().placeAssetOnTimeline('asset_v');
+
+    const [clip] = useEditor.getState().clips;
+    expect(clip.durationMs).toBe(31_500);
+    expect(clip.name).toBe('walk.mp4');
+  });
+
+  it('an insertion between two photos takes their failed generation with it', () => {
+    const [a, b] = binPairOnTrack();
+    const id = useEditor.getState().startCutGeneration(a.id, b.id);
+    emit({
+      generationId: id!,
+      status: 'failed',
+      progress: 0,
+      elapsedSecs: 4,
+      slow: false,
+      error: { title: 'Rate limited', message: 'rate limited', retryable: true },
+    });
+    expect(useEditor.getState().generations[id!].status).toBe('failed');
+
+    // A third photo landing between them: a→b is no longer a cut, so its chip and its card
+    // are gone and a failed render kept on that key would be state with no way out.
+    useEditor.getState().placeAssetOnTimeline('asset_c', 1);
+
+    const s = useEditor.getState();
+    expect(s.clips.map((c) => c.assetId)).toEqual(['asset_a', 'asset_c', 'asset_b']);
+    expect(s.generations[id!]).toBeUndefined();
+  });
+
+  it('an id that is not in the bin, or whose file has gone, places nothing', () => {
+    binPairOnTrack();
+    useEditor.getState().placeAssetOnTimeline('asset_gone');
+
+    // A clip on a missing file could only render as "media offline" and would block the
+    // export — the same refusal a generation makes.
+    useEditor.setState({
+      assets: {
+        ...useEditor.getState().assets,
+        asset_c: { ...useEditor.getState().assets.asset_c, missing: true },
+      },
+    });
+    useEditor.getState().placeAssetOnTimeline('asset_c');
+
+    expect(useEditor.getState().clips).toHaveLength(2);
   });
 });

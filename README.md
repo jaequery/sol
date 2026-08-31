@@ -10,7 +10,13 @@ cut plays as pure motion rather than stills padded around an animation.
 ## What it does
 
 - **A single track.** Photos and videos land on the same lane in drop order. No layers, no
-  compositing — that is the whole point of the design. Drag a clip to **anywhere** on the
+  compositing — that is the whole point of the design. A tile already in the **media bin**
+  can be dragged back out onto the track whenever you like — it goes in at the boundary
+  nearest where you let go, as a fresh copy, so the same photo can appear as often as you
+  drag it, and a sound lands on its own lane at exactly the point it was released. Enter on
+  a focused tile does the same at the playhead, without a mouse. Deleting a clip is
+  therefore no longer a one-way door. A tile whose file has gone missing is not a source:
+  it keeps its ✕ and nothing else. Drag a clip to **anywhere** on the
   track: it lands exactly where you let go, gaps and all, and a gap is black film in the
   preview and in the export. One track cannot show two clips at once, so a clip dropped on
   top of another slides that one right rather than stacking. Drag either edge to change how
@@ -259,6 +265,12 @@ GTK toolchain.
   0:00) rather than shoving anything out of the way. The tail is the edge that pushes.
 - **Export needs ffmpeg on `PATH`.** It is checked before anything is written, and refused
   with instructions rather than half-rendered.
+- **A tile is dragged with the mouse, not a finger.** The bin scrolls, and a touch drag
+  scrolls it rather than carrying the tile; Enter on a focused tile is the way in without a
+  pointer. Mouse and pen are unaffected.
+- **A tile dragged out mid-import lands at the default 5 s.** A video's real length is read
+  from the file a moment after import, and a clip placed from the bin copies whatever the
+  asset knows at that instant. Trim or stretch it once the length is in.
 - **Browser drops have no filesystem path.** `pnpm dev` in a browser can import and edit,
   but export needs the desktop app, which resolves real paths.
 - **The model decides the clip length.** The models publish fixed duration choices and

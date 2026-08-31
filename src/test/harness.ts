@@ -40,6 +40,7 @@ export function resetEditor(): void {
     filmWizardOpen: false,
     importProblems: [],
     importing: 0,
+    draggingAssetId: null,
     toasts: [],
     exportState: null,
     exporting: false,
