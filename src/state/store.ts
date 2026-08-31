@@ -157,6 +157,12 @@ export interface EditorState {
   animateSubmittingId: string | null;
   importing: number;
   importProblems: ImportProblem[];
+  /**
+   * The bin tile a pointer is currently carrying, if any. Transient, but the drag starts in
+   * one panel and lands in another, which is exactly what the one flat store is for — the
+   * timeline is the only thing that knows where a drop would land, so it owns the geometry.
+   */
+  draggingAssetId: string | null;
 
   settings: backend.SettingsView | null;
   settingsOpen: boolean;
@@ -184,6 +190,9 @@ export interface EditorState {
   addAudioViaDialog: () => Promise<void>;
   removeAsset: (assetId: string) => void;
   dismissImportProblems: () => void;
+  beginAssetDrag: (assetId: string) => void;
+  endAssetDrag: () => void;
+  placeAssetOnTimeline: (assetId: string, index?: number, audioStartMs?: number) => void;
 
   // ---- audio tracks
   moveAudioTrack: (trackId: string, startMs: number) => void;
@@ -266,6 +275,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   animateSubmittingId: null,
   importing: 0,
   importProblems: [],
+  draggingAssetId: null,
 
   settings: null,
   settingsOpen: false,
@@ -417,6 +427,31 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   dismissImportProblems: () => set({ importProblems: [] }),
+
+  beginAssetDrag: (assetId) => set({ draggingAssetId: assetId }),
+  endAssetDrag: () => set({ draggingAssetId: null }),
+
+  /**
+   * Put an asset that is already in the bin onto the timeline — the drag out of the bin, and
+   * the keyboard path beside it. Where it lands is the import's rule, not a second one:
+   * `index` is a boundary on the visual track and `audioStartMs` an exact time on a new lane.
+   * Both default to the playhead, which is what a caller with no pointer to speak of wants.
+   *
+   * The asset's own length is passed through, so a video whose file has been probed lands at
+   * its real length: nothing would ever correct it later, since `probeDurations` only patches
+   * the clip its own import created.
+   */
+  placeAssetOnTimeline(assetId, index, audioStartMs) {
+    const { assets, clips, playheadMs } = get();
+    const asset = assets[assetId];
+    if (!asset) return;
+    commitImport(
+      set,
+      [placed(asset, audioStartMs ?? playheadMs, asset.durationMs)],
+      [],
+      index ?? insertIndexAtTime(clips, playheadMs),
+    );
+  },
 
   // ------------------------------------------------------------------ audio tracks
 
@@ -1122,16 +1157,19 @@ type Setter = (partial: Partial<EditorState> | ((s: EditorState) => Partial<Edit
 /** One accepted import: a clip bound for the visual track, or a sound bound for a lane. */
 type Imported = { asset: MediaAsset; clip?: Clip; track?: AudioTrack };
 
-function placed(asset: MediaAsset, audioStartMs: number): Imported {
+function placed(asset: MediaAsset, audioStartMs: number, sourceDurationMs?: number): Imported {
   if (asset.kind === 'audio') {
-    return { asset, track: audioTrack(asset, audioStartMs, DEFAULT_AUDIO_DURATION_MS) };
+    return {
+      asset,
+      track: audioTrack(asset, audioStartMs, sourceDurationMs ?? DEFAULT_AUDIO_DURATION_MS),
+    };
   }
   return {
     asset,
     clip:
       asset.kind === 'photo'
         ? photoClip(asset, DEFAULT_PHOTO_DURATION_MS)
-        : videoClip(asset, DEFAULT_VIDEO_DURATION_MS),
+        : videoClip(asset, sourceDurationMs ?? DEFAULT_VIDEO_DURATION_MS),
   };
 }
 
@@ -1157,6 +1195,10 @@ function commitImport(set: Setter, accepted: Imported[], problems: ImportProblem
       assets,
       clips,
       audioTracks,
+      // An insertion is an edit like any other: landing a clip between two photos breaks
+      // their cut, and a failed generation keyed on that pair would be left with no chip and
+      // no card to dismiss it from. Nothing else is dropped — an insertion removes no clip.
+      ...prunedAfterEdit(clips, s.generations, s.cutPrompts, s.cutModes),
       importProblems: [...s.importProblems, ...problems],
       selection: first?.clip
         ? { kind: 'clip', clipId: first.clip.id }

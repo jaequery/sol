@@ -87,10 +87,19 @@ export function Timeline() {
   const toggleAudioMute = useEditor((s) => s.toggleAudioMute);
   const animateAll = useEditor((s) => s.animateAll);
   const settings = useEditor((s) => s.settings);
+  const draggingAssetId = useEditor((s) => s.draggingAssetId);
+  const endAssetDrag = useEditor((s) => s.endAssetDrag);
+  const placeAssetOnTimeline = useEditor((s) => s.placeAssetOnTimeline);
 
   const trackRef = useRef<HTMLDivElement>(null);
   const clipsRef = useRef<HTMLDivElement>(null);
   const [fileDrag, setFileDrag] = useState<{ count: number; ratio: number } | null>(null);
+  /**
+   * Where a tile carried out of the bin would land — and the whole condition for landing it.
+   * It is set only while the pointer is over the track, so a press that never travels here,
+   * or a drag taken back off the track, has nowhere to drop and drops nothing.
+   */
+  const [tileDrop, setTileDrop] = useState<{ ratio: number; timeMs: number } | null>(null);
 
   const [drag, setDrag] = useState<ClipDrag | null>(null);
   // The window listeners below read the drag they were installed for, not a stale closure.
@@ -188,17 +197,22 @@ export function Timeline() {
   const splittable = canSplitAt(clips, playheadMs);
   const deletable = canDeleteSelection(selection);
 
-  function ratioFromEvent(clientX: number): number {
+  // Both are callbacks rather than plain functions so the bin-drag effect below can reuse
+  // them without reinstalling its window listeners on every render.
+  const ratioFromEvent = useCallback((clientX: number): number => {
     const rect = trackRef.current?.getBoundingClientRect();
     if (!rect || rect.width === 0) return 1;
     return Math.min(Math.max((clientX - rect.left) / rect.width, 0), 1);
-  }
+  }, []);
 
   /** Where on the timeline a screen x sits. Measured off the clips, which start at time 0. */
-  function timeFromClientX(clientX: number): number {
-    const rect = clipsRef.current?.getBoundingClientRect();
-    return rect ? (clientX - rect.left) * msPerPx : 0;
-  }
+  const timeFromClientX = useCallback(
+    (clientX: number): number => {
+      const rect = clipsRef.current?.getBoundingClientRect();
+      return rect ? (clientX - rect.left) * msPerPx : 0;
+    },
+    [msPerPx],
+  );
 
   function beginDrag(e: React.PointerEvent, kind: ClipDrag['kind'], clip: Clip, edge: ClipEdge) {
     if (e.button !== 0) return;
@@ -339,6 +353,83 @@ export function Timeline() {
     setAudioDragState,
     dropStartMs,
   ]);
+
+  /**
+   * A tile carried out of the bin. The bin arms the drag and lets go of it; the track is the
+   * only thing that knows where a drop would land, so it owns everything after the press —
+   * the same window-listener pattern the clip drags use, for the same reason.
+   *
+   * Hit-testing is `contains(e.target)` rather than the track's rectangle on purpose: the
+   * pointer's target *is* the browser's own hit test, and it is the only one that survives a
+   * harness with no layout.
+   */
+  useEffect(() => {
+    if (!draggingAssetId) return;
+
+    /** Where the pointer would drop, or `null` when it is not over the track at all. */
+    const positionOf = (e: PointerEvent) => {
+      const track = trackRef.current;
+      if (!track || !(e.target instanceof Node) || !track.contains(e.target)) return null;
+      const ratio = ratioFromEvent(e.clientX);
+      return {
+        ratio,
+        timeMs: Math.max(0, clipsRef.current ? timeFromClientX(e.clientX) : ratio * total),
+      };
+    };
+
+    const onMove = (e: PointerEvent) => setTileDrop(positionOf(e));
+
+    const commit = (e: PointerEvent) => {
+      const at = positionOf(e);
+      setTileDrop(null);
+      endAssetDrag();
+      // Exactly what an OS file drop does with the same coordinates: a boundary for the
+      // visual track, an exact time for a sound's own lane.
+      if (at) placeAssetOnTimeline(draggingAssetId, insertIndexAt(clips, at.ratio), at.timeMs);
+    };
+
+    // This store has no undo, so a drag that loses its release — a context menu, a window
+    // switch, Escape — has to end here rather than stay armed and land on a later click.
+    const abort = () => {
+      setTileDrop(null);
+      endAssetDrag();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') abort();
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', commit);
+    window.addEventListener('pointerdown', abort);
+    window.addEventListener('pointercancel', abort);
+    window.addEventListener('contextmenu', abort);
+    window.addEventListener('blur', abort);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', commit);
+      window.removeEventListener('pointerdown', abort);
+      window.removeEventListener('pointercancel', abort);
+      window.removeEventListener('contextmenu', abort);
+      window.removeEventListener('blur', abort);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [
+    draggingAssetId,
+    clips,
+    total,
+    ratioFromEvent,
+    timeFromClientX,
+    placeAssetOnTimeline,
+    endAssetDrag,
+  ]);
+
+  // A position left behind by a finished drag says nothing: it is only a drop while the bin
+  // still has a tile in the air. That also keeps the effect above free of a clearing setState.
+  const draggingAsset = draggingAssetId ? assets[draggingAssetId] : undefined;
+  const tileIncoming = draggingAsset ? tileDrop : null;
+  /** Something is being offered to the track: an OS file drag, or a tile out of the bin. */
+  const incoming = fileDrag ?? tileIncoming;
 
   function onSelectClip(clipId: string, e: React.MouseEvent) {
     if (swallowClick.current) {
@@ -499,7 +590,7 @@ export function Timeline() {
           <Ruler total={total} pxPerSecond={pxPerSecond} width={width} onSeek={setPlayhead} />
 
           <div
-            className={`track ${fileDrag ? 'track--drop-target' : ''} ${drag?.moved ? 'track--dragging' : ''}`}
+            className={`track ${incoming ? 'track--drop-target' : ''} ${drag?.moved ? 'track--dragging' : ''}`}
             ref={trackRef}
             data-testid="timeline-track"
             onDragOver={onDragOver}
@@ -508,13 +599,18 @@ export function Timeline() {
             onClick={onScrub}
           >
             {clips.length === 0 ? (
-              <div className={`dropzone ${fileDrag ? 'dropzone--hot' : ''}`}>
+              <div className={`dropzone ${incoming ? 'dropzone--hot' : ''}`}>
                 {fileDrag ? (
                   <div>
                     <b>
                       Release to add {fileDrag.count} {fileDrag.count === 1 ? 'file' : 'files'}
                     </b>
                     They land side by side on one track
+                  </div>
+                ) : tileIncoming && draggingAsset ? (
+                  <div>
+                    <b>Release to add {truncateName(draggingAsset.name, 26)}</b>
+                    It lands where you let go
                   </div>
                 ) : (
                   <div>
@@ -589,10 +685,10 @@ export function Timeline() {
               </div>
             )}
 
-            {fileDrag && clips.length > 0 && (
+            {incoming && clips.length > 0 && (
               <div
                 className="insert-marker"
-                style={{ left: toPx(startOfIndex(clips, insertIndexAt(clips, fileDrag.ratio))) }}
+                style={{ left: toPx(startOfIndex(clips, insertIndexAt(clips, incoming.ratio))) }}
               />
             )}
           </div>

@@ -195,6 +195,12 @@ input {
   border: 1px solid var(--line);
   background: var(--sunken);
   padding: 0;
+  cursor: grab;
+}
+/* The one thing that says which tile the pointer is carrying. */
+.bin__tile--dragging {
+  cursor: grabbing;
+  opacity: 0.5;
 }
 .bin__tile img,
 .bin__tile video {

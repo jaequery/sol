@@ -13,6 +13,9 @@ export function MediaBin() {
   const dismiss = useEditor((s) => s.dismissImportProblems);
   const importViaDialog = useEditor((s) => s.importViaDialog);
   const removeAsset = useEditor((s) => s.removeAsset);
+  const draggingAssetId = useEditor((s) => s.draggingAssetId);
+  const beginAssetDrag = useEditor((s) => s.beginAssetDrag);
+  const placeAssetOnTimeline = useEditor((s) => s.placeAssetOnTimeline);
 
   const list = Object.values(assets);
   const empty = list.length === 0 && importing === 0;
@@ -68,7 +71,30 @@ export function MediaBin() {
             clips.filter((c) => c.assetId === asset.id).length +
             audioTracks.filter((t) => t.assetId === asset.id).length;
           return (
-            <div key={asset.id} className="bin__tile" title={asset.name}>
+            <div
+              key={asset.id}
+              className={`bin__tile ${draggingAssetId === asset.id ? 'bin__tile--dragging' : ''}`}
+              title={`${asset.name} · drag onto the timeline · Enter adds it at the playhead`}
+              // A focusable tile rather than a `role="button"` one: the role is in App's
+              // INTERACTIVE list, which would take Delete and Backspace away from the
+              // selection for as long as a tile held focus.
+              tabIndex={0}
+              aria-label={`Add ${asset.name} to the timeline`}
+              onPointerDown={(e) => {
+                // The timeline takes it from here — it is the half that knows where a drop
+                // would land. A right-click must not arm a drag whose release never comes.
+                if (e.button !== 0) return;
+                beginAssetDrag(asset.id);
+              }}
+              onDoubleClick={() => placeAssetOnTimeline(asset.id)}
+              onKeyDown={(e) => {
+                // Enter alone. Space is play/pause everywhere in this app, and a media tile
+                // is no place to take the transport key away from the user.
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                placeAssetOnTimeline(asset.id);
+              }}
+            >
               {asset.kind === 'photo' ? (
                 <img src={asset.src} alt="" draggable={false} />
               ) : asset.kind === 'video' ? (
@@ -90,6 +116,7 @@ export function MediaBin() {
                     ? `Remove ${asset.name} and its ${onTimeline} ${onTimeline === 1 ? 'clip' : 'clips'} on the timeline`
                     : `Remove ${asset.name}`
                 }
+                onPointerDown={(e) => e.stopPropagation()}
                 onClick={() => removeAsset(asset.id)}
               >
                 ✕
