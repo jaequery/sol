@@ -55,7 +55,7 @@ pub fn parse_job(stdout: &str) -> Result<JobState> {
             progress: progress_of(body),
         }),
         "completed" => match find_result_url(body) {
-            Some(video_url) => Ok(JobState::Succeeded { video_url }),
+            Some(result_url) => Ok(JobState::Succeeded { result_url }),
             // A completed job is documented to carry its result URL, so an empty one is
             // a real failure rather than something another poll would fix.
             None => Err(HiggsfieldError::JobFailed(
@@ -156,20 +156,35 @@ fn status_of(body: &Value) -> Option<&str> {
 /// The result URL of a completed job, under the names the CLI uses.
 ///
 /// `result_url` is the documented key; `min_result_url` is its lower-resolution sibling
-/// and only trusted when the full one is absent. `results` and `video_url` cover jobs
-/// that report a list or a typed field instead.
+/// and only trusted when the full one is absent. `results` and the typed `video_url` /
+/// `image_url` cover jobs that report a list or a medium-specific field instead — image
+/// jobs go through this same reader, and a completed job whose URL cannot be found is
+/// reported as a failure, so a missing name here would turn a *successful* generation
+/// into "the job completed without a result URL".
+///
+/// A job that lists several outputs answers with the first: SolCut submits one generation
+/// and shows one result.
 pub fn find_result_url(body: &Value) -> Option<String> {
-    for key in ["result_url", "video_url", "min_result_url", "url"] {
+    for key in [
+        "result_url",
+        "video_url",
+        "image_url",
+        "min_result_url",
+        "url",
+    ] {
         if let Some(url) = http_url(body.get(key)) {
             return Some(url);
         }
     }
-    if let Some(results) = body.get("results").and_then(Value::as_array) {
-        for item in results {
+    for list in ["results", "images"] {
+        let Some(items) = body.get(list).and_then(Value::as_array) else {
+            continue;
+        };
+        for item in items {
             if let Some(url) = http_url(Some(item)) {
                 return Some(url);
             }
-            for key in ["result_url", "video_url", "url"] {
+            for key in ["result_url", "video_url", "image_url", "url"] {
                 if let Some(url) = http_url(item.get(key)) {
                     return Some(url);
                 }
@@ -369,7 +384,7 @@ mod tests {
         assert_eq!(
             parse_job(&body.to_string()).unwrap(),
             JobState::Succeeded {
-                video_url: "https://cdn.test/v.mp4".into()
+                result_url: "https://cdn.test/v.mp4".into()
             }
         );
     }
@@ -385,7 +400,7 @@ mod tests {
         assert_eq!(
             parse_job(&body.to_string()).unwrap(),
             JobState::Succeeded {
-                video_url: "https://cdn.test/full.mp4".into()
+                result_url: "https://cdn.test/full.mp4".into()
             }
         );
     }
@@ -396,7 +411,7 @@ mod tests {
         assert_eq!(
             parse_job(&body.to_string()).unwrap(),
             JobState::Succeeded {
-                video_url: "https://cdn.test/v.mp4".into()
+                result_url: "https://cdn.test/v.mp4".into()
             }
         );
 
@@ -404,7 +419,62 @@ mod tests {
         assert_eq!(
             parse_job(&body.to_string()).unwrap(),
             JobState::Succeeded {
-                video_url: "https://cdn.test/w.mp4".into()
+                result_url: "https://cdn.test/w.mp4".into()
+            }
+        );
+    }
+
+    /// An image job that names its output anything but `result_url` would otherwise
+    /// report a *successful* generation as "completed without a result URL" — the
+    /// quietest way for this feature to look broken.
+    #[test]
+    fn a_finished_photo_is_found_under_the_image_shaped_names_too() {
+        for body in [
+            json!({"id": "x", "status": "completed", "image_url": "https://cdn.test/a.png"}),
+            json!({"id": "x", "status": "completed", "images": ["https://cdn.test/a.png"]}),
+            json!({"id": "x", "status": "completed", "images": [{"image_url": "https://cdn.test/a.png"}]}),
+            json!({"id": "x", "status": "completed", "results": [{"image_url": "https://cdn.test/a.png"}]}),
+        ] {
+            assert_eq!(
+                parse_job(&body.to_string()).unwrap(),
+                JobState::Succeeded {
+                    result_url: "https://cdn.test/a.png".into()
+                },
+                "{body}"
+            );
+        }
+    }
+
+    /// A job set carrying several outputs answers with the first: SolCut submits one
+    /// generation and shows one photo.
+    #[test]
+    fn several_images_answer_with_the_first() {
+        let body = json!({
+            "id": "x",
+            "status": "completed",
+            "images": ["https://cdn.test/one.png", "https://cdn.test/two.png"]
+        });
+        assert_eq!(
+            parse_job(&body.to_string()).unwrap(),
+            JobState::Succeeded {
+                result_url: "https://cdn.test/one.png".into()
+            }
+        );
+    }
+
+    /// The documented key still wins when a body carries both.
+    #[test]
+    fn the_documented_result_url_outranks_a_typed_sibling() {
+        let body = json!({
+            "id": "x",
+            "status": "completed",
+            "image_url": "https://cdn.test/typed.png",
+            "result_url": "https://cdn.test/documented.png"
+        });
+        assert_eq!(
+            parse_job(&body.to_string()).unwrap(),
+            JobState::Succeeded {
+                result_url: "https://cdn.test/documented.png".into()
             }
         );
     }

@@ -9,15 +9,24 @@
 //! login`) and bills its billing workspace — the subscription — and it resolves model ids
 //! against the live catalog, so there is no REST route to guess and get a 404 from.
 //!
+//! Two kinds of job go through it, and they share everything but their first and last
+//! step: a **video transition** between two stills, and a **photo** from a prompt and any
+//! number of the user's own images as references.
+//!
 //! 1. [`Cli::find`] locates the binary on `PATH` (or in the usual install prefixes,
 //!    which a GUI-launched app does not always have on its `PATH`).
 //! 2. [`Cli::create`] runs `generate create <model> --prompt … --start-image …
 //!    --end-image … --json`. The CLI uploads the two stills itself — a local file path
 //!    is a documented media input — and answers with the job id.
-//! 3. [`Cli::job_state`] reads `generate get <job_id> --json` until a terminal state,
-//!    and [`Cli::download`] fetches the finished MP4 next to the project.
+//!    [`Cli::create_image`] is its photo twin: `generate create <image model> --prompt …
+//!    --image … --aspect_ratio … --json`, with `--image` repeated once per reference.
+//! 3. [`Cli::job_state`] reads `generate get <job_id> --json` until a terminal state.
+//!    [`Cli::download`] fetches a finished MP4 to a known path, and
+//!    [`Cli::download_image`] fetches a finished photo to a path it names from the
+//!    response's own content type — the extension is what the media bin classifies by.
 //! 4. [`Cli::probe`] is the Settings dialog's connection check: `model list --video
 //!    --json`, which proves the binary, the login and the workspace in one free call.
+//!    It proves the image path too: same binary, same login, same billing workspace.
 //!
 //! The [`credential`] module is the one part that does not go through the CLI: it holds
 //! the *Cloud API* key SolCut stores (a different credential, on a different host, against
@@ -43,8 +52,23 @@ use std::time::Duration;
 /// catalog, so a wrong id fails by name instead of by 404.
 pub const DEFAULT_MODEL: &str = "seedance_2_5";
 
+/// The default **image** job type: Nano Banana Pro, which takes a prompt and up to
+/// fourteen of the user's own photos as references. A separate constant from
+/// [`DEFAULT_MODEL`], which is a video job type and cannot make a photo.
+pub const DEFAULT_IMAGE_MODEL: &str = "nano_banana_2";
+
 /// The binary the official npm package installs.
 pub const CLI_BINARY: &str = "higgsfield";
+
+/// What a photo may arrive as to be sent on as a reference.
+///
+/// Narrower than the media bin's own photo list on purpose: the bin also accepts `bmp`,
+/// `gif` and `avif`, and handing one of those to Higgsfield's uploader would fail on
+/// their side, far from the click that caused it.
+pub const REFERENCE_IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp"];
+
+/// What a downloaded photo is called when neither the response nor the URL says.
+const FALLBACK_IMAGE_EXT: &str = "png";
 
 /// `generate create` uploads both stills before it answers, so it gets the long budget.
 const CREATE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -112,6 +136,140 @@ pub fn build_create_args(req: &GenerateRequest) -> Vec<String> {
     args
 }
 
+/// One "make me a photo" job: a prompt, and any number of the user's own images to work
+/// from. Zero references is a plain text-to-image generation; one or more is the same
+/// generation done *on top of* those photos.
+#[derive(Debug, Clone)]
+pub struct ImageRequest {
+    /// The CLI job type, e.g. `nano_banana_2`.
+    pub model: String,
+    pub prompt: String,
+    /// Local files the CLI uploads itself. Validated by [`validate_references`] before a
+    /// request is built, so a photo that moved is named here rather than by the CLI.
+    pub references: Vec<PathBuf>,
+    /// e.g. `16:9`. Each model publishes its own set; the caller sends one the chosen
+    /// model accepts, or `None` to take the model's default.
+    pub aspect_ratio: Option<String>,
+}
+
+/// The argv for an image `generate create`, kept separate from [`build_create_args`] and
+/// unit-testable without spawning anything.
+///
+/// Deliberately **not** a branch of the video builder: that one injects
+/// `--mode omni_reference` for Seedance 2.5, a rule that exists only because that video
+/// model gates frame inputs behind it. Sharing the function would leak the rule into
+/// image jobs, whose published mode sets do not contain that value.
+///
+/// `--image` is the documented alias of `--image-references` and repeats once per
+/// reference; `--json`/`--no-color` are not here because [`Cli::run`] appends them.
+pub fn build_image_create_args(req: &ImageRequest) -> Vec<String> {
+    let mut args = vec![
+        "generate".to_string(),
+        "create".to_string(),
+        req.model.clone(),
+        "--prompt".to_string(),
+        req.prompt.clone(),
+    ];
+    for reference in &req.references {
+        args.push("--image".to_string());
+        args.push(reference.display().to_string());
+    }
+    if let Some(aspect) = req
+        .aspect_ratio
+        .as_deref()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+    {
+        args.push("--aspect_ratio".to_string());
+        args.push(aspect.to_string());
+    }
+    args
+}
+
+/// Turn the paths the editor named into files that can actually be sent, or say which
+/// one cannot and why.
+///
+/// Refusing here is the point: a media-bin photo can carry an empty path (a browser drop
+/// never had one) or point at a file that has since moved, and either would reach
+/// Higgsfield as a upload failure with no idea which photo it was about.
+pub fn validate_references(paths: &[String]) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::with_capacity(paths.len());
+    for raw in paths {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(HiggsfieldError::BadReference(
+                "a reference photo has no file on disk — import it from a file, not a browser drop"
+                    .into(),
+            ));
+        }
+        let path = PathBuf::from(trimmed);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| trimmed.to_string());
+
+        let extension = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if !REFERENCE_IMAGE_EXTS.contains(&extension.as_str()) {
+            return Err(HiggsfieldError::BadReference(format!(
+                "{name} is not a reference photo Higgsfield takes — use a {} file",
+                REFERENCE_IMAGE_EXTS.join(", ")
+            )));
+        }
+        if !path.is_file() {
+            return Err(HiggsfieldError::BadReference(format!(
+                "{name} is no longer on disk"
+            )));
+        }
+        files.push(path);
+    }
+    Ok(files)
+}
+
+/// What to call a downloaded photo, from the response's own content type and, failing
+/// that, the URL.
+///
+/// This is load-bearing rather than cosmetic: the media bin classifies a file by its
+/// **extension alone**, and a restored project re-imports every stored path at launch —
+/// so a PNG saved under the wrong extension comes back as the wrong kind of media, or as
+/// missing. A result URL is signed, so its query string is dropped before the extension
+/// is read, and anything unrecognised falls back to png rather than to nothing.
+pub fn image_extension(content_type: Option<&str>, url: &str) -> &'static str {
+    if let Some(ext) = content_type
+        .and_then(|value| value.split(';').next())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .and_then(|value| {
+            SUPPORTED_IMAGE_TYPES
+                .iter()
+                .find(|(t, _)| *t == value)
+                .map(|(_, ext)| *ext)
+        })
+    {
+        return ext;
+    }
+
+    url.split('#')
+        .next()
+        .and_then(|no_fragment| no_fragment.split('?').next())
+        .and_then(|path| path.rsplit('/').next())
+        .and_then(|file| file.rsplit_once('.'))
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .and_then(|ext| {
+            let ext = if ext == "jpeg" {
+                "jpg".to_string()
+            } else {
+                ext
+            };
+            SUPPORTED_IMAGE_TYPES
+                .iter()
+                .find(|(_, known)| **known == ext)
+                .map(|(_, known)| *known)
+        })
+        .unwrap_or(FALLBACK_IMAGE_EXT)
+}
+
 /// A located `higgsfield` binary and the operations SolCut needs from it.
 #[derive(Debug, Clone)]
 pub struct Cli {
@@ -136,6 +294,15 @@ impl Cli {
     /// Submit one generation. The CLI uploads the frames and answers with the job id.
     pub async fn create(&self, req: &GenerateRequest) -> Result<String> {
         let stdout = self.run(&build_create_args(req), CREATE_TIMEOUT).await?;
+        parse_create(&stdout)
+    }
+
+    /// Submit one image generation. The CLI uploads any references and answers with the
+    /// job id; from there it is watched exactly like a video job.
+    pub async fn create_image(&self, req: &ImageRequest) -> Result<String> {
+        let stdout = self
+            .run(&build_image_create_args(req), CREATE_TIMEOUT)
+            .await?;
         parse_create(&stdout)
     }
 
@@ -237,54 +404,82 @@ impl Cli {
     ///
     /// The result URL is storage, not a metered API: a plain GET, no credential.
     pub async fn download(&self, url: &str, dest: &Path) -> Result<u64> {
-        use tokio::io::AsyncWriteExt as _;
-
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()?;
-        let response = http.get(url).send().await?;
-        if !response.status().is_success() {
-            return Err(HiggsfieldError::Http {
-                status: response.status().as_u16(),
-                body: "could not download the generated video".into(),
-            });
-        }
-
-        if let Some(parent) = dest.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| HiggsfieldError::Io(e.to_string()))?;
-        }
-
-        // Write beside the target and rename, so a cancelled download never leaves a
-        // truncated file that the timeline would happily try to play.
-        let tmp = dest.with_extension("part");
-        let mut file = tokio::fs::File::create(&tmp)
-            .await
-            .map_err(|e| HiggsfieldError::Io(e.to_string()))?;
-
-        let mut written = 0u64;
-        let mut stream = response;
-        while let Some(chunk) = stream
-            .chunk()
-            .await
-            .map_err(|e| HiggsfieldError::Transport(e.to_string()))?
-        {
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| HiggsfieldError::Io(e.to_string()))?;
-            written += chunk.len() as u64;
-        }
-        file.flush()
-            .await
-            .map_err(|e| HiggsfieldError::Io(e.to_string()))?;
-        drop(file);
-
-        tokio::fs::rename(&tmp, dest)
-            .await
-            .map_err(|e| HiggsfieldError::Io(e.to_string()))?;
-        Ok(written)
+        let response = fetch(url).await?;
+        write_response(response, dest).await
     }
+
+    /// Stream a finished photo into `dir`, naming it `{stem}.{ext}` where the extension
+    /// comes from what the server actually served — see [`image_extension`]. Returns the
+    /// path written, because the caller cannot know it in advance.
+    pub async fn download_image(&self, url: &str, dir: &Path, stem: &str) -> Result<PathBuf> {
+        let response = fetch(url).await?;
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let dest = dir.join(format!(
+            "{stem}.{}",
+            image_extension(content_type.as_deref(), url)
+        ));
+        write_response(response, &dest).await?;
+        Ok(dest)
+    }
+}
+
+/// GET a result URL, refusing anything but a success before a byte is written.
+async fn fetch(url: &str) -> Result<reqwest::Response> {
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()?;
+    let response = http.get(url).send().await?;
+    if !response.status().is_success() {
+        return Err(HiggsfieldError::Http {
+            status: response.status().as_u16(),
+            body: "could not download the generated file".into(),
+        });
+    }
+    Ok(response)
+}
+
+/// Stream a fetched body to `dest`, returning the bytes written.
+async fn write_response(response: reqwest::Response, dest: &Path) -> Result<u64> {
+    use tokio::io::AsyncWriteExt as _;
+
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| HiggsfieldError::Io(e.to_string()))?;
+    }
+
+    // Write beside the target and rename, so a cancelled download never leaves a
+    // truncated file that the timeline would happily try to play.
+    let tmp = dest.with_extension("part");
+    let mut file = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(|e| HiggsfieldError::Io(e.to_string()))?;
+
+    let mut written = 0u64;
+    let mut stream = response;
+    while let Some(chunk) = stream
+        .chunk()
+        .await
+        .map_err(|e| HiggsfieldError::Transport(e.to_string()))?
+    {
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| HiggsfieldError::Io(e.to_string()))?;
+        written += chunk.len() as u64;
+    }
+    file.flush()
+        .await
+        .map_err(|e| HiggsfieldError::Io(e.to_string()))?;
+    drop(file);
+
+    tokio::fs::rename(&tmp, dest)
+        .await
+        .map_err(|e| HiggsfieldError::Io(e.to_string()))?;
+    Ok(written)
 }
 
 // ---------------------------------------------------------------- binary discovery
@@ -563,6 +758,178 @@ mod tests {
             ErrorKind::PermissionDenied
         )));
         assert!(!is_text_file_busy(&Error::from_raw_os_error(2)));
+    }
+
+    // ------------------------------------------------------------ image generation
+
+    fn image_request() -> ImageRequest {
+        ImageRequest {
+            model: DEFAULT_IMAGE_MODEL.into(),
+            prompt: "a quiet beach at sunrise".into(),
+            references: vec![],
+            aspect_ratio: Some("16:9".into()),
+        }
+    }
+
+    #[test]
+    fn the_default_image_model_is_nano_banana_pro() {
+        assert_eq!(DEFAULT_IMAGE_MODEL, "nano_banana_2");
+        assert_ne!(
+            DEFAULT_IMAGE_MODEL, DEFAULT_MODEL,
+            "a video model cannot make a photo"
+        );
+    }
+
+    #[test]
+    fn a_prompt_alone_is_a_whole_image_request() {
+        let mut req = image_request();
+        req.aspect_ratio = None;
+        assert_eq!(
+            build_image_create_args(&req),
+            vec![
+                "generate",
+                "create",
+                "nano_banana_2",
+                "--prompt",
+                "a quiet beach at sunrise",
+            ]
+        );
+    }
+
+    #[test]
+    fn every_reference_rides_as_its_own_image_flag() {
+        let mut req = image_request();
+        req.references = vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.jpg")];
+        assert_eq!(
+            build_image_create_args(&req),
+            vec![
+                "generate",
+                "create",
+                "nano_banana_2",
+                "--prompt",
+                "a quiet beach at sunrise",
+                "--image",
+                "/tmp/a.png",
+                "--image",
+                "/tmp/b.jpg",
+                "--aspect_ratio",
+                "16:9",
+            ]
+        );
+    }
+
+    /// The rule the video builder carries exists only for Seedance 2.5's frame inputs.
+    /// An image job that inherited it would be refused by a model whose published mode
+    /// set has no such value.
+    #[test]
+    fn an_image_job_never_asks_for_the_video_models_reference_mode() {
+        let mut req = image_request();
+        req.references = vec![PathBuf::from("/tmp/a.png")];
+        let args = build_image_create_args(&req);
+        assert!(!args.iter().any(|a| a == "--mode"), "{args:?}");
+        assert!(!args.iter().any(|a| a == "--start-image"), "{args:?}");
+    }
+
+    #[test]
+    fn a_blank_aspect_ratio_is_left_off_rather_than_sent_empty() {
+        let mut req = image_request();
+        req.aspect_ratio = Some("   ".into());
+        let args = build_image_create_args(&req);
+        assert!(!args.iter().any(|a| a == "--aspect_ratio"), "{args:?}");
+    }
+
+    #[test]
+    fn an_image_prompt_travels_as_one_argument_never_through_a_shell() {
+        let mut req = image_request();
+        req.prompt = "a beach; rm -rf / `boom` $(x)".into();
+        let args = build_image_create_args(&req);
+        let at = args.iter().position(|a| a == "--prompt").unwrap();
+        assert_eq!(args[at + 1], "a beach; rm -rf / `boom` $(x)");
+    }
+
+    /// The bug this guards: a photo dropped from a browser has no filesystem path and is
+    /// not flagged missing, so it looks perfectly usable in the bin. Sending its empty
+    /// path would fail somewhere inside the CLI, about nothing the user could name.
+    #[test]
+    fn a_reference_without_a_file_is_refused_before_anything_is_sent() {
+        let err = validate_references(&["".into()]).unwrap_err();
+        assert!(matches!(err, HiggsfieldError::BadReference(_)), "{err:?}");
+        assert_eq!(err.title(), "Reference photo unavailable");
+        assert!(!err.is_retryable(), "the same empty path fails again");
+
+        let err = validate_references(&["   ".into()]).unwrap_err();
+        assert!(matches!(err, HiggsfieldError::BadReference(_)), "{err:?}");
+    }
+
+    #[test]
+    fn a_reference_names_itself_when_it_has_gone_or_is_the_wrong_kind() {
+        let missing = validate_references(&["/nowhere/holiday.png".into()]).unwrap_err();
+        assert!(missing.to_string().contains("holiday.png"), "{missing}");
+
+        let wrong = validate_references(&["/tmp/clip.mp4".into()]).unwrap_err();
+        assert!(wrong.to_string().contains("clip.mp4"), "{wrong}");
+        // The bin accepts these; Higgsfield's image references do not.
+        for unsupported in ["/tmp/a.avif", "/tmp/a.bmp", "/tmp/a.gif"] {
+            assert!(
+                validate_references(&[unsupported.into()]).is_err(),
+                "{unsupported}"
+            );
+        }
+    }
+
+    #[test]
+    fn real_reference_files_come_back_as_paths() {
+        let dir = std::env::temp_dir().join(format!("solcut-refs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("one.PNG");
+        std::fs::write(&png, [1, 2, 3]).unwrap();
+
+        let files = validate_references(&[png.display().to_string()]).expect("accepted");
+        assert_eq!(
+            files,
+            vec![png.clone()],
+            "an upper-case extension still counts"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A photo saved under the wrong extension is re-imported at the next launch as the
+    /// wrong kind of media, or refused outright — the media bin classifies by extension
+    /// and nothing else. So this is correctness, not tidiness.
+    #[test]
+    fn a_downloaded_photo_is_named_by_what_the_server_actually_served() {
+        assert_eq!(image_extension(Some("image/png"), "https://cdn/x"), "png");
+        assert_eq!(
+            image_extension(Some("image/jpeg; charset=binary"), "https://cdn/x"),
+            "jpg"
+        );
+        assert_eq!(image_extension(Some("IMAGE/WEBP"), "https://cdn/x"), "webp");
+    }
+
+    #[test]
+    fn a_signed_url_keeps_its_extension_out_of_the_query_string() {
+        assert_eq!(
+            image_extension(None, "https://cdn.test/out/a.png?token=SECRET&x=1"),
+            "png"
+        );
+        assert_eq!(image_extension(None, "https://cdn.test/a.JPEG#top"), "jpg");
+        assert_eq!(image_extension(None, "https://cdn.test/a.webp"), "webp");
+    }
+
+    #[test]
+    fn an_unreadable_result_url_falls_back_to_png_rather_than_to_nothing() {
+        // Higgsfield's storage serves extension-less asset ids, and an octet-stream
+        // content type says nothing. A file with no extension at all would come back
+        // from the media bin as unimportable.
+        assert_eq!(
+            image_extension(
+                Some("application/octet-stream"),
+                "https://cdn/v1/assets/2f9c"
+            ),
+            "png"
+        );
+        assert_eq!(image_extension(None, "https://cdn/v1/assets/2f9c"), "png");
     }
 
     #[test]

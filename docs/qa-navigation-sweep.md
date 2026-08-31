@@ -13,6 +13,18 @@ construction; what stands in for navigation here is the four dialog/panel surfac
 film wizard, export, toasts) and the timeline toolbar. All four were opened, exercised, and
 closed by every exit they offer.
 
+> **Later additions.** The counts above are this sweep's own, on the date above. The suite
+> is the living inventory, and a surface added since carries its own coverage in the same
+> file, under the same console-error gate:
+>
+> - **The compose panel** (SOL-UY06FH) — the media bin's `✦ Generate`. Covered by
+>   `describe('the compose panel')`: both bin-head actions open what they name, Cancel and
+>   Escape both close it without costing the draft, Escape closes the innermost layer
+>   first, the Options disclosure toggles both controls, its picker does not answer to the
+>   transition picker's `Model` label, `✦ Generate image` offers nothing it would refuse
+>   (empty prompt, no CLI), and a bin tile becomes a reference toggle whose remove button
+>   stands down — which is what keeps a `<button>` out of a `<button>`.
+
 **Result: 19 defects found and fixed, 14 more found and documented below.**
 
 ---

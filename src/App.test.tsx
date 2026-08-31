@@ -11,7 +11,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
-import { buildExportSpec, useEditor } from './state/store';
+import { buildExportSpec, emptyImagePanel, useEditor } from './state/store';
 import { layout } from './lib/timeline';
 import { defaultFilmPrompt } from './lib/film';
 import { DEFAULT_TRANSITION_PROMPT } from './types/project';
@@ -19,6 +19,7 @@ import * as backend from './lib/backend';
 import type { GenerateInput, GenerationUpdate } from './lib/backend';
 
 const generateAnimation = vi.fn(async (_input: GenerateInput) => {});
+const generateImage = vi.fn(async (_input: backend.GenerateImageInput) => {});
 let emitGenerationUpdate: (u: GenerationUpdate) => void = () => {};
 
 /** What the backend reports it has stored. Reset per test; a few of them change it. */
@@ -46,6 +47,7 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   loadProject: vi.fn(async () => null),
   saveProject: vi.fn(async () => {}),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
+  generateImage: (input: backend.GenerateImageInput) => generateImage(input),
   cancelGeneration: vi.fn(async () => {}),
   ffmpegAvailable: async () => true,
   exportTimeline: vi.fn(),
@@ -85,6 +87,7 @@ async function dropOnTimeline(files: File[]) {
 
 beforeEach(() => {
   generateAnimation.mockClear();
+  generateImage.mockClear();
   storedSettings = { ...STORED_SETTINGS };
   useEditor.setState({
     settings: null,
@@ -104,6 +107,7 @@ beforeEach(() => {
     animateRun: null,
     film: null,
     filmWizardOpen: false,
+    imagePanel: emptyImagePanel(),
     importProblems: [],
     importing: 0,
     toasts: [],

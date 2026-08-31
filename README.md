@@ -19,6 +19,14 @@ cut plays as pure motion rather than stills padded around an animation.
   playhead when it comes within a few pixels. Click anywhere along the timeline — the
   ruler, a gap, a clip, an audio lane — and the playhead cues exactly there, so play runs
   from the point you clicked; hold the button down on the ruler to scrub.
+- **Photos you did not take.** The media bin generates as well as imports: **✦ Generate**
+  beside **+ Import** opens a prompt box, and Higgsfield makes the photo. Describe it and
+  that is the whole request — or click photos already in the bin to **generate on top of
+  them**, up to fourteen references, and the picture is made from yours. A quiet **Options**
+  disclosure picks the model (Nano Banana Pro by default, or Seedream 4.5, FLUX.2, GPT
+  Image 2) and the aspect ratio, which follows the model. The finished photo lands in the
+  bin as an ordinary photo — nothing moves on the timeline; you drag it on when you want
+  it, and from there it can be animated like any other.
 - **Audio tracks.** Sound files (mp3, wav, ogg, flac, aac, m4a) get their own lanes below
   the track — as many as you like, via **♪ Add audio** or a drop. Each lane holds one
   sound: drag it along the lane to place it, drag its edges to trim it, set its volume or
@@ -69,7 +77,7 @@ pnpm dev            # the UI alone in a browser; desktop-only actions refuse lou
 | Node | 20+ with pnpm 10+ |
 | Rust | stable (1.80+) |
 | ffmpeg + ffprobe | on `PATH` — needed for export only |
-| Higgsfield CLI | `npm i -g @higgsfield/cli`, signed in — needed for AI transitions only |
+| Higgsfield CLI | `npm i -g @higgsfield/cli`, signed in — needed for AI transitions and generated photos only |
 | Linux system libraries | `pkg-config`, `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libsoup-3.0-dev`, `libjavascriptcoregtk-4.1-dev` |
 
 On Debian/Ubuntu:
@@ -98,15 +106,17 @@ higgsfield workspace set <workspace_id>
 CLI was found (looking on `PATH` and in the usual npm/Homebrew prefixes), and where
 **Test connection** runs one free,
 read-only CLI call — `higgsfield model list --video` — which proves the binary, the login
-and the billing workspace in one go, and repeats the CLI's own fix when one is missing.
+and the billing workspace in one go, and repeats the CLI's own fix when one is missing. It
+proves the photo path too: same binary, same login, same billing workspace.
 
 What actually runs, per render:
 
 | | |
 |---|---|
-| Submit | `higgsfield generate create <model> --prompt … --start-image … --end-image … --json` — the CLI uploads the two stills itself; Seedance 2.5 additionally gets `--mode omni_reference`, the one mode in which it accepts frame inputs. The ack is the list of ids it queued (`["d2f79a31-…"]`) |
+| Submit a transition | `higgsfield generate create <model> --prompt … --start-image … --end-image … --json` — the CLI uploads the two stills itself; Seedance 2.5 additionally gets `--mode omni_reference`, the one mode in which it accepts frame inputs. The ack is the list of ids it queued (`["d2f79a31-…"]`) |
+| Submit a photo | `higgsfield generate create <image model> --prompt … --image … --aspect_ratio … --json`, with `--image` repeated once per reference. The references are the bin's own files and the CLI uploads them, so nothing is written to a temp file. **No `--mode`**: that rule belongs to Seedance 2.5's video frame inputs and image models publish no such value |
 | Poll | `higgsfield generate get <job_id> --json`, backing off 2s → 10s |
-| Result | the job's `result_url` on completion, downloaded next to the project |
+| Result | the job's `result_url` on completion, downloaded next to the project. A photo is named from the response's own content type — the media bin classifies by extension and nothing else, so a file saved under the wrong one would come back as the wrong kind of media at the next launch |
 
 **Which model renders is picked per render, not in this dialog.** Every place a render
 starts — the cut card, a transition's Regenerate, the film wizard — carries a **Model**
@@ -226,8 +236,8 @@ src/                     React + TypeScript editor
   lib/project.ts         the saved project — what persists, and what a bad file may not do
   lib/backend.ts         the only place that talks to Tauri
   state/store.ts         zustand store
-  components/            title bar, media bin, preview, inspector, timeline, film wizard,
-                         dialogs
+  components/            title bar, media bin (+ the compose panel), preview, inspector,
+                         timeline, film wizard, dialogs
 src-tauri/
   src/                   Tauri commands, the generation job loop, settings and project storage
   crates/higgsfield/     Higgsfield CLI wrapper — no Tauri or GUI dependencies
@@ -277,6 +287,15 @@ GTK toolchain.
   beyond the absolute path, so re-importing is the way back.
 - **One project.** There is no New, Open or Save As — the editor holds a single project
   that saves itself.
+- **A generated photo needs a prompt.** Some image models will work from references
+  alone, but SolCut asks for a prompt every time — one rule beats four per-model ones. The
+  reference photos themselves must be jpg, png or webp: the bin accepts more formats than
+  Higgsfield takes as a reference, and one that is not is refused **by name** before
+  anything is sent, as is a photo whose file has moved or that never had one (a browser
+  drop). Which image models your plan carries is between you and Higgsfield — the CLI
+  checks each id against the live catalog, so one you do not have fails by name.
+- **A photo still generating when you quit is not resumed**, exactly like a film leg. The
+  finished ones are ordinary bin photos by then and persist like any other import.
 - **Stills are uploaded, not inlined.** Each still is written to a temp file and handed
   to the CLI as `--start-image`/`--end-image`; the CLI uploads them itself and the files
   are removed the moment the submission is answered.

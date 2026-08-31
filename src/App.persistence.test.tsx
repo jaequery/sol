@@ -41,6 +41,7 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   loadProject: vi.fn(),
   saveProject: vi.fn(),
   generateAnimation: vi.fn(async (_input: GenerateInput) => {}),
+  generateImage: vi.fn(async () => {}),
   cancelGeneration: vi.fn(async () => {}),
   ffmpegAvailable: async () => true,
   exportTimeline: vi.fn(),

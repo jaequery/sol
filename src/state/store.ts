@@ -87,6 +87,62 @@ export interface ImportProblem {
   reason: string;
 }
 
+/**
+ * The media bin's compose panel: what is being asked for, which bin photos it works on
+ * top of, and what will render it.
+ *
+ * One object rather than five flat keys — like `film`, it is one thing to read and one
+ * thing to put back. `open` lives inside it rather than beside it precisely so the draft
+ * survives a close: Escape and Cancel are not reasonable ways to lose a typed prompt.
+ */
+export interface ImagePanel {
+  open: boolean;
+  prompt: string;
+  /** Bin asset ids attached as references, in the order they were clicked. */
+  referenceAssetIds: string[];
+  /** An `IMAGE_MODELS` id. */
+  modelId: string;
+  aspect: string;
+}
+
+/** Everything one image generation needs — the panel's draft, or a failed one's record. */
+export interface ImageRequestDraft {
+  prompt: string;
+  referenceAssetIds: string[];
+  modelId: string;
+  aspect: string;
+}
+
+export function emptyImagePanel(): ImagePanel {
+  return {
+    open: false,
+    prompt: '',
+    referenceAssetIds: [],
+    modelId: backend.DEFAULT_IMAGE_MODEL_ID,
+    aspect: backend.DEFAULT_IMAGE_ASPECT,
+  };
+}
+
+/**
+ * Whether a bin photo can be sent to Higgsfield as a reference.
+ *
+ * The path check is the load-bearing one: a photo dropped from a browser has no
+ * filesystem path and is *not* flagged missing, so it looks perfectly usable in the bin
+ * while being impossible to upload.
+ */
+export function referenceEligible(asset: MediaAsset | undefined): boolean {
+  if (!asset || asset.kind !== 'photo' || asset.missing || !asset.path) return false;
+  const ext = asset.path.split('.').pop()?.toLowerCase() ?? '';
+  return REFERENCE_IMAGE_EXTS.includes(ext);
+}
+
+/**
+ * What a reference photo may be. Narrower than the bin's own photo list, which also takes
+ * `bmp`, `gif` and `avif` — kept in step with `REFERENCE_IMAGE_EXTS` in
+ * `src-tauri/crates/higgsfield/src/lib.rs`, which refuses the rest before anything is sent.
+ */
+const REFERENCE_IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp'];
+
 export interface ExportState {
   stage: string;
   fraction: number;
@@ -171,6 +227,8 @@ export interface EditorState {
   film: Film | null;
   /** The wizard panel. It outlives the film it starts, and the film outlives it. */
   filmWizardOpen: boolean;
+  /** The media bin's compose panel: what is being asked for, and what will render it. */
+  imagePanel: ImagePanel;
   /** Prompts typed for cuts that have not generated yet, keyed `${afterClipId}:${beforeClipId}`. */
   cutPrompts: Record<string, string>;
   /** Insert/replace picked per cut, keyed like `cutPrompts`. A cut with no entry inserts. */
@@ -265,6 +323,7 @@ export interface EditorState {
   // ---- film (three photos, two AI transitions)
   openFilmWizard: () => void;
   closeFilmWizard: () => void;
+
   addFilmPhotos: (sources: FilmPhotoSource[]) => Promise<string[]>;
   startFilm: (assetIds: string[], prompts?: string[]) => Promise<void>;
   setFilmSegmentPrompt: (index: number, prompt: string) => void;
@@ -272,6 +331,24 @@ export interface EditorState {
   cancelFilm: () => Promise<void>;
   placeFilmOnTimeline: () => void;
   dismissFilm: () => void;
+
+  // ---- generating a photo (the media bin's compose panel)
+  openImagePanel: () => void;
+  /** Put the panel away, keeping the draft — only a generation that went clears it. */
+  closeImagePanel: () => void;
+  setImagePrompt: (prompt: string) => void;
+  /** Attach or detach one bin photo as a reference. Ineligible photos are ignored. */
+  toggleImageReference: (assetId: string) => void;
+  setImageModel: (modelId: string) => void;
+  setImageAspect: (aspect: string) => void;
+  /**
+   * Send one image generation and return its id, or `null` when nothing was sent.
+   *
+   * Called with nothing it takes the compose panel's draft and, on a successful send,
+   * clears and closes it. Called with a request — a retry — it sends exactly that and
+   * leaves the panel alone.
+   */
+  startImageGeneration: (request?: ImageRequestDraft) => string | null;
 
   // ---- the saved project
   restoreProject: () => Promise<RestoreOutcome>;
@@ -304,6 +381,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   modelId: backend.DEFAULT_MODEL_ID,
   film: null,
   filmWizardOpen: false,
+  imagePanel: emptyImagePanel(),
   cutPrompts: {},
   cutModes: {},
   animateQueue: null,
@@ -423,9 +501,10 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     // A generation is doomed when any clip it works for is: either side of the cut, or the
     // transition clip it would replace.
-    // Film legs animate between photos, not clips, so no clip on the track speaks for them.
+    // Film legs animate between photos, not clips, and an image generation is a photo the
+    // bin asked for — neither has a clip on the track that speaks for it.
     const generationDoomed = (g: Generation) =>
-      g.target.kind === 'film'
+      g.target.kind === 'film' || g.target.kind === 'image'
         ? false
         : doomed.has(g.target.afterClipId) ||
           doomed.has(g.target.beforeClipId) ||
@@ -676,7 +755,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       to,
       mode: resolveCutMode(s, afterClipId, beforeClipId, mode),
     };
-    return launchGeneration(set, get, target, prompt, {
+    return launchGeneration(set, get, target, prompt, get().modelId, {
+      kind: 'frames',
       fromSrc: s.assets[clipA.assetId].src,
       toSrc: s.assets[clipB.assetId].src,
     });
@@ -717,7 +797,8 @@ export const useEditor = create<EditorState>((set, get) => ({
         replacesClipId: clipId,
         mode: 'replace',
       };
-      launchGeneration(set, get, target, prompt, {
+      launchGeneration(set, get, target, prompt, get().modelId, {
+        kind: 'frames',
         fromSrc: assetA.src,
         toSrc: assetB.src,
       });
@@ -742,7 +823,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       to,
       replacesClipId: clipId,
     };
-    launchGeneration(set, get, target, prompt, {
+    launchGeneration(set, get, target, prompt, get().modelId, {
+      kind: 'frames',
       fromSrc: assetA.src,
       toSrc: assetB.src,
     });
@@ -759,6 +841,16 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (target.kind === 'film') {
       // A film leg is retried from the film panel, which is where its state is shown.
       void get().retryFilmSegment(target.filmSegmentIndex);
+    } else if (target.kind === 'image') {
+      // Everything the first attempt sent is on the record, so a retry is exact — and a
+      // reference the user has since removed from the bin is simply dropped rather than
+      // resurrected.
+      void get().startImageGeneration({
+        prompt: generation.prompt,
+        referenceAssetIds: target.referenceAssetIds,
+        modelId: generation.modelId,
+        aspect: target.aspect,
+      });
     } else if (target.replacesClipId !== undefined) {
       get().regenerateTransition(target.replacesClipId);
     } else if (leg) {
@@ -869,6 +961,10 @@ export const useEditor = create<EditorState>((set, get) => ({
         void probeFilmSegmentDuration(set, next.target.filmSegmentIndex, update.outputPath).then(
           () => assembleFilmOnTimeline(set, get),
         );
+      } else if (next.target.kind === 'image') {
+        // A photo goes into the bin and nowhere else: the timeline is the user's, and a
+        // generation finishing mid-edit must not move anything they were working on.
+        landImageResult(set, get, next, update.outputPath);
       } else {
         landCutResult(set, get, next, next.target, update.outputPath);
       }
@@ -892,6 +988,115 @@ export const useEditor = create<EditorState>((set, get) => ({
       delete generations[id];
       return { generations };
     });
+  },
+
+  // ------------------------------------------------------- generating a photo
+
+  openImagePanel: () => set((s) => ({ imagePanel: { ...s.imagePanel, open: true } })),
+
+  /**
+   * Put the panel away, keeping the draft. Escape and Cancel both land here, and neither
+   * is a reasonable way to lose a paragraph of prompt — only a generation that actually
+   * went clears it.
+   */
+  closeImagePanel: () => set((s) => ({ imagePanel: { ...s.imagePanel, open: false } })),
+
+  setImagePrompt: (prompt) => set((s) => ({ imagePanel: { ...s.imagePanel, prompt } })),
+
+  toggleImageReference(assetId) {
+    const s = get();
+    const attached = s.imagePanel.referenceAssetIds;
+    if (attached.includes(assetId)) {
+      set({
+        imagePanel: {
+          ...s.imagePanel,
+          referenceAssetIds: attached.filter((id) => id !== assetId),
+        },
+      });
+      return;
+    }
+    // The tile is only offered when it is usable, but the action guards itself rather
+    // than trusting the control that called it.
+    if (!referenceEligible(s.assets[assetId])) return;
+    if (attached.length >= backend.imageReferenceLimit(s.imagePanel.modelId)) return;
+    set({ imagePanel: { ...s.imagePanel, referenceAssetIds: [...attached, assetId] } });
+  },
+
+  setImageModel(modelId) {
+    set((s) => ({
+      imagePanel: {
+        ...s.imagePanel,
+        modelId,
+        // Both follow the model: an aspect it does not publish would fail the whole
+        // generation, and a reference past its cap would be refused on arrival.
+        aspect: backend.imageAspectFor(modelId, s.imagePanel.aspect),
+        referenceAssetIds: s.imagePanel.referenceAssetIds.slice(
+          0,
+          backend.imageReferenceLimit(modelId),
+        ),
+      },
+    }));
+  },
+
+  setImageAspect: (aspect) => set((s) => ({ imagePanel: { ...s.imagePanel, aspect } })),
+
+  startImageGeneration(request) {
+    const s = get();
+    if (!s.settings?.configured) {
+      get().pushToast({
+        tone: 'error',
+        title: 'Connect Higgsfield first',
+        detail: 'Generating a photo runs through the Higgsfield CLI — Settings has the setup.',
+      });
+      return null;
+    }
+
+    const draft = request ?? {
+      prompt: s.imagePanel.prompt,
+      referenceAssetIds: s.imagePanel.referenceAssetIds,
+      modelId: s.imagePanel.modelId,
+      aspect: s.imagePanel.aspect,
+    };
+    const prompt = draft.prompt.trim();
+    if (!prompt) return null;
+
+    // A reference the user has since removed from the bin is simply not sent; one that is
+    // still there but cannot be sent stops the whole request, because dropping it would
+    // quietly generate something other than what was asked for.
+    const present = draft.referenceAssetIds.filter((id) => s.assets[id]);
+    const unusable = present.filter((id) => !referenceEligible(s.assets[id]));
+    if (unusable.length > 0) {
+      get().pushToast({
+        tone: 'error',
+        title: 'A reference photo cannot be sent',
+        detail: unusable.map((id) => s.assets[id].name).join(', '),
+      });
+      return null;
+    }
+
+    const modelId = backend.imageModelId(draft.modelId);
+    const aspect = backend.imageAspectFor(modelId, draft.aspect);
+    const id = launchGeneration(
+      set,
+      get,
+      {
+        kind: 'image',
+        referenceAssetIds: present,
+        aspect,
+      },
+      prompt,
+      modelId,
+      {
+        kind: 'references',
+        paths: present.map((assetId) => s.assets[assetId].path),
+        aspect,
+      },
+    );
+
+    // The generation owns the prompt and the references now, so the panel starts clean —
+    // and a second photo can be asked for while the first is still rendering.
+    if (!request) set({ imagePanel: emptyImagePanel() });
+    return id;
   },
 
   // ------------------------------------------------------------------ film
@@ -1567,7 +1772,9 @@ function launchFilmSegment(set: Setter, get: () => EditorState, index: number): 
       filmSegmentIndex: index,
     },
     segment.prompt.trim() || defaultFilmPrompt(index),
+    get().modelId,
     {
+      kind: 'frames',
       fromSrc: start.src,
       toSrc: end.src,
     },
@@ -1633,17 +1840,34 @@ async function probeFilmSegmentDuration(
 }
 
 /**
- * Record a generation and submit it: render both frames, hand them to the backend. The
- * record lands synchronously (so callers get an id to track); the submission runs behind
- * it, and a failure to even start — which emits no backend event — marks the record failed
- * and nudges the animate-all queue so it cannot stall on the silence.
+ * What a launch actually sends — the one thing the two kinds of generation differ on.
+ *
+ * A transition renders its two photos to stills and posts them as data URLs; a photo
+ * sends the paths of the bin files it works from and lets the CLI upload them. Everything
+ * around it — the record, the id, the failure tail — is shared, so the two cannot drift.
+ */
+type Submission =
+  | { kind: 'frames'; fromSrc: string; toSrc: string }
+  | { kind: 'references'; paths: string[]; aspect: string };
+
+/**
+ * Record a generation and submit it. The record lands synchronously (so callers get an id
+ * to track); the submission runs behind it, and a failure to even start — which emits no
+ * backend event — marks the record failed and nudges the animate-all queue so it cannot
+ * stall on the silence.
  */
 function launchGeneration(
   set: Setter,
   get: () => EditorState,
   target: GenerationTarget,
   prompt: string,
-  frames: { fromSrc: string; toSrc: string },
+  /**
+   * The model this generation records and sends. Read at the call site, so a render
+   * carries the model that was showing when its button was pressed — switching a selector
+   * afterwards changes the next render only.
+   */
+  modelId: string,
+  submission: Submission,
   /**
    * Runs before the record is written, with the id it is about to get. A film leg uses it
    * to claim the id, so the leg recognises this run's updates and not the one it replaced.
@@ -1652,10 +1876,6 @@ function launchGeneration(
 ): string {
   const generationId = makeId('gen');
   claim?.(generationId);
-  // The choice is read at launch, so a render carries the model that was showing when its
-  // button was pressed — switching the selector afterwards changes the next render only.
-  const { modelId, settings } = get();
-  const model = backend.modelJob(modelId, settings?.customModel);
   const generation: Generation = {
     id: generationId,
     target,
@@ -1670,9 +1890,20 @@ function launchGeneration(
 
   void (async () => {
     try {
-      const startFrame = await renderPhotoJpeg(frames.fromSrc);
-      const endFrame = await renderPhotoJpeg(frames.toSrc);
-      await backend.generateAnimation({ generationId, prompt, startFrame, endFrame, model });
+      if (submission.kind === 'frames') {
+        const model = backend.modelJob(modelId, get().settings?.customModel);
+        const startFrame = await renderPhotoJpeg(submission.fromSrc);
+        const endFrame = await renderPhotoJpeg(submission.toSrc);
+        await backend.generateAnimation({ generationId, prompt, startFrame, endFrame, model });
+      } else {
+        await backend.generateImage({
+          generationId,
+          prompt,
+          references: submission.paths,
+          model: backend.imageModelJob(modelId),
+          aspectRatio: submission.aspect,
+        });
+      }
     } catch (error) {
       const existing = get().generations[generationId];
       if (existing) {
@@ -1702,6 +1933,37 @@ function launchGeneration(
  * picks and failed records for cuts the photos took with them are pruned, and a live
  * render whose own clips were just consumed is cancelled — nothing is left to land it on.
  */
+/**
+ * A finished photo: put it in the media bin, and nowhere else.
+ *
+ * Nothing on the timeline moves — the user drags it on when they want it, exactly like an
+ * import — so a generation completing mid-edit can never rearrange what they were doing.
+ * It is an ordinary photo asset with a real path, which is the whole of its persistence:
+ * it round-trips through `project.json` like any imported file.
+ */
+function landImageResult(
+  set: Setter,
+  get: () => EditorState,
+  generation: Generation,
+  outputPath: string,
+): void {
+  const asset: MediaAsset = {
+    id: makeId('asset'),
+    // The file's own name. The backend chose the extension from what the server actually
+    // served, so taking the name from the path is what keeps the bin's label and the file
+    // on disk from ever disagreeing.
+    name: outputPath.split(/[\\/]/).pop() || `ai-${generation.id}.png`,
+    kind: 'photo',
+    path: outputPath,
+    src: backend.assetSrc(outputPath),
+    // Unmeasured, like every generated asset: nothing reads it, and stat-ing the file
+    // would be a round trip for a number the bin does not show.
+    sizeBytes: 0,
+  };
+  set((s) => ({ assets: { ...s.assets, [asset.id]: asset } }));
+  get().pushToast({ tone: 'ok', title: 'Photo ready', detail: generation.prompt });
+}
+
 function landCutResult(
   set: Setter,
   get: () => EditorState,

@@ -174,6 +174,11 @@ input {
   /* The count already claimed the free space; sit next to it on the head's own gap. */
   margin-left: 0;
 }
+/* A second action in the same head: the first already claimed the free space with its
+   auto margin, so without this the two fly to opposite ends of a 224px column. */
+.panel-head__action + .panel-head__action {
+  margin-left: 0;
+}
 .panel-head__action:hover {
   border-color: var(--accent-line);
   color: var(--ink);
@@ -328,6 +333,65 @@ input {
   text-decoration: underline;
   padding: 0;
   font-size: 10.5px;
+}
+.bin__problem-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+/* ---------------------------------------------- generating a photo, in the bin */
+
+/* The compose panel spans the bin's two columns, above the tiles it picks from — the
+   same mechanism the empty state and the import problems already use. */
+.compose {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+/* Both already carry their own top margin for the contexts they were written for. */
+.compose .hint,
+.compose .block-btn,
+.compose .linklike {
+  margin-top: 0;
+}
+.compose .linklike {
+  margin-bottom: 0;
+}
+
+/* A tile standing in as a reference picker. The accent marks the picked ones, and
+   nothing else about the tile changes. */
+.bin__tile--pick {
+  cursor: pointer;
+}
+.bin__tile--picked {
+  border-color: var(--accent);
+}
+.bin__pick-n {
+  position: absolute;
+  right: 5px;
+  top: 5px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font: 650 10px/1 var(--mono);
+}
+
+/* A photo on its way: the import skeleton, marked as generated and stoppable. */
+.bin__skeleton--gen {
+  position: relative;
+}
+.bin__gen-mark {
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  color: var(--accent-2);
+  font-size: 11px;
 }
 
 /* ------------------------------------------------------------------ preview */
