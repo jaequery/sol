@@ -58,17 +58,32 @@ export interface GenerationError {
 
 /**
  * One side of a generated transition: which clip stood there and what media it showed —
- * the photo itself is the frame sent to Higgsfield. Kept on the finished clip so a later
- * edit to either neighbour can be detected (staleness) and regenerated from.
+ * for a photo, the image itself is the frame sent to Higgsfield. Kept on the finished clip
+ * so a later edit to either neighbour can be detected (staleness) and regenerated from.
  */
 export interface TransitionSource {
   clipId: string;
   assetId: string;
+  /**
+   * Videos only: where in the source the anchor frame was taken — the outgoing clip's
+   * trimmed-out point, or the incoming clip's trimmed-in point.
+   *
+   * A photo has one frame and needs none, and neither does any record written before
+   * transitions could involve video. Without it a replace landing could never be
+   * regenerated: it consumes its still side, so the clip that knew the trim is gone and
+   * only what is written here survives.
+   */
+  atMs?: number;
 }
 
 /**
- * Where a finished cut render goes: `insert` slots it between the two photos, `replace`
- * removes both photos and stands the clip in their span, so playback there is pure motion.
+ * Where a finished cut render goes: `insert` slots it between the pair, `replace` stands it
+ * in the place of the **stills** — the photos leave the track and the clip holds their
+ * span, so playback there is pure motion rather than a held frame.
+ *
+ * Only stills leave, which is what makes `replace` mean one thing across every pair: two
+ * photos both go, a photo beside a video leaves the video's own footage exactly where it
+ * was, and two videos have no still to give up at all, so they are never offered it.
  * Absent anywhere it may appear means `insert` — the only behaviour older records knew.
  */
 export type TransitionMode = 'insert' | 'replace';
@@ -77,7 +92,8 @@ export type TransitionMode = 'insert' | 'replace';
  * What a cut lands as when nothing picked otherwise: the finished clip stands in the
  * photos' place, so the transition costs no still time. Only a *fallback* — a stored
  * record with no `mode` still means `insert` (see above), because every launch since this
- * default stamps its mode explicitly.
+ * default stamps its mode explicitly. A pair with no still on either side resolves to
+ * `insert` whatever is stored; see `cutOffersReplace`.
  */
 export const DEFAULT_TRANSITION_MODE: TransitionMode = 'replace';
 
@@ -177,11 +193,12 @@ export interface Clip {
     sourceAssetId: string;
   };
   /**
-   * Present when this clip is a generated transition between two photos. `ai` is set too so
-   * every AI-clip affordance applies; this records the exact sources so the clip can be
-   * flagged stale when its neighbours change, and regenerated in place. A `replace`-mode
-   * clip stands where its two photos used to: it regenerates from its source *assets* in
-   * the media bin, and its neighbours say nothing about its freshness.
+   * Present when this clip is a generated transition between two clips — photos, videos or
+   * one of each. `ai` is set too so every AI-clip affordance applies; this records the
+   * exact sources so the clip can be flagged stale when its neighbours change, and
+   * regenerated in place. A `replace`-mode clip stands where the pair's *stills* used to:
+   * a source it consumed is regenerated from its asset in the media bin, and a source that
+   * is still on the track is read from that clip as it stands now.
    */
   transition?: {
     prompt: string;

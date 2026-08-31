@@ -6,6 +6,7 @@ import {
   canSplitAt,
   clipAt,
   endOfPrevious,
+  durationInputValue,
   formatDuration,
   formatTimecode,
   insertClips,
@@ -14,10 +15,15 @@ import {
   layout,
   moveAudio,
   packClips,
+  parseDurationInput,
   photoClip,
   placeClip,
   insertTransitionClip,
-  photoCuts,
+  anchorMs,
+  FRAME_STEP_MS,
+  bridgeableCuts,
+  consumedByReplace,
+  cutOffersReplace,
   removeClipsClosingSpans,
   replacePairWithTransition,
   replaceTransitionClip,
@@ -325,6 +331,45 @@ describe('resizing a clip', () => {
   });
 });
 
+describe('a typed length', () => {
+  it('seeds the box with a typed length that survives being handed straight back', () => {
+    expect(durationInputValue(5000)).toBe('5.0');
+    expect(durationInputValue(0)).toBe('0.0');
+    expect(durationInputValue(MIN_CLIP_DURATION_MS)).toBe('0.1');
+    expect(durationInputValue(600_000)).toBe('600.0');
+    // Not a round tenth: every millisecond is kept, or pressing Enter on an untouched box
+    // would quietly retime the clip to the value the box had rounded it to.
+    expect(durationInputValue(4237)).toBe('4.237');
+    expect(parseDurationInput(durationInputValue(4237))).toBe(4237);
+  });
+
+  it('reads a typed length in seconds, however it is spelled', () => {
+    expect(parseDurationInput('5')).toBe(5000);
+    expect(parseDurationInput('5.0')).toBe(5000);
+    expect(parseDurationInput(' 12 ')).toBe(12_000);
+    expect(parseDurationInput('5.')).toBe(5000);
+    expect(parseDurationInput('.5')).toBe(500);
+    expect(parseDurationInput('0.05')).toBe(50);
+    // Zero is a length; the resize is what floors it, exactly as dragging an edge shut is.
+    expect(parseDurationInput('0')).toBe(0);
+  });
+
+  it('refuses everything `Number` would have guessed at, rather than retiming on a typo', () => {
+    // An empty box is the dangerous one: `Number('')` is 0, so a stray Enter would floor
+    // the clip to the minimum.
+    expect(parseDurationInput('')).toBeNull();
+    expect(parseDurationInput('   ')).toBeNull();
+    expect(parseDurationInput('.')).toBeNull();
+    expect(parseDurationInput('abc')).toBeNull();
+    expect(parseDurationInput('-3')).toBeNull();
+    expect(parseDurationInput('1e3')).toBeNull();
+    expect(parseDurationInput('0x10')).toBeNull();
+    expect(parseDurationInput('Infinity')).toBeNull();
+    // A decimal comma is a different notation, not a length in this box.
+    expect(parseDurationInput('5,0')).toBeNull();
+  });
+});
+
 describe('resizing a clip on the track', () => {
   const two = () => packClips([photo(6000), video('surf.mp4', 4000)]);
 
@@ -391,38 +436,101 @@ describe('cuts & transitions', () => {
     };
   }
 
-  describe('photoCuts', () => {
-    it('offers one cut per adjacent photo pair, and none touching video', () => {
+  describe('bridgeableCuts', () => {
+    it('offers a cut at every boundary, whatever the two clips are', () => {
+      // Higgsfield animates between two stills, and a video hands over the frame at its
+      // edge exactly as a photo hands over itself — so no boundary is special.
       const [a, b] = pair();
       const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 4000, 5000);
       const c = photoClip({ id: 'asset_c', name: 'c.jpg' }, 1000, 9000);
 
-      expect(photoCuts([a, b, v, c])).toEqual([
+      expect(bridgeableCuts([a, b, v, c])).toEqual([
         { afterClipId: a.id, beforeClipId: b.id, timeMs: 2000, gapMs: 0 },
+        { afterClipId: b.id, beforeClipId: v.id, timeMs: 5000, gapMs: 0 },
+        { afterClipId: v.id, beforeClipId: c.id, timeMs: 9000, gapMs: 0 },
       ]);
-      expect(photoCuts([a])).toEqual([]);
-      expect(photoCuts([])).toEqual([]);
+      expect(bridgeableCuts([a])).toEqual([]);
+      expect(bridgeableCuts([])).toEqual([]);
+    });
+
+    it('offers a cut between two videos, and one across a gap between them', () => {
+      const v1 = videoClip({ id: 'asset_v1', name: 'one.mp4' }, 2000, 0);
+      const v2 = videoClip({ id: 'asset_v2', name: 'two.mp4' }, 3000, 2500);
+      expect(bridgeableCuts([v1, v2])).toEqual([
+        { afterClipId: v1.id, beforeClipId: v2.id, timeMs: 2250, gapMs: 500 },
+      ]);
     });
 
     it('a gap dragged open between two photos keeps the cut, chip centred in the gap', () => {
       const a = photoClip({ id: 'asset_a', name: 'a.jpg' }, 2000, 0);
       const b = photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000, 2500);
-      expect(photoCuts([a, b])).toEqual([
+      expect(bridgeableCuts([a, b])).toEqual([
         { afterClipId: a.id, beforeClipId: b.id, timeMs: 2250, gapMs: 500 },
       ]);
     });
 
-    it('a landed transition breaks its own pair, so its chip disappears structurally', () => {
+    it('a landed transition is never a side of another one, so no chip stands beside it', () => {
+      // Its own pair goes, and — now that a video side is legal — the two boundaries it
+      // just created stay silent too. Bridging a bridge is not a thing to offer.
       const [a, b] = pair();
       const withTransition = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
       expect(withTransition).toHaveLength(3);
-      expect(photoCuts(withTransition)).toEqual([]);
+      expect(bridgeableCuts(withTransition)).toEqual([]);
     });
 
     it('two halves of one split photo still make a cut — same image on both sides', () => {
       const [a] = pair();
       const half = { ...a, id: 'clip_half2', startMs: a.durationMs };
-      expect(photoCuts([a, half])).toHaveLength(1);
+      expect(bridgeableCuts([a, half])).toHaveLength(1);
+    });
+  });
+
+  describe('what a pair can do', () => {
+    it('offers replace wherever there is a still to stand in for, and nowhere else', () => {
+      const [a, b] = pair();
+      const v1 = videoClip({ id: 'asset_v1', name: 'one.mp4' }, 2000, 0);
+      const v2 = videoClip({ id: 'asset_v2', name: 'two.mp4' }, 2000, 2000);
+
+      expect(cutOffersReplace(a, b)).toBe(true);
+      expect(cutOffersReplace(a, v2)).toBe(true);
+      expect(cutOffersReplace(v1, b)).toBe(true);
+      // Two videos have nothing to give up: the motion cannot stand in for footage.
+      expect(cutOffersReplace(v1, v2)).toBe(false);
+    });
+
+    it('consumes only the stills, so footage on either side is never taken', () => {
+      const [a, b] = pair();
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 2000, 0);
+      expect(consumedByReplace(a, b)).toEqual([a.id, b.id]);
+      expect(consumedByReplace(v, b)).toEqual([b.id]);
+      expect(consumedByReplace(a, v)).toEqual([a.id]);
+      expect(consumedByReplace(v, { ...v, id: 'clip_v2' })).toEqual([]);
+    });
+  });
+
+  describe('anchorMs', () => {
+    it('is the frame at the clip edge for a video, and nothing at all for a photo', () => {
+      const [a] = pair();
+      expect(anchorMs(a, 'out')).toBeUndefined();
+      expect(anchorMs(a, 'in')).toBeUndefined();
+
+      // Trimmed to run 1000-4000 inside its source: the motion leaves on the last frame it
+      // shows, which is one step before the point it runs to — seeking to the out point
+      // itself lands on the first frame this clip no longer plays.
+      const v = { ...videoClip({ id: 'asset_v', name: 'v.mp4' }, 3000, 0), trimStartMs: 1000 };
+      expect(anchorMs(v, 'in')).toBe(1000);
+      expect(anchorMs(v, 'out')).toBe(4000 - FRAME_STEP_MS);
+    });
+
+    it('never backs a clip shorter than one frame out before its own start', () => {
+      // Below `MIN_CLIP_DURATION_MS` no drag can take a clip, so this guards a stored
+      // project rather than a gesture — but an anchor before the trim is a different shot.
+      const v = {
+        ...videoClip({ id: 'asset_v', name: 'v.mp4' }, 1000, 0),
+        trimStartMs: 500,
+        durationMs: 20,
+      };
+      expect(anchorMs(v, 'out')).toBe(500);
     });
   });
 
@@ -488,8 +596,9 @@ describe('cuts & transitions', () => {
       const generated = generatedBetween(a, b);
 
       expect(insertTransitionClip([b], a.id, b.id, generated)).toEqual([b]);
-      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 3000, 2000);
-      expect(insertTransitionClip([a, v], a.id, v.id, generated)).toEqual([a, v]);
+      // A landed transition is not a side, so a pair naming one is no cut at all.
+      const landed = insertTransitionClip([a, b], a.id, b.id, generated)[1];
+      expect(insertTransitionClip([a, landed], a.id, landed.id, generated)).toEqual([a, landed]);
       // A third clip between the pair means they are no longer adjacent — nowhere to land.
       const between = photoClip({ id: 'asset_x', name: 'x.jpg' }, 1000, 2000);
       const shifted = { ...b, startMs: 3000 };
@@ -568,6 +677,69 @@ describe('cuts & transitions', () => {
       });
     });
 
+    it('takes only the photo when a video stands on the other side of the cut', () => {
+      // The ticket's own rule: replace applies to the image side. A video is footage the
+      // user shot, not a held frame the motion can stand in for — so it keeps its span and
+      // its trim, and the render fills from where it ends.
+      const v = { ...videoClip({ id: 'asset_v', name: 'v.mp4' }, 2000, 0), trimStartMs: 800 };
+      const b = photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000, 2000);
+      const d = photoClip({ id: 'asset_d', name: 'd.jpg' }, 1000, 6000);
+
+      const result = replacePairWithTransition([v, b, d], v.id, b.id, {
+        ...generatedBetween(v, b),
+        durationMs: 3000,
+        mode: 'replace',
+      });
+
+      // The video is untouched — same id, same span, same trim — and the 3 s render stands
+      // exactly where the photo held, so d keeps the gap the user left it.
+      expect(result.map((c) => [c.kind, c.startMs, c.durationMs])).toEqual([
+        ['video', 0, 2000],
+        ['video', 2000, 3000],
+        ['photo', 6000, 1000],
+      ]);
+      expect(result[0].id).toBe(v.id);
+      expect(result[0].trimStartMs).toBe(800);
+      expect(result.find((c) => c.id === b.id)).toBeUndefined();
+    });
+
+    it('takes only the photo when it is the left side, pulling the video up behind it', () => {
+      const a = photoClip({ id: 'asset_a', name: 'a.jpg' }, 2000, 0);
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 4000, 2000);
+
+      const result = replacePairWithTransition([a, v], a.id, v.id, {
+        ...generatedBetween(a, v),
+        durationMs: 3000,
+        mode: 'replace',
+      });
+
+      // The photo's 2 s hold becomes a 3 s render, and the video — whole — follows it.
+      expect(result.map((c) => [c.kind, c.startMs, c.durationMs])).toEqual([
+        ['video', 0, 3000],
+        ['video', 3000, 4000],
+      ]);
+      expect(result[1].id).toBe(v.id);
+    });
+
+    it('is exactly an insert between two videos — there is no still to consume', () => {
+      // `cutOffersReplace` keeps the mode off that card entirely, so this is a safety
+      // property rather than a path a user can take: a stray `replace` must not eat
+      // footage. Both spellings land the same clips in the same places.
+      const v1 = videoClip({ id: 'asset_v1', name: 'one.mp4' }, 2000, 0);
+      const v2 = videoClip({ id: 'asset_v2', name: 'two.mp4' }, 3000, 2500);
+      const generated = { ...generatedBetween(v1, v2), durationMs: 4000 };
+
+      const replaced = replacePairWithTransition([v1, v2], v1.id, v2.id, {
+        ...generated,
+        mode: 'replace' as const,
+      });
+      const inserted = insertTransitionClip([v1, v2], v1.id, v2.id, generated);
+      expect(replaced.map((c) => [c.kind, c.startMs, c.durationMs])).toEqual(
+        inserted.map((c) => [c.kind, c.startMs, c.durationMs]),
+      );
+      expect(replaced).toHaveLength(3);
+    });
+
     it('ripples what follows by the difference between the render and the span it replaced', () => {
       const [a, b] = pair();
       const d = photoClip({ id: 'asset_d', name: 'd.jpg' }, 1000, 6000);
@@ -620,8 +792,11 @@ describe('cuts & transitions', () => {
       const generated = { ...generatedBetween(a, b), mode: 'replace' as const };
 
       expect(replacePairWithTransition([b], a.id, b.id, generated)).toEqual([b]);
-      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 3000, 2000);
-      expect(replacePairWithTransition([a, v], a.id, v.id, generated)).toEqual([a, v]);
+      const landed = insertTransitionClip([a, b], a.id, b.id, generated)[1];
+      expect(replacePairWithTransition([a, landed], a.id, landed.id, generated)).toEqual([
+        a,
+        landed,
+      ]);
       // A third clip between the pair means they are no longer adjacent — nothing to replace.
       const between = photoClip({ id: 'asset_x', name: 'x.jpg' }, 1000, 2000);
       const shifted = { ...b, startMs: 3000 };
@@ -762,12 +937,14 @@ describe('cuts & transitions', () => {
       expect(transitionStaleness([swappedAsset, t, b], t.id)).toBe('stale');
     });
 
-    it('is orphaned when a neighbour is missing or not a photo', () => {
+    it('is orphaned only when there is no longer a clip on both sides', () => {
       const { a, b, t } = landed();
-      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 1500, 0);
       expect(transitionStaleness([t, b], t.id)).toBe('orphaned');
       expect(transitionStaleness([a, t], t.id)).toBe('orphaned');
-      expect(transitionStaleness([v, t, b], t.id)).toBe('orphaned');
+      // A video neighbour is not an orphan any more — it is simply the wrong clip, which
+      // is a thing Regenerate can fix.
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 1500, 0);
+      expect(transitionStaleness([v, t, b], t.id)).toBe('stale');
       // Not a transition at all — there are no sources to compare.
       expect(transitionStaleness([a, t, b], a.id)).toBe('orphaned');
       expect(transitionStaleness([a, t, b], 'nope')).toBe('orphaned');

@@ -78,7 +78,7 @@ these from coming back.
 | **D1** | `app.css:499` | — | `.card--disabled` defined, referenced nowhere. Removed. |
 | **D2** | Media bin empty state | Says where a drop works | Promised "Drop photos and videos **anywhere**" — false twice over: the timeline track and the film panel are the only drop targets, and audio is supported too. |
 | **D3** | Audio lane mute button | Reachable, and does not block the lane | Below ~18 px the mute button covered the entire lane body, so the lane could not be selected — and since delete needs a selection, **could not be deleted at all**. Now hidden at narrow widths, the same rule the resize handles already use. |
-| **D4** | `docs/state-matrix.md` | Matches the app | Seven rows documented behaviour that no longer (or never) existed. Updated. |
+| **D4** | `.fredrin/memory/concepts/state-matrix.md` | Matches the app | Seven rows documented behaviour that no longer (or never) existed. Updated. |
 
 ---
 
@@ -121,7 +121,11 @@ next stray pointer event commits it at an arbitrary offset.
 
 **R6 — An asset in the bin can never reach the timeline.** No drag-out, no double-click; every
 path onto the track goes through the file picker or a drop. Deleting a clip is therefore a
-one-way door whose only recovery re-imports the file as a *second* asset.
+one-way door whose only recovery re-imports the file as a *second* asset. *(Resolved in
+SOL-XB7SC5: a bin tile is a pointer drag source and the track commits the drop, with Enter
+and double-click on a focused tile as the keyboard path. Deliberately **not** HTML5
+drag-and-drop — see R1 — so the affordance does not depend on what the packaged webview does
+with a drag.)*
 
 **R7 — `ffmpegAvailable` is fetched into the store and never read.** There is no pre-flight
 refusal; a missing ffmpeg is only discovered as a failed export.

@@ -554,6 +554,15 @@ const SUPPORTED_IMAGE_TYPES: &[(&str, &str)] = &[
     ("image/gif", "gif"),
 ];
 
+/// The inverse of [`decode_data_url`] for a JPEG: what a frame grabbed off a video has to
+/// become before it can travel the same road a photo's still already travels.
+pub fn jpeg_data_url(bytes: &[u8]) -> String {
+    format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
 /// Split `data:image/jpeg;base64,…` into its content type and bytes.
 pub fn decode_data_url(url: &str) -> Result<(String, Vec<u8>)> {
     let rest = url
@@ -686,6 +695,16 @@ mod tests {
         let args = build_create_args(&req);
         let at = args.iter().position(|a| a == "--prompt").unwrap();
         assert_eq!(args[at + 1], "pan; rm -rf / `boom` $(x)");
+    }
+
+    #[test]
+    fn a_captured_jpeg_round_trips_through_a_data_url() {
+        // A video's anchor frame arrives as bytes and has to reach `write_frame` looking
+        // exactly like a photo's still does.
+        let bytes = [0xff, 0xd8, 0xff, 0xe0, 0x00];
+        let (content_type, back) = decode_data_url(&jpeg_data_url(&bytes)).expect("round trip");
+        assert_eq!(content_type, "image/jpeg");
+        assert_eq!(back, bytes);
     }
 
     #[test]

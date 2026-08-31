@@ -50,6 +50,8 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   generateImage: (input: backend.GenerateImageInput) => generateImage(input),
   cancelGeneration: vi.fn(async () => {}),
   ffmpegAvailable: async () => true,
+  captureVideoFrame: async (path: string, atMs: number) =>
+    `data:image/jpeg;base64,grab-of-${path}@${atMs}`,
   exportTimeline: vi.fn(),
   onGenerationUpdate: async (cb: (u: GenerationUpdate) => void) => {
     emitGenerationUpdate = cb;
@@ -577,7 +579,7 @@ describe('AI transitions between photos', () => {
     const s = useEditor.getState();
     expect(s.clips).toHaveLength(3);
     expect(s.clips.every((c) => c.kind === 'photo')).toBe(true);
-    expect(await screen.findByText('Transition finished, but its photos moved')).toBeInTheDocument();
+    expect(await screen.findByText('Transition finished, but its clips moved')).toBeInTheDocument();
   });
 
   it('10 — a chip press never scrubs, reorders, or spends', async () => {
@@ -652,6 +654,123 @@ describe('AI transitions between photos', () => {
     expect(clips[1].ai).toBeTruthy();
     expect(clips[0].transition).toBeUndefined();
     expect(clips[1].transition).toBeUndefined();
+  });
+});
+
+describe('transitions where a video is one of the two sides', () => {
+  /** An imported asset's src, looked up by name — ids and blob URLs are never stable. */
+  function srcOf(name: string): string | undefined {
+    return Object.values(useEditor.getState().assets).find((a) => a.name === name)?.src;
+  }
+
+  /** Two videos side by side, and the chip that now stands between them. */
+  async function dropVideoPair() {
+    await dropOnTimeline([file('surf.mp4', 'video/mp4'), file('dive.mp4', 'video/mp4')]);
+    await screen.findByRole('button', { name: 'surf.mp4 video clip' });
+    await screen.findByRole('button', { name: 'dive.mp4 video clip' });
+  }
+
+  it('a ✦ chip stands between two videos, and its card offers no replace at all', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropVideoPair();
+
+    const chip = await screen.findByRole('button', {
+      name: 'Select the cut between surf.mp4 and dive.mp4',
+    });
+    await user.click(chip);
+
+    // The card is the same card — prompt, suggestions, model, one spending button…
+    expect(await screen.findByRole('button', { name: /generate transition/i })).toBeEnabled();
+    // …minus the landing pick, which is absent rather than disabled: two videos have no
+    // still for the motion to stand in for, so there is nothing to choose between.
+    expect(
+      screen.queryByRole('button', { name: /Replace the photos? instead/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Keep the photos? on the track instead/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/lands between them/)).toBeInTheDocument();
+  });
+
+  it('the render lands between two videos, leaving both of their spans alone', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropVideoPair();
+    await user.click(
+      screen.getByRole('button', { name: 'Select the cut between surf.mp4 and dive.mp4' }),
+    );
+    await user.click(await screen.findByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalled());
+
+    const id = Object.keys(useEditor.getState().generations)[0];
+    await succeed(id, '/home/u/.cache/solcut/generated/between.mp4');
+
+    // Three clips: the two the user shot, untouched, with motion wedged between them.
+    const clips = useEditor.getState().clips;
+    expect(clips.map((c) => [c.name, c.durationMs])).toEqual([
+      ['surf.mp4', 5000],
+      [clips[1].name, 5000],
+      ['dive.mp4', 5000],
+    ]);
+    expect(clips[1].transition).toMatchObject({ mode: 'insert' });
+  });
+
+  it('a video beside a photo keeps the replace pick, and it takes only the photo', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropOnTimeline([file('surf.mp4', 'video/mp4'), file('cliff.png', 'image/png')]);
+    await screen.findByRole('button', { name: 'surf.mp4 video clip' });
+
+    await user.click(
+      await screen.findByRole('button', { name: 'Select the cut between surf.mp4 and cliff.png' }),
+    );
+    // The pick is offered, in the singular — there is exactly one still on this cut.
+    expect(await screen.findByText(/stands in the photo’s place/)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Keep the photo on the track instead' }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalled());
+    const id = Object.keys(useEditor.getState().generations)[0];
+    await succeed(id, '/home/u/.cache/solcut/generated/mixed.mp4');
+
+    // The footage stayed; only the still gave up its span.
+    expect(screen.getByRole('button', { name: 'surf.mp4 video clip' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'cliff.png photo clip' })).not.toBeInTheDocument();
+    const clips = useEditor.getState().clips;
+    expect(clips.map((c) => [c.kind, c.startMs])).toEqual([
+      ['video', 0],
+      ['video', 5000],
+    ]);
+    // …and the photo is still in the bin to re-drag.
+    expect(screen.getByRole('button', { name: 'Remove cliff.png' })).toBeInTheDocument();
+
+    // Its face wears both sources half and half: the footage as footage, the still as a
+    // still. An <img> pointed at an .mp4 would just be a broken image.
+    const face = screen.getByTestId(`clip-pair-${clips[1].id}`);
+    expect(face.querySelectorAll('video')).toHaveLength(1);
+    expect(face.querySelectorAll('img')).toHaveLength(1);
+    expect(face.querySelector('video')!.getAttribute('src')).toBe(srcOf('surf.mp4'));
+    expect(face.querySelector('img')!.getAttribute('src')).toBe(srcOf('cliff.png'));
+  });
+
+  it('no chip ever stands beside a transition that has already landed', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropVideoPair();
+    await user.click(
+      screen.getByRole('button', { name: 'Select the cut between surf.mp4 and dive.mp4' }),
+    );
+    await user.click(await screen.findByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalled());
+    await succeed(Object.keys(useEditor.getState().generations)[0]);
+
+    // Three clips, two boundaries, and both of them touch the animation — bridging a
+    // bridge is not on offer, so the reel goes quiet again rather than sprouting chips.
+    expect(useEditor.getState().clips).toHaveLength(3);
+    expect(screen.queryAllByRole('button', { name: /^Select the cut between/ })).toHaveLength(0);
   });
 });
 

@@ -49,16 +49,19 @@ import {
 } from '../lib/film';
 import { hydrate, markMissing, readProjectFile, toProjectFile } from '../lib/project';
 import {
+  anchorMs,
   audioTrack,
+  bridgeableCuts,
   canSplitAt,
   clipAt,
+  consumedByReplace,
+  cutOffersReplace,
   insertClips,
   insertIndexAtTime,
   insertTransitionClip,
   makeId,
   moveAudio,
   photoClip,
-  photoCuts,
   placeClip,
   removeClipsClosingSpans,
   replacePairWithTransition,
@@ -69,6 +72,7 @@ import {
   sortClips,
   timelineEndMs,
   trackEndMs,
+  transitionSource,
   videoClip,
   type Cut,
   type GeneratedTransition,
@@ -246,6 +250,12 @@ export interface EditorState {
   animateRun: { legs: AnimateLeg[] } | null;
   importing: number;
   importProblems: ImportProblem[];
+  /**
+   * The bin tile a pointer is currently carrying, if any. Transient, but the drag starts in
+   * one panel and lands in another, which is exactly what the one flat store is for — the
+   * timeline is the only thing that knows where a drop would land, so it owns the geometry.
+   */
+  draggingAssetId: string | null;
 
   settings: backend.SettingsView | null;
   settingsOpen: boolean;
@@ -282,10 +292,14 @@ export interface EditorState {
   addAudioViaDialog: () => Promise<void>;
   removeAsset: (assetId: string) => void;
   dismissImportProblems: () => void;
+  beginAssetDrag: (assetId: string) => void;
+  endAssetDrag: () => void;
+  placeAssetOnTimeline: (assetId: string, index?: number, audioStartMs?: number) => void;
 
   // ---- audio tracks
   moveAudioTrack: (trackId: string, startMs: number) => void;
   resizeAudioTrack: (trackId: string, edge: ClipEdge, deltaMs: number) => void;
+  setAudioDuration: (trackId: string, durationMs: number) => void;
   setAudioVolume: (trackId: string, volume: number) => void;
   toggleAudioMute: (trackId: string) => void;
 
@@ -295,6 +309,7 @@ export interface EditorState {
   splitAtPlayhead: () => void;
   moveClipTo: (clipId: string, startMs: number) => void;
   resizeClip: (clipId: string, edge: ClipEdge, deltaMs: number) => void;
+  setClipDuration: (clipId: string, durationMs: number) => void;
   toggleSnapping: () => void;
 
   // ---- playback
@@ -389,6 +404,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   animateRun: null,
   importing: 0,
   importProblems: [],
+  draggingAssetId: null,
 
   settings: null,
   settingsOpen: false,
@@ -547,6 +563,33 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   dismissImportProblems: () => set({ importProblems: [] }),
 
+  beginAssetDrag: (assetId) => set({ draggingAssetId: assetId }),
+  endAssetDrag: () => set({ draggingAssetId: null }),
+
+  /**
+   * Put an asset that is already in the bin onto the timeline — the drag out of the bin, and
+   * the keyboard path beside it. Where it lands is the import's rule, not a second one:
+   * `index` is a boundary on the visual track and `audioStartMs` an exact time on a new lane.
+   * Both default to the playhead, which is what a caller with no pointer to speak of wants.
+   *
+   * The asset's own length is passed through, so a video whose file has been probed lands at
+   * its real length: nothing would ever correct it later, since `probeDurations` only patches
+   * the clip its own import created.
+   */
+  placeAssetOnTimeline(assetId, index, audioStartMs) {
+    const { assets, clips, playheadMs } = get();
+    const asset = assets[assetId];
+    // An asset whose file has gone is refused here, the way a generation refuses one: a clip
+    // on it could only render as "media offline" and would block the export.
+    if (!asset || asset.missing) return;
+    commitImport(
+      set,
+      [placed(asset, audioStartMs ?? playheadMs, asset.durationMs)],
+      [],
+      index ?? insertIndexAtTime(clips, playheadMs),
+    );
+  },
+
   // ------------------------------------------------------------------ audio tracks
 
   /** Drag a sound along its lane: `startMs` is where it should begin. */
@@ -574,6 +617,13 @@ export const useEditor = create<EditorState>((set, get) => ({
       audioTracks: next,
       playheadMs: Math.min(playheadMs, timelineEndMs(clips, next)),
     });
+  },
+
+  /** The same as `setClipDuration`, for a sound on its lane. */
+  setAudioDuration(trackId, durationMs) {
+    const track = get().audioTracks.find((t) => t.id === trackId);
+    if (!track) return;
+    get().resizeAudioTrack(trackId, 'end', Math.round(durationMs) - track.durationMs);
   },
 
   setAudioVolume(trackId, volume) {
@@ -676,6 +726,21 @@ export const useEditor = create<EditorState>((set, get) => ({
     });
   },
 
+  /**
+   * Set a clip's length outright — what the inspector's Duration box commits.
+   *
+   * Expressed as a tail-edge delta rather than written straight onto the clip, so the box
+   * and the drag handle are one behaviour: the floors, the ceilings, the push on the clips
+   * behind it and the pruning all come from `resizeClip` and cannot drift from it. The
+   * delta is taken from the live clip, so the number the user typed is what lands even if
+   * the timeline moved under them while they were typing.
+   */
+  setClipDuration(clipId, durationMs) {
+    const clip = get().clips.find((c) => c.id === clipId);
+    if (!clip) return;
+    get().resizeClip(clipId, 'end', Math.round(durationMs) - clip.durationMs);
+  },
+
   toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
 
   // ------------------------------------------------------------------ playback
@@ -717,8 +782,15 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   setCutMode(mode) {
-    const { selection } = get();
+    const s0 = get();
+    const { selection } = s0;
     if (selection.kind !== 'cut') return;
+    const a = s0.clips.find((c) => c.id === selection.afterClipId);
+    const b = s0.clips.find((c) => c.id === selection.beforeClipId);
+    if (!a || !b) return;
+    // The card removes the toggle where the pair has no still to give up; the action
+    // refuses it there too, so a stored pick can never outlive the reason it was possible.
+    if (mode === 'replace' && !cutOffersReplace(a, b)) return;
     const key = cutKey(selection.afterClipId, selection.beforeClipId);
     set((s) => ({ cutModes: { ...s.cutModes, [key]: mode } }));
   },
@@ -745,29 +817,31 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!clipA || !clipB) return null;
     const prompt =
       (s.cutPrompts[cutKey(afterClipId, beforeClipId)] ?? '').trim() || DEFAULT_TRANSITION_PROMPT;
-    const from: TransitionSource = { clipId: clipA.id, assetId: clipA.assetId };
-    const to: TransitionSource = { clipId: clipB.id, assetId: clipB.assetId };
+    // The motion runs out of the left clip and into the right one, so each side gives up the
+    // frame at the cut: a photo is that frame already, a video's is taken at its edge.
+    const from: TransitionSource = transitionSource(clipA, 'out');
+    const to: TransitionSource = transitionSource(clipB, 'in');
     const target: GenerationTarget = {
       kind: 'cut',
       afterClipId,
       beforeClipId,
       from,
       to,
-      mode: resolveCutMode(s, afterClipId, beforeClipId, mode),
+      mode: resolveCutMode(s, clipA, clipB, mode),
     };
     return launchGeneration(set, get, target, prompt, get().modelId, {
       kind: 'frames',
-      fromSrc: s.assets[clipA.assetId].src,
-      toSrc: s.assets[clipB.assetId].src,
+      from: frameOfClip(s.assets[clipA.assetId], clipA, 'out'),
+      to: frameOfClip(s.assets[clipB.assetId], clipB, 'in'),
     });
   },
 
   /**
-   * Re-render an existing transition. An insert-mode clip renders from whatever photos
-   * stand around it NOW — that is what makes stale → Regenerate correct after a reorder or
-   * a replacement — and has nothing to do when orphaned: there are no longer two photos to
-   * span. A replace-mode clip consumed its photos, so it renders from its recorded source
-   * *assets*, still in the media bin; only a missing asset stops it.
+   * Re-render an existing transition. An insert-mode clip renders from whatever stands
+   * around it NOW — that is what makes stale → Regenerate correct after a reorder or a
+   * replacement — and has nothing to do when orphaned: there is no longer a clip on each
+   * side to span. A replace-mode clip consumed the pair's stills, so those are re-rendered
+   * from their assets in the media bin; only a missing asset stops it.
    */
   regenerateTransition(clipId) {
     const s = get();
@@ -787,34 +861,41 @@ export const useEditor = create<EditorState>((set, get) => ({
       const assetB = s.assets[to.assetId];
       if (!assetA || !assetB || assetA.missing || assetB.missing) return;
       const prompt = clip.transition.prompt.trim() || DEFAULT_TRANSITION_PROMPT;
-      // The pair's clip ids are long gone; the landing only reads `replacesClipId`.
+      // A consumed still is re-rendered from its asset in the bin. A side the landing did
+      // *not* consume — a video keeps its footage — is still on the track and may have been
+      // trimmed since, so it is re-read from the clip as it stands rather than from the
+      // frame that was recorded. That is exactly what makes its Regenerate worth pressing.
+      const liveA = s.clips.find((c) => c.id === from.clipId);
+      const liveB = s.clips.find((c) => c.id === to.clipId);
       const target: GenerationTarget = {
         kind: 'cut',
         afterClipId: from.clipId,
         beforeClipId: to.clipId,
-        from,
-        to,
+        from: liveA ? transitionSource(liveA, 'out') : from,
+        to: liveB ? transitionSource(liveB, 'in') : to,
         replacesClipId: clipId,
         mode: 'replace',
       };
       launchGeneration(set, get, target, prompt, get().modelId, {
         kind: 'frames',
-        fromSrc: assetA.src,
-        toSrc: assetB.src,
+        from: liveA ? frameOfClip(assetA, liveA, 'out') : frameOfSource(assetA, from),
+        to: liveB ? frameOfClip(assetB, liveB, 'in') : frameOfSource(assetB, to),
       });
       return;
     }
 
     const left = placedClips[at - 1];
     const right = placedClips[at + 1];
-    if (!left || !right || left.kind !== 'photo' || right.kind !== 'photo') return;
+    // Any media on both sides will do, but not another transition: the chip refuses to
+    // bridge one, and regenerating between two would do exactly what the chip forbids.
+    if (!left || !right || left.transition !== undefined || right.transition !== undefined) return;
     const assetA = s.assets[left.assetId];
     const assetB = s.assets[right.assetId];
     if (!assetA || !assetB || assetA.missing || assetB.missing) return;
 
     const prompt = clip.transition.prompt.trim() || DEFAULT_TRANSITION_PROMPT;
-    const from: TransitionSource = { clipId: left.id, assetId: left.assetId };
-    const to: TransitionSource = { clipId: right.id, assetId: right.assetId };
+    const from: TransitionSource = transitionSource(left, 'out');
+    const to: TransitionSource = transitionSource(right, 'in');
     const target: GenerationTarget = {
       kind: 'cut',
       afterClipId: left.id,
@@ -825,8 +906,8 @@ export const useEditor = create<EditorState>((set, get) => ({
     };
     launchGeneration(set, get, target, prompt, get().modelId, {
       kind: 'frames',
-      fromSrc: assetA.src,
-      toSrc: assetB.src,
+      from: frameOfClip(assetA, left, 'out'),
+      to: frameOfClip(assetB, right, 'in'),
     });
   },
 
@@ -884,9 +965,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!s.settings?.configured) return;
     // One run at a time — the action guards itself, not just the button that offers it.
     if (s.animateQueue !== null || s.animateRun !== null) return;
-    const eligible = photoCuts(s.clips).filter((cut) =>
-      cutEligible(s, cut.afterClipId, cut.beforeClipId),
-    );
+    const eligible = animatableCuts(s);
     if (eligible.length === 0) return;
     set({ animateQueue: eligible, animateRun: { legs: [] } });
     get().advanceAnimateQueue();
@@ -1493,16 +1572,19 @@ type Setter = (partial: Partial<EditorState> | ((s: EditorState) => Partial<Edit
 /** One accepted import: a clip bound for the visual track, or a sound bound for a lane. */
 type Imported = { asset: MediaAsset; clip?: Clip; track?: AudioTrack };
 
-function placed(asset: MediaAsset, audioStartMs: number): Imported {
+function placed(asset: MediaAsset, audioStartMs: number, sourceDurationMs?: number): Imported {
   if (asset.kind === 'audio') {
-    return { asset, track: audioTrack(asset, audioStartMs, DEFAULT_AUDIO_DURATION_MS) };
+    return {
+      asset,
+      track: audioTrack(asset, audioStartMs, sourceDurationMs ?? DEFAULT_AUDIO_DURATION_MS),
+    };
   }
   return {
     asset,
     clip:
       asset.kind === 'photo'
         ? photoClip(asset, DEFAULT_PHOTO_DURATION_MS)
-        : videoClip(asset, DEFAULT_VIDEO_DURATION_MS),
+        : videoClip(asset, sourceDurationMs ?? DEFAULT_VIDEO_DURATION_MS),
   };
 }
 
@@ -1528,6 +1610,10 @@ function commitImport(set: Setter, accepted: Imported[], problems: ImportProblem
       assets,
       clips,
       audioTracks,
+      // An insertion is an edit like any other: landing a clip between two photos breaks
+      // their cut, and a failed generation keyed on that pair would be left with no chip and
+      // no card to dismiss it from. Nothing else is dropped — an insertion removes no clip.
+      ...prunedAfterEdit(clips, s.generations, s.cutPrompts, s.cutModes),
       importProblems: [...s.importProblems, ...problems],
       selection: first?.clip
         ? { kind: 'clip', clipId: first.clip.id }
@@ -1633,21 +1719,25 @@ function cutKey(afterClipId: string, beforeClipId: string): string {
 
 /**
  * The mode a cut launch stamps — and the mode its card displays. One expression for both,
- * so the card can never promise one landing and get another. An explicit `mode` (the
- * animate-all queue's forced insert) wins, then the cut's own stored pick; only the
- * *fallback* changes with the weather — replace by default, insert while an Animate all
- * run is live, because a replace landing would consume clips out from under the legs
- * still behind it.
+ * so the card can never promise one landing and get another. The pair has the final say:
+ * with no still on either side there is nothing for a replace to stand in for. Otherwise an
+ * explicit `mode` (the animate-all queue's forced insert) wins, then the cut's own stored
+ * pick; only the *fallback* changes with the weather — replace by default, insert while an
+ * Animate all run is live, because a replace landing would consume clips out from under the
+ * legs still behind it.
  */
 export function resolveCutMode(
   s: Pick<EditorState, 'cutModes' | 'animateRun'>,
-  afterClipId: string,
-  beforeClipId: string,
+  a: Clip,
+  b: Clip,
   mode?: TransitionMode,
 ): TransitionMode {
+  // Two videos have no still to stand in for, so `replace` is not a choice they can make —
+  // not from a stored pick, and not from the animate queue. It is the pair that decides.
+  if (!cutOffersReplace(a, b)) return 'insert';
   return (
     mode ??
-    s.cutModes[cutKey(afterClipId, beforeClipId)] ??
+    s.cutModes[cutKey(a.id, b.id)] ??
     (s.animateRun !== null ? 'insert' : DEFAULT_TRANSITION_MODE)
   );
 }
@@ -1657,17 +1747,17 @@ function liveGeneration(g: Generation): boolean {
 }
 
 /**
- * Whether this cut could start a generation right now: the pair still forms a photo→photo
- * cut (side by side, touching or across a gap), both sources on hand, and no job already
- * running for it. Settings are checked separately — an unconfigured app changes what the
- * UI says, not what a cut is.
+ * Whether this cut could start a generation right now: the pair still forms a cut (side by
+ * side, touching or across a gap, neither of them a landed transition), both sources on
+ * hand, and no job already running for it. Settings are checked separately — an
+ * unconfigured app changes what the UI says, not what a cut is.
  */
 export function cutEligible(
   s: Pick<EditorState, 'clips' | 'assets' | 'generations'>,
   afterClipId: string,
   beforeClipId: string,
 ): boolean {
-  const cut = photoCuts(s.clips).find(
+  const cut = bridgeableCuts(s.clips).find(
     (c) => c.afterClipId === afterClipId && c.beforeClipId === beforeClipId,
   );
   if (!cut) return false;
@@ -1687,9 +1777,22 @@ export function cutEligible(
   );
 }
 
-/** The cuts "✦ Animate all" would fill right now. */
+/**
+ * The cuts "✦ Animate all" would fill right now — photo→photo only, though a chip stands on
+ * every kind of cut.
+ *
+ * One tap must not start a paid render at every boundary of a reel of footage. Bridging
+ * video is a deliberate act, taken one cut at a time from its own chip; filling the stills
+ * between photos in one go is the thing worth a button.
+ */
 export function animatableCuts(s: Pick<EditorState, 'clips' | 'assets' | 'generations'>): Cut[] {
-  return photoCuts(s.clips).filter((cut) => cutEligible(s, cut.afterClipId, cut.beforeClipId));
+  const byId = new Map(s.clips.map((c) => [c.id, c]));
+  return bridgeableCuts(s.clips).filter(
+    (cut) =>
+      byId.get(cut.afterClipId)?.kind === 'photo' &&
+      byId.get(cut.beforeClipId)?.kind === 'photo' &&
+      cutEligible(s, cut.afterClipId, cut.beforeClipId),
+  );
 }
 
 /**
@@ -1705,7 +1808,7 @@ function prunedAfterEdit(
   cutModes: Record<string, TransitionMode>,
 ): Pick<EditorState, 'generations' | 'cutPrompts' | 'cutModes'> {
   const ids = new Set(clips.map((c) => c.id));
-  const cuts = new Set(photoCuts(clips).map((c) => cutKey(c.afterClipId, c.beforeClipId)));
+  const cuts = new Set(bridgeableCuts(clips).map((c) => cutKey(c.afterClipId, c.beforeClipId)));
 
   const bothStand = ([key]: [string, unknown]) => {
     const [a, b] = key.split(':');
@@ -1773,10 +1876,11 @@ function launchFilmSegment(set: Setter, get: () => EditorState, index: number): 
     },
     segment.prompt.trim() || defaultFilmPrompt(index),
     get().modelId,
+    // A film is made of photos only, so both ends are stills already.
     {
       kind: 'frames',
-      fromSrc: start.src,
-      toSrc: end.src,
+      from: { kind: 'photo', src: start.src },
+      to: { kind: 'photo', src: end.src },
     },
     // The leg claims the id before anything is sent, so a straggling update from the run
     // this one replaces is recognisably stale.
@@ -1840,14 +1944,52 @@ async function probeFilmSegmentDuration(
 }
 
 /**
+ * What one end of a generation is rendered from.
+ *
+ * Higgsfield animates between two stills, and where a still comes from depends on what is
+ * standing there: a photo is already one and is drawn in the webview, while a video has to
+ * give up the frame at its edge, which is pulled off the file by ffmpeg. Two shapes rather
+ * than one with optional fields, so a video source can never reach the backend without the
+ * moment it was taken from.
+ */
+type FrameSource =
+  | { kind: 'photo'; src: string }
+  | { kind: 'video'; path: string; atMs: number };
+
+/** The frame a clip on the track contributes at one of its edges. */
+function frameOfClip(asset: MediaAsset, clip: Clip, edge: 'out' | 'in'): FrameSource {
+  return clip.kind === 'video'
+    ? { kind: 'video', path: asset.path, atMs: anchorMs(clip, edge) ?? 0 }
+    : { kind: 'photo', src: asset.src };
+}
+
+/**
+ * The frame a recorded source contributes once its clip is gone — what a replace-mode
+ * regeneration has left to work from. A record written before transitions could involve
+ * video carries no `atMs`, and never needed one: its sources were photos.
+ */
+function frameOfSource(asset: MediaAsset, source: TransitionSource): FrameSource {
+  return asset.kind === 'video'
+    ? { kind: 'video', path: asset.path, atMs: source.atMs ?? 0 }
+    : { kind: 'photo', src: asset.src };
+}
+
+/** One still, whichever kind of source it came from, as the data URL the backend takes. */
+async function renderFrame(source: FrameSource): Promise<string> {
+  return source.kind === 'photo'
+    ? renderPhotoJpeg(source.src)
+    : backend.captureVideoFrame(source.path, source.atMs);
+}
+
+/**
  * What a launch actually sends — the one thing the two kinds of generation differ on.
  *
- * A transition renders its two photos to stills and posts them as data URLs; a photo
- * sends the paths of the bin files it works from and lets the CLI upload them. Everything
- * around it — the record, the id, the failure tail — is shared, so the two cannot drift.
+ * A transition renders each end to a still and posts the two as data URLs; a photo sends
+ * the paths of the bin files it works from and lets the CLI upload them. Everything around
+ * it — the record, the id, the failure tail — is shared, so the two cannot drift.
  */
 type Submission =
-  | { kind: 'frames'; fromSrc: string; toSrc: string }
+  | { kind: 'frames'; from: FrameSource; to: FrameSource }
   | { kind: 'references'; paths: string[]; aspect: string };
 
 /**
@@ -1892,8 +2034,8 @@ function launchGeneration(
     try {
       if (submission.kind === 'frames') {
         const model = backend.modelJob(modelId, get().settings?.customModel);
-        const startFrame = await renderPhotoJpeg(submission.fromSrc);
-        const endFrame = await renderPhotoJpeg(submission.toSrc);
+        const startFrame = await renderFrame(submission.from);
+        const endFrame = await renderFrame(submission.to);
         await backend.generateAnimation({ generationId, prompt, startFrame, endFrame, model });
       } else {
         await backend.generateImage({
@@ -1923,14 +2065,14 @@ function launchGeneration(
 }
 
 /**
- * A finished cut render: insert the transition at its cut, stand it in the place of its
- * two photos (replace mode), or — for a regeneration — swap it over the existing
+ * A finished cut render: insert the transition at its cut, stand it in the place of the
+ * pair's stills (replace mode), or — for a regeneration — swap it over the existing
  * transition clip. The timeline may have been edited mid-render, so the landing is
  * guarded: if the place is gone the clip is never put somewhere wrong, the MP4 stays in
  * the cache, and a toast says what to do instead.
  *
- * A replace landing consumes the pair, which is an edit like any other: prompts, mode
- * picks and failed records for cuts the photos took with them are pruned, and a live
+ * A replace landing consumes the pair's stills, which is an edit like any other: prompts,
+ * mode picks and failed records for cuts those clips took with them are pruned, and a live
  * render whose own clips were just consumed is cancelled — nothing is left to land it on.
  */
 /**
@@ -2010,7 +2152,11 @@ function landCutResult(
       };
     }
 
-    const doomed = new Set([target.afterClipId, target.beforeClipId]);
+    // Only what the landing actually took off the track. A mixed pair keeps its video, and
+    // cancelling a paid render over footage that is still standing would be a real loss.
+    const after = s.clips.find((c) => c.id === target.afterClipId);
+    const before = s.clips.find((c) => c.id === target.beforeClipId);
+    const doomed = new Set(after && before ? consumedByReplace(after, before) : []);
     const generations = { ...s.generations };
     for (const [id, g] of Object.entries(generations)) {
       if (id === generation.id || g.target.kind !== 'cut' || !liveGeneration(g)) continue;
@@ -2060,7 +2206,7 @@ function landCutResult(
       title:
         target.replacesClipId !== undefined
           ? 'Transition finished, but its clip was deleted'
-          : 'Transition finished, but its photos moved',
+          : 'Transition finished, but its clips moved',
       detail: 'Tap the ✦ on the new cut to regenerate.',
     });
     return;

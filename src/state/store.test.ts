@@ -1,5 +1,6 @@
 /**
- * The film and replace-mode cut flows through the real store.
+ * The film and replace-mode cut flows through the real store, plus the inspector's typed
+ * length — the one edit that reaches the timeline as an absolute value rather than a drag.
  *
  * Same two stubs as `App.test.tsx` and for the same reason: the Tauri bridge and
  * canvas/media decoding are the only things jsdom cannot provide. The store, `lib/film` and
@@ -8,7 +9,13 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { emptyImagePanel, useEditor } from './store';
-import { photoClip, videoClip } from '../lib/timeline';
+import {
+  audioTrack,
+  bridgeableCuts,
+  photoClip,
+  resizeClipInList,
+  videoClip,
+} from '../lib/timeline';
 import { assembleFilm, defaultFilmPrompt, FILM_SEGMENT_DURATION_MS } from '../lib/film';
 import {
   DEFAULT_MODEL_ID,
@@ -16,7 +23,7 @@ import {
   type GenerateInput,
   type GenerationUpdate,
 } from '../lib/backend';
-import type { Clip, MediaAsset } from '../types/project';
+import { MIN_CLIP_DURATION_MS, type Clip, type MediaAsset } from '../types/project';
 
 const generateAnimation = vi.fn(async (_input: GenerateInput) => {});
 const generateImage = vi.fn(async (_input: GenerateImageInput) => {});
@@ -46,6 +53,10 @@ vi.mock('../lib/backend', async (importOriginal) => ({
   generateImage: (input: GenerateImageInput) => generateImage(input),
   cancelGeneration: (id: string) => cancelGeneration(id),
   ffmpegAvailable: async () => true,
+  // A video's anchor frame comes off ffmpeg on the Rust side; the stub keeps both the file
+  // it was taken from and the moment it was taken at, which is the whole thing under test.
+  captureVideoFrame: async (path: string, atMs: number) =>
+    `data:image/jpeg;base64,grab-of-${path}@${atMs}`,
   exportTimeline: vi.fn(),
   onGenerationUpdate: async () => () => {},
   onExportProgress: async () => () => {},
@@ -98,6 +109,7 @@ beforeEach(() => {
     animateRun: null,
     importProblems: [],
     importing: 0,
+    draggingAssetId: null,
     toasts: [],
     exportState: null,
     settings: CONNECTED,
@@ -126,6 +138,112 @@ function segmentGenerationId(index: number): string {
   expect(id).toBeTruthy();
   return id as string;
 }
+
+describe('a typed length', () => {
+  /** Two photos back to back: a (0–5000) then b (5000–8000). */
+  function pairOnTrack(): [Clip, Clip] {
+    const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 5000, 0);
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 5000);
+    useEditor.setState({ clips: [a, b], audioTracks: [] });
+    return [a, b];
+  }
+
+  it('is the tail drag, to the clip — the two land on exactly the same timeline', () => {
+    const [a] = pairOnTrack();
+    const dragged = resizeClipInList(useEditor.getState().clips, a.id, 'end', 7000);
+
+    useEditor.getState().setClipDuration(a.id, 12_000);
+    expect(useEditor.getState().clips).toEqual(dragged);
+  });
+
+  it('grows the clip and pushes what is behind it along', () => {
+    const [a, b] = pairOnTrack();
+    useEditor.getState().setClipDuration(a.id, 12_000);
+
+    const clips = useEditor.getState().clips;
+    expect(clips.find((c) => c.id === a.id)?.durationMs).toBe(12_000);
+    // Nothing overlaps: b starts where a now ends.
+    expect(clips.find((c) => c.id === b.id)?.startMs).toBe(12_000);
+  });
+
+  it('leaves a gap when it shrinks, rather than pulling the track back', () => {
+    const [a, b] = pairOnTrack();
+    useEditor.getState().setClipDuration(a.id, 2000);
+
+    const clips = useEditor.getState().clips;
+    expect(clips.find((c) => c.id === a.id)?.durationMs).toBe(2000);
+    expect(clips.find((c) => c.id === b.id)?.startMs).toBe(5000);
+  });
+
+  it('stops a video at the end of its source, and floors anything at 100 ms', () => {
+    const clip = videoClip({ id: 'asset_v', name: 'surf.mp4' }, 4000, 0);
+    useEditor.setState({
+      assets: {
+        asset_v: {
+          id: 'asset_v',
+          name: 'surf.mp4',
+          kind: 'video',
+          path: '/v/surf.mp4',
+          src: 'asset:///v/surf.mp4',
+          sizeBytes: 2048,
+          durationMs: 4200,
+        },
+      },
+      clips: [clip],
+      audioTracks: [],
+    });
+
+    useEditor.getState().setClipDuration(clip.id, 30_000);
+    expect(useEditor.getState().clips[0].durationMs).toBe(4200);
+
+    useEditor.getState().setClipDuration(clip.id, 0);
+    expect(useEditor.getState().clips[0].durationMs).toBe(MIN_CLIP_DURATION_MS);
+  });
+
+  it('does nothing at all when the length asked for is the one it already has', () => {
+    const [a] = pairOnTrack();
+    const before = useEditor.getState().clips;
+    useEditor.getState().setClipDuration(a.id, 5000);
+    // The same array, not merely an equal one: an edit that changes nothing must not write
+    // the project file.
+    expect(useEditor.getState().clips).toBe(before);
+  });
+
+  it('retimes a sound on its lane, clamped to the file behind it', () => {
+    const track = audioTrack({ id: 'asset_m', name: 'theme.mp3' }, 2000, 5000);
+    useEditor.setState({
+      assets: {
+        asset_m: {
+          id: 'asset_m',
+          name: 'theme.mp3',
+          kind: 'audio',
+          path: '/m/theme.mp3',
+          src: 'asset:///m/theme.mp3',
+          sizeBytes: 2048,
+          durationMs: 8000,
+        },
+      },
+      clips: [],
+      audioTracks: [track],
+    });
+
+    useEditor.getState().setAudioDuration(track.id, 6500);
+    expect(useEditor.getState().audioTracks[0].durationMs).toBe(6500);
+    // The sound starts where it was put: a length is a tail edit, never a move.
+    expect(useEditor.getState().audioTracks[0].startMs).toBe(2000);
+
+    useEditor.getState().setAudioDuration(track.id, 30_000);
+    expect(useEditor.getState().audioTracks[0].durationMs).toBe(8000);
+  });
+
+  it('is a no-op on an item that is no longer there', () => {
+    pairOnTrack();
+    const before = useEditor.getState().clips;
+    useEditor.getState().setClipDuration('clip_gone', 9000);
+    useEditor.getState().setAudioDuration('audio_gone', 9000);
+    expect(useEditor.getState().clips).toBe(before);
+  });
+});
 
 describe('a cross-asset generation', () => {
   it('sends one photo as the start frame and the other as the end frame', async () => {
@@ -480,7 +598,7 @@ describe('replace-mode cut transitions', () => {
     expect(Object.keys(s.assets).sort()).toEqual(assetsBefore);
     expect(s.toasts.at(-1)).toMatchObject({
       tone: 'error',
-      title: 'Transition finished, but its photos moved',
+      title: 'Transition finished, but its clips moved',
     });
   });
 
@@ -534,6 +652,163 @@ describe('replace-mode cut transitions', () => {
       Object.values(useEditor.getState().generations).some((g) => g.status === 'queued'),
     ).toBe(false);
     expect(generateAnimation).not.toHaveBeenCalled();
+  });
+});
+
+describe('transitions that involve video', () => {
+  /** A video asset in the bin, with a real path for ffmpeg to be pointed at. */
+  function videoAsset(id: string): MediaAsset {
+    return {
+      id,
+      name: `${id}.mp4`,
+      kind: 'video',
+      path: `/footage/${id}.mp4`,
+      src: `asset:///footage/${id}.mp4`,
+      sizeBytes: 4096,
+      durationMs: 12_000,
+    };
+  }
+
+  function bin(...assets: MediaAsset[]): void {
+    useEditor.setState({
+      assets: { ...useEditor.getState().assets, ...Object.fromEntries(assets.map((a) => [a.id, a])) },
+    });
+  }
+
+  function succeedCut(id: string, outputPath = '/cache/mixed.mp4') {
+    emit({ generationId: id, status: 'succeeded', progress: 1, elapsedSecs: 60, slow: false, outputPath });
+  }
+
+  it('animates out of a video and into a photo, sending the frame at the cut', async () => {
+    bin(videoAsset('asset_v'));
+    // Trimmed to run 1000–4000 inside its source, so the motion leaves on the frame at
+    // 4000 less one step — not at the head of the file, and not past what the clip shows.
+    const v = { ...videoClip({ id: 'asset_v', name: 'asset_v.mp4' }, 3000, 0), trimStartMs: 1000 };
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 3000);
+    useEditor.setState({ clips: [v, b] });
+
+    const id = useEditor.getState().startCutGeneration(v.id, b.id);
+    expect(id).toBeTruthy();
+    await submitted(1);
+
+    const sent = generateAnimation.mock.calls[0][0];
+    // The video side is grabbed off the file by path; the photo side is drawn as ever.
+    expect(sent.startFrame).toBe('data:image/jpeg;base64,grab-of-/footage/asset_v.mp4@3967');
+    expect(sent.endFrame).toBe('data:image/jpeg;base64,still-of-asset:///photos/asset_b.jpg');
+
+    // And the moment is recorded, so the render can be repeated after the photo is gone.
+    const target = useEditor.getState().generations[id!].target;
+    expect(target).toMatchObject({
+      kind: 'cut',
+      from: { clipId: v.id, assetId: 'asset_v', atMs: 3967 },
+      to: { clipId: b.id, assetId: 'asset_b' },
+    });
+    expect((target as { to: { atMs?: number } }).to.atMs).toBeUndefined();
+  });
+
+  it('animates into a video from its first shown frame, not from the head of the file', async () => {
+    bin(videoAsset('asset_v'));
+    const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 2000, 0);
+    const v = { ...videoClip({ id: 'asset_v', name: 'asset_v.mp4' }, 3000, 2000), trimStartMs: 2500 };
+    useEditor.setState({ clips: [a, v] });
+
+    useEditor.getState().startCutGeneration(a.id, v.id);
+    await submitted(1);
+
+    const sent = generateAnimation.mock.calls[0][0];
+    expect(sent.startFrame).toBe('data:image/jpeg;base64,still-of-asset:///photos/asset_a.jpg');
+    expect(sent.endFrame).toBe('data:image/jpeg;base64,grab-of-/footage/asset_v.mp4@2500');
+  });
+
+  it('a replace landing on a mixed pair takes the photo and leaves the footage alone', async () => {
+    bin(videoAsset('asset_v'));
+    const v = { ...videoClip({ id: 'asset_v', name: 'asset_v.mp4' }, 2000, 0), trimStartMs: 800 };
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 2000);
+    useEditor.setState({ clips: [v, b] });
+
+    const id = useEditor.getState().startCutGeneration(v.id, b.id, 'replace');
+    await submitted(1);
+    succeedCut(id!);
+
+    const s = useEditor.getState();
+    // The video is still there, whole, with its trim — only the still gave up its span.
+    expect(s.clips.map((c) => [c.id, c.startMs, c.durationMs])).toEqual([
+      [v.id, 0, 2000],
+      [s.clips[1].id, 2000, 5000],
+    ]);
+    expect(s.clips[0].trimStartMs).toBe(800);
+    expect(s.clips[1].transition).toMatchObject({ mode: 'replace' });
+    // And the photo is back in the bin to re-drag, exactly as a replaced pair leaves both.
+    expect(s.assets.asset_b).toBeDefined();
+  });
+
+  it('a video-to-video cut cannot be told to replace — there is no still to stand in for', async () => {
+    bin(videoAsset('asset_v1'), videoAsset('asset_v2'));
+    const v1 = videoClip({ id: 'asset_v1', name: 'asset_v1.mp4' }, 2000, 0);
+    const v2 = videoClip({ id: 'asset_v2', name: 'asset_v2.mp4' }, 3000, 2000);
+    useEditor.setState({
+      clips: [v1, v2],
+      selection: { kind: 'cut', afterClipId: v1.id, beforeClipId: v2.id },
+    });
+
+    // The action refuses the pick, not just the card that offers it.
+    useEditor.getState().setCutMode('replace');
+    expect(useEditor.getState().cutModes[`${v1.id}:${v2.id}`]).toBeUndefined();
+
+    // Even a mode forced past the store lands as an insert: both videos keep their spans.
+    const id = useEditor.getState().startCutGeneration(v1.id, v2.id, 'replace');
+    await submitted(1);
+    expect(useEditor.getState().generations[id!].target).toMatchObject({ mode: 'insert' });
+
+    succeedCut(id!, '/cache/between.mp4');
+    const s = useEditor.getState();
+    expect(s.clips.map((c) => [c.id, c.startMs])).toEqual([
+      [v1.id, 0],
+      [s.clips[1].id, 2000],
+      [v2.id, 7000],
+    ]);
+  });
+
+  it('regenerating a mixed replace re-reads the video as it stands now, not as it was', async () => {
+    bin(videoAsset('asset_v'));
+    const v = videoClip({ id: 'asset_v', name: 'asset_v.mp4' }, 4000, 0);
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 4000);
+    useEditor.setState({ clips: [v, b] });
+
+    const id = useEditor.getState().startCutGeneration(v.id, b.id, 'replace');
+    await submitted(1);
+    succeedCut(id!);
+    const landed = useEditor.getState().clips.find((c) => c.transition)!;
+
+    // The video the landing left alone is trimmed shorter, so the frame the motion was
+    // rendered from is no longer the one it runs out of.
+    useEditor.setState({
+      clips: useEditor.getState().clips.map((c) => (c.id === v.id ? { ...c, durationMs: 2000 } : c)),
+    });
+
+    generateAnimation.mockClear();
+    useEditor.getState().regenerateTransition(landed.id);
+    await submitted(1);
+    const sent = generateAnimation.mock.calls[0][0];
+    expect(sent.startFrame).toBe('data:image/jpeg;base64,grab-of-/footage/asset_v.mp4@1967');
+  });
+
+  it('leaves video cuts out of Animate all, however many chips stand on them', () => {
+    bin(videoAsset('asset_v1'), videoAsset('asset_v2'));
+    const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 2000, 0);
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 2000, 2000);
+    const v1 = videoClip({ id: 'asset_v1', name: 'asset_v1.mp4' }, 2000, 4000);
+    const v2 = videoClip({ id: 'asset_v2', name: 'asset_v2.mp4' }, 2000, 6000);
+    useEditor.setState({ clips: [a, b, v1, v2] });
+
+    // Four clips, three cuts, all of them chipped — but one tap must not spend on footage.
+    expect(bridgeableCuts(useEditor.getState().clips)).toHaveLength(3);
+    useEditor.getState().animateAll();
+    expect(useEditor.getState().animateRun!.legs).toHaveLength(1);
+    expect(useEditor.getState().animateRun!.legs[0]).toMatchObject({
+      afterClipId: a.id,
+      beforeClipId: b.id,
+    });
   });
 });
 
@@ -897,7 +1172,7 @@ describe('the animate-all run and its terminal collapse', () => {
 
     succeed(g1, '/cache/t1.mp4');
     expect(useEditor.getState().toasts.at(-1)).toMatchObject({
-      title: 'Transition finished, but its photos moved',
+      title: 'Transition finished, but its clips moved',
     });
 
     succeed(g2, '/cache/t2.mp4');
@@ -923,5 +1198,82 @@ describe('the animate-all run and its terminal collapse', () => {
 
     expect(useEditor.getState().animateRun).toBeNull();
     expect(useEditor.getState().toasts).toHaveLength(before);
+  });
+});
+
+// ------------------------------------------------- placing an asset already in the bin
+
+describe('an asset placed from the bin', () => {
+  /** Two photos side by side on the track: a (0–2000) then b (2000–5000). */
+  function binPairOnTrack(): [Clip, Clip] {
+    const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 2000, 0);
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 2000);
+    useEditor.setState({ clips: [a, b] });
+    return [a, b];
+  }
+
+  it('a video placed from the bin lands at its probed length', () => {
+    // A length the importer never guesses: the asset carries it because the file was probed
+    // once, and nothing would ever correct this clip afterwards — `probeDurations` only
+    // patches the clip its own import created.
+    useEditor.setState({
+      assets: {
+        ...useEditor.getState().assets,
+        asset_v: {
+          id: 'asset_v',
+          name: 'walk.mp4',
+          kind: 'video',
+          path: '/media/walk.mp4',
+          src: 'asset:///media/walk.mp4',
+          sizeBytes: 4096,
+          durationMs: 31_500,
+        },
+      },
+    });
+
+    useEditor.getState().placeAssetOnTimeline('asset_v');
+
+    const [clip] = useEditor.getState().clips;
+    expect(clip.durationMs).toBe(31_500);
+    expect(clip.name).toBe('walk.mp4');
+  });
+
+  it('an insertion between two photos takes their failed generation with it', () => {
+    const [a, b] = binPairOnTrack();
+    const id = useEditor.getState().startCutGeneration(a.id, b.id);
+    emit({
+      generationId: id!,
+      status: 'failed',
+      progress: 0,
+      elapsedSecs: 4,
+      slow: false,
+      error: { title: 'Rate limited', message: 'rate limited', retryable: true },
+    });
+    expect(useEditor.getState().generations[id!].status).toBe('failed');
+
+    // A third photo landing between them: a→b is no longer a cut, so its chip and its card
+    // are gone and a failed render kept on that key would be state with no way out.
+    useEditor.getState().placeAssetOnTimeline('asset_c', 1);
+
+    const s = useEditor.getState();
+    expect(s.clips.map((c) => c.assetId)).toEqual(['asset_a', 'asset_c', 'asset_b']);
+    expect(s.generations[id!]).toBeUndefined();
+  });
+
+  it('an id that is not in the bin, or whose file has gone, places nothing', () => {
+    binPairOnTrack();
+    useEditor.getState().placeAssetOnTimeline('asset_gone');
+
+    // A clip on a missing file could only render as "media offline" and would block the
+    // export — the same refusal a generation makes.
+    useEditor.setState({
+      assets: {
+        ...useEditor.getState().assets,
+        asset_c: { ...useEditor.getState().assets.asset_c, missing: true },
+      },
+    });
+    useEditor.getState().placeAssetOnTimeline('asset_c');
+
+    expect(useEditor.getState().clips).toHaveLength(2);
   });
 });

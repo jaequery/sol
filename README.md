@@ -2,20 +2,28 @@
 
 A simplified CapCut-style video editor for the desktop, built with **Tauri 2**.
 
-One timeline. Drop photos and videos onto it side by side. Select the cut between two
-photos and describe the motion in words — **Higgsfield** renders a real video transition
-from one still into the other and stands it in the photos' place on the timeline, so the
-cut plays as pure motion rather than stills padded around an animation.
+One timeline. Drop photos and videos onto it side by side. Select any cut between two
+clips and describe the motion in words — **Higgsfield** renders a real video transition
+from the frame on one side into the frame on the other, so the cut plays as motion rather
+than a hard join. Between two photos it stands in the stills' place; where the footage is
+real video, the footage stays.
 
 ## What it does
 
 - **A single track.** Photos and videos land on the same lane in drop order. No layers, no
-  compositing — that is the whole point of the design. Drag a clip to **anywhere** on the
+  compositing — that is the whole point of the design. A tile already in the **media bin**
+  can be dragged back out onto the track whenever you like — it goes in at the boundary
+  nearest where you let go, as a fresh copy, so the same photo can appear as often as you
+  drag it, and a sound lands on its own lane at exactly the point it was released. Enter on
+  a focused tile does the same at the playhead, without a mouse. Deleting a clip is
+  therefore no longer a one-way door. A tile whose file has gone missing is not a source:
+  it keeps its ✕ and nothing else. Drag a clip to **anywhere** on the
   track: it lands exactly where you let go, gaps and all, and a gap is black film in the
   preview and in the export. One track cannot show two clips at once, so a clip dropped on
   top of another slides that one right rather than stacking. Drag either edge to change how
   long a clip runs — a video's edges trim its in- and out-points and cannot leave the source
-  file — and hold **Snap** on to have a drop line itself up with a nearby edge or the
+  file — or type the length in seconds into the inspector, which is the same edit without
+  the gesture. Hold **Snap** on to have a drop line itself up with a nearby edge or the
   playhead when it comes within a few pixels. Click anywhere along the timeline — the
   ruler, a gap, a clip, an audio lane — and the playhead cues exactly there, so play runs
   from the point you clicked; hold the button down on the ruler to scrub.
@@ -29,22 +37,30 @@ cut plays as pure motion rather than stills padded around an animation.
   it, and from there it can be animated like any other.
 - **Audio tracks.** Sound files (mp3, wav, ogg, flac, aac, m4a) get their own lanes below
   the track — as many as you like, via **♪ Add audio** or a drop. Each lane holds one
-  sound: drag it along the lane to place it, drag its edges to trim it, set its volume or
-  mute it in the inspector. Audible lanes are mixed under the film on export; a sound that
+  sound: drag it along the lane to place it, drag its edges to trim it, and set its length,
+  its volume or its mute in the inspector. Audible lanes are mixed under the film on export; a sound that
   outlasts the last clip is cut at the film's end, never padded.
-- **Prompt-driven AI transitions.** A ✦ chip stands on every cut between two photos —
-  touching, or across a gap dragged open between them. Select it, describe the motion (or
-  leave the default), and the two photos are rendered to stills and sent to Higgsfield as
-  the first and last frame of the generation; the photos themselves are the anchor frames,
-  so nothing else needs setting up. The finished MP4 **stands in the two photos' place**:
-  they leave the track (staying in the media bin) and the clip wears both source
-  thumbnails side by side, so playback across that span is pure motion, never a still
-  frame. A **Model** selector on the same card picks which model renders it — **Seedance
-  2.5** unless another is chosen — and the pick rides with that render alone. A quiet
-  per-cut action keeps the photos on the track instead, inserting the finished clip
-  between them. **✦ Animate all** fills every cut in one go, landing leg by leg — and once
-  every leg has resolved, the run's photos leave the track too, so the whole chain ends as
-  back-to-back animation.
+- **Prompt-driven AI transitions.** A ✦ chip stands on every cut between two clips —
+  photo to photo, video to video, or one of each; touching, or across a gap dragged open
+  between them. Select it, describe the motion (or leave the default), and each side gives
+  up the frame at the cut: a photo *is* that frame, and a video's is pulled off the file at
+  the exact point it runs out or begins, trims and all. The two go to Higgsfield as the
+  first and last frame of the generation, so nothing else needs setting up. A **Model**
+  selector on the same card picks which model renders it — **Seedance 2.5** unless another
+  is chosen — and the pick rides with that render alone.
+
+  Where the finished MP4 lands follows what is on the cut, because only a **still** can be
+  stood in for. Between two photos it **stands in both their places**: they leave the track
+  (staying in the media bin) and the clip wears both source thumbnails side by side, so
+  playback across that span is pure motion, never a held frame. Beside real footage the
+  same pick takes **only the photo** — the video keeps its span and its trim, because that
+  is film the user shot, not a still waiting to be replaced. Between two videos there is no
+  still at all, so the option is not offered and the render simply lands between them. A
+  quiet per-cut action keeps the photos on the track instead, inserting the finished clip
+  between them. **✦ Animate all** fills every photo-to-photo cut in one go, landing leg by
+  leg — and once every leg has resolved, the run's photos leave the track too, so the whole
+  chain ends as back-to-back animation. It stays photo-only on purpose: one tap should not
+  start a paid render at every boundary of a reel of footage.
 - **A film from three photos — three images in, one .mp4 out.** A panel takes exactly
   three photos, puts them in order, and offers a prompt per transition already filled in.
   It has **no entry point in the UI right now** — the title bar's button went first and the
@@ -76,7 +92,7 @@ pnpm dev            # the UI alone in a browser; desktop-only actions refuse lou
 |---|---|
 | Node | 20+ with pnpm 10+ |
 | Rust | stable (1.80+) |
-| ffmpeg + ffprobe | on `PATH` — needed for export only |
+| ffmpeg + ffprobe | on `PATH` — needed for export, and for a transition with video on either side |
 | Higgsfield CLI | `npm i -g @higgsfield/cli`, signed in — needed for AI transitions and generated photos only |
 | Linux system libraries | `pkg-config`, `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libsoup-3.0-dev`, `libjavascriptcoregtk-4.1-dev` |
 
@@ -232,7 +248,8 @@ src/                     React + TypeScript editor
   types/project.ts       the data model
   lib/timeline.ts        pure timeline maths — placement, cuts, transitions
   lib/film.ts            pure film orchestration — three photos, two AI transitions
-  lib/frames.ts          rendering a photo to a still for the API
+  lib/frames.ts          rendering a photo to a still for the API (a video's frame comes
+                         off ffmpeg — see `capture_video_frame`)
   lib/project.ts         the saved project — what persists, and what a bad file may not do
   lib/backend.ts         the only place that talks to Tauri
   state/store.ts         zustand store
@@ -243,7 +260,9 @@ src-tauri/
   crates/higgsfield/     Higgsfield CLI wrapper — no Tauri or GUI dependencies
   crates/render/         ffmpeg filter graphs and export — no Tauri or GUI dependencies
 design/                  the approved concept and the hi-fi UX walkthrough
-docs/state-matrix.md     every UI state, its trigger, and its way out
+.fredrin/memory/
+  concepts/state-matrix.md   every UI state, its trigger, and its way out
+  notes/                     ticket sweeps and working notes
 ```
 
 The two crates under `src-tauri/crates/` are deliberately free of Tauri and GUI
@@ -267,6 +286,12 @@ GTK toolchain.
   0:00) rather than shoving anything out of the way. The tail is the edge that pushes.
 - **Export needs ffmpeg on `PATH`.** It is checked before anything is written, and refused
   with instructions rather than half-rendered.
+- **A tile is dragged with the mouse, not a finger.** The bin scrolls, and a touch drag
+  scrolls it rather than carrying the tile; Enter on a focused tile is the way in without a
+  pointer. Mouse and pen are unaffected.
+- **A tile dragged out mid-import lands at the default 5 s.** A video's real length is read
+  from the file a moment after import, and a clip placed from the bin copies whatever the
+  asset knows at that instant. Trim or stretch it once the length is in.
 - **Browser drops have no filesystem path.** `pnpm dev` in a browser can import and edit,
   but export needs the desktop app, which resolves real paths.
 - **The model decides the clip length.** The models publish fixed duration choices and
