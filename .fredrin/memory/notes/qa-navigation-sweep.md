@@ -66,7 +66,7 @@ these from coming back.
 | **D1** | `app.css:499` | — | `.card--disabled` defined, referenced nowhere. Removed. |
 | **D2** | Media bin empty state | Says where a drop works | Promised "Drop photos and videos **anywhere**" — false twice over: the timeline track and the film panel are the only drop targets, and audio is supported too. |
 | **D3** | Audio lane mute button | Reachable, and does not block the lane | Below ~18 px the mute button covered the entire lane body, so the lane could not be selected — and since delete needs a selection, **could not be deleted at all**. Now hidden at narrow widths, the same rule the resize handles already use. |
-| **D4** | `docs/state-matrix.md` | Matches the app | Seven rows documented behaviour that no longer (or never) existed. Updated. |
+| **D4** | `.fredrin/memory/concepts/state-matrix.md` | Matches the app | Seven rows documented behaviour that no longer (or never) existed. Updated. |
 
 ---
 

@@ -233,7 +233,9 @@ src-tauri/
   crates/higgsfield/     Higgsfield CLI wrapper — no Tauri or GUI dependencies
   crates/render/         ffmpeg filter graphs and export — no Tauri or GUI dependencies
 design/                  the approved concept and the hi-fi UX walkthrough
-docs/state-matrix.md     every UI state, its trigger, and its way out
+.fredrin/memory/
+  concepts/state-matrix.md   every UI state, its trigger, and its way out
+  notes/                     ticket sweeps and working notes
 ```
 
 The two crates under `src-tauri/crates/` are deliberately free of Tauri and GUI
