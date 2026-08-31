@@ -138,10 +138,23 @@ describe('title bar', () => {
       screen.queryAllByRole('button', { name: '✦ New film from 3 photos' }),
       'the film panel is opened from the empty timeline, not from the bar',
     ).toHaveLength(1);
+  });
 
-    vi.mocked(backend.pickMediaFiles).mockResolvedValue([]);
-    await user.click(screen.getByRole('button', { name: 'Import' }));
-    expect(backend.pickMediaFiles).toHaveBeenCalled();
+  it('offers no Import of its own — media intake belongs to the bin', async () => {
+    await mount();
+
+    // Scoped to the bar and case-blind on purpose: the bin's own affordances are named
+    // "Import media" and "import", and this must not start passing by that coincidence.
+    const bar = document.querySelector('.titlebar') as HTMLElement;
+    // Proves the scope is the real bar and not an empty element, which would make the
+    // assertion below pass for the wrong reason.
+    expect(within(bar).getByRole('button', { name: 'Settings' })).toBeInTheDocument();
+    expect(
+      within(bar).queryByRole('button', { name: /import/i }),
+      'the bin head keeps a + Import whatever the bin holds — a second copy up here was the redundancy',
+    ).toBeNull();
+
+    expect(screen.getByRole('button', { name: 'Import media' })).toBeInTheDocument();
   });
 
   it('Export MP4 is dark on an empty project and live once there is a clip', async () => {
@@ -348,6 +361,124 @@ describe('timeline toolbar', () => {
     await user.click(screen.getByRole('button', { name: 'Add audio track' }));
     await screen.findByRole('button', { name: 'theme.mp3 audio track' });
     expect(useEditor.getState().audioTracks[0].startMs).toBe(3000);
+  });
+});
+
+// ----------------------------------------------------------------- timeline seeking
+
+// The harness zoom is 100 px/s — one pixel is ten milliseconds — so a click at
+// clientX N must land the playhead at exactly N × 10 ms (jsdom rects sit at zero).
+
+describe('click-to-seek', () => {
+  it('clicking the track seeks the playhead to the clicked time', async () => {
+    await mount();
+    await dropPhotoPair();
+    const before = useEditor.getState().selection;
+
+    // The bare track below the clips, and the open stretch between them, both cue.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('timeline-track'), { clientX: 100 });
+    });
+    expect(useEditor.getState().playheadMs).toBe(1000);
+
+    const gaps = screen.getByTestId('timeline-track').querySelector('.track__clips')!;
+    await act(async () => {
+      fireEvent.click(gaps, { clientX: 200 });
+    });
+    expect(useEditor.getState().playheadMs).toBe(2000);
+
+    // Scrubbing is not deselecting (state 7): the import's selection stands untouched.
+    expect(useEditor.getState().selection).toEqual(before);
+  });
+
+  it('clicking a clip selects it and cues playback at the clicked point', async () => {
+    await mount();
+    await dropPhotoPair();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'cliff.png photo clip' }), {
+        detail: 1,
+        clientX: 300,
+      });
+    });
+    const s = useEditor.getState();
+    expect(s.selection).toEqual({ kind: 'clip', clipId: s.clips[1].id });
+    expect(s.playheadMs).toBe(3000);
+  });
+
+  it('a keyboard activation selects a clip without moving the playhead', async () => {
+    await mount();
+    await dropPhotoPair();
+    act(() => useEditor.getState().setPlayhead(1234));
+
+    // Enter on a focused button lands as a click with no coordinates and detail 0.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'cliff.png photo clip' }));
+    });
+    const s = useEditor.getState();
+    expect(s.selection).toEqual({ kind: 'clip', clipId: s.clips[1].id });
+    expect(s.playheadMs).toBe(1234);
+  });
+
+  it('the ruler is a click-and-drag seek surface', async () => {
+    await mount();
+    await dropPhotoPair();
+    const ruler = screen.getByTestId('timeline-ruler');
+
+    await act(async () => fireEvent.pointerDown(ruler, { button: 0, clientX: 100 }));
+    expect(useEditor.getState().playheadMs).toBe(1000);
+
+    // Held down, the pointer scrubs — and past the end it pins to the timeline's end.
+    await act(async () => fireEvent.pointerMove(window, { clientX: 200 }));
+    expect(useEditor.getState().playheadMs).toBe(2000);
+    await act(async () => fireEvent.pointerMove(window, { clientX: 2000 }));
+    expect(useEditor.getState().playheadMs).toBe(10000);
+
+    // Released, the pointer is just a pointer again.
+    await act(async () => fireEvent.pointerUp(window, { clientX: 2000 }));
+    await act(async () => fireEvent.pointerMove(window, { clientX: 100 }));
+    expect(useEditor.getState().playheadMs).toBe(10000);
+  });
+
+  it('a clip drag still never seeks on release', async () => {
+    await mount();
+    await dropPhotoPair();
+    act(() => useEditor.getState().setPlayhead(1234));
+
+    const clip = screen.getByRole('button', { name: 'sunset.jpg photo clip' });
+    await act(async () => fireEvent.pointerDown(clip, { button: 0, clientX: 100 }));
+    await act(async () => fireEvent.pointerMove(window, { clientX: 160 }));
+    await act(async () => fireEvent.pointerUp(window, { clientX: 160 }));
+    // The click the browser fires after a drag is the drag's tail, not a seek.
+    await act(async () => {
+      fireEvent.click(clip, { detail: 1, clientX: 160 });
+    });
+    expect(useEditor.getState().playheadMs).toBe(1234);
+  });
+
+  it('clicking a sound, or the open stretch of its lane, cues the playhead there', async () => {
+    const user = userEvent.setup();
+    await mount();
+    await dropPhotoPair();
+    mockPick('/media/theme.mp3', 'theme.mp3', 'audio');
+    await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+    const sound = await screen.findByRole('button', { name: 'theme.mp3 audio track' });
+
+    await act(async () => {
+      fireEvent.click(sound, { detail: 1, clientX: 300 });
+    });
+    let s = useEditor.getState();
+    expect(s.selection).toEqual({ kind: 'audio', trackId: s.audioTracks[0].id });
+    expect(s.playheadMs).toBe(3000);
+
+    const lane = screen.getByTestId('audio-lanes').querySelector('.audio-lane')!;
+    await act(async () => {
+      fireEvent.click(lane, { clientX: 100 });
+    });
+    s = useEditor.getState();
+    expect(s.playheadMs).toBe(1000);
+    // The lane background is seek surface, not a deselect.
+    expect(s.selection).toEqual({ kind: 'audio', trackId: s.audioTracks[0].id });
   });
 });
 

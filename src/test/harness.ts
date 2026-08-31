@@ -8,6 +8,7 @@
  */
 
 import { DEFAULT_MODEL_ID } from '../lib/backend';
+import { resetPreviewSync } from '../lib/preview-sync';
 import { useEditor } from '../state/store';
 
 /**
@@ -18,6 +19,8 @@ import { useEditor } from '../state/store';
  * The app's own default is 46.
  */
 export function resetEditor(): void {
+  // Media elements from an unmounted tree must not keep steering the next test's playhead.
+  resetPreviewSync();
   useEditor.setState({
     settings: null,
     connectionMessage: null,

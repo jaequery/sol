@@ -1458,8 +1458,9 @@ describe('the 3-photo film wizard', () => {
     expect(screen.getByText('Too many requests — try again shortly.')).toBeInTheDocument();
     expect(screen.getByText('0 of 2 succeeded')).toBeInTheDocument();
 
-    // Non-modal: the editor behind the panel is still live.
-    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
+    // Non-modal: the editor outside the panel is still live — still in the accessibility
+    // tree and still operable, which is what the aria-modal check below pairs with.
+    expect(screen.getByRole('button', { name: 'Import media' })).toBeEnabled();
     expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).not.toHaveAttribute(
       'aria-modal',
     );

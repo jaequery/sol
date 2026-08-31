@@ -3,7 +3,6 @@ import { useEditor } from '../state/store';
 export function TitleBar() {
   const clips = useEditor((s) => s.clips);
   const generations = useEditor((s) => s.generations);
-  const importViaDialog = useEditor((s) => s.importViaDialog);
   const openSettings = useEditor((s) => s.openSettings);
   const runExport = useEditor((s) => s.runExport);
   const exporting = useEditor((s) => s.exporting);
@@ -31,9 +30,6 @@ export function TitleBar() {
         */}
         <button type="button" className="btn btn--ghost" onClick={openSettings}>
           Settings
-        </button>
-        <button type="button" className="btn btn--ghost" onClick={() => void importViaDialog()}>
-          Import
         </button>
         <button
           type="button"

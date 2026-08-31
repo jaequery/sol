@@ -341,12 +341,15 @@ export function Timeline() {
     dropStartMs,
   ]);
 
-  function onSelectClip(clipId: string) {
+  function onSelectClip(clipId: string, e: React.MouseEvent) {
     if (swallowClick.current) {
       swallowClick.current = false;
       return;
     }
     select({ kind: 'clip', clipId });
+    // A mouse click also cues playback at the clicked frame. A keyboard activation
+    // carries no coordinates (detail 0), so it selects and leaves the playhead alone.
+    if (e.detail > 0) setPlayhead(timeFromClientX(e.clientX));
   }
 
   function onMoveKey(e: React.KeyboardEvent, clip: Clip) {
@@ -400,9 +403,15 @@ export function Timeline() {
     }
   }
 
+  /** A click on the bare track — beside or between clips — cues the playhead there. */
   function onScrub(e: React.MouseEvent) {
-    if (e.target !== e.currentTarget) return;
-    setPlayhead(ratioFromEvent(e.clientX) * total);
+    if (e.target !== e.currentTarget && e.target !== clipsRef.current) return;
+    if (swallowClick.current) {
+      // A drag that ended over open track lands its click here; it is not a seek.
+      swallowClick.current = false;
+      return;
+    }
+    setPlayhead(timeFromClientX(e.clientX));
   }
 
   return (
@@ -488,7 +497,7 @@ export function Timeline() {
 
       <div className="timeline__scroll">
         <div className="timeline__inner" style={{ width }}>
-          <Ruler total={total} pxPerSecond={pxPerSecond} width={width} />
+          <Ruler total={total} pxPerSecond={pxPerSecond} width={width} onSeek={setPlayhead} />
 
           <div
             className={`track ${fileDrag ? 'track--drop-target' : ''} ${drag?.moved ? 'track--dragging' : ''}`}
@@ -601,14 +610,23 @@ export function Timeline() {
                   track={track}
                   asset={assets[track.assetId]}
                   toPx={toPx}
+                  msPerPx={msPerPx}
                   selection={selection}
                   drag={audioDrag?.trackId === track.id ? audioDrag : null}
-                  onSelect={(trackId) => {
+                  onSeek={(ms) => {
+                    if (swallowClick.current) {
+                      swallowClick.current = false;
+                      return;
+                    }
+                    setPlayhead(ms);
+                  }}
+                  onSelect={(trackId, seekMs) => {
                     if (swallowClick.current) {
                       swallowClick.current = false;
                       return;
                     }
                     select({ kind: 'audio', trackId });
+                    if (seekMs !== undefined) setPlayhead(seekMs);
                   }}
                   onDragStart={beginAudioDrag}
                   onMoveKey={(e, t) => {
@@ -641,8 +659,10 @@ function AudioLane({
   track,
   asset,
   toPx,
+  msPerPx,
   selection,
   drag,
+  onSeek,
   onSelect,
   onDragStart,
   onMoveKey,
@@ -652,15 +672,25 @@ function AudioLane({
   track: AudioTrack;
   asset?: MediaAsset;
   toPx: (ms: number) => number;
+  msPerPx: number;
   selection: Selection;
   /** The drag that has hold of *this* track, if any. */
   drag: AudioDrag | null;
-  onSelect: (trackId: string) => void;
+  /** Cue the playhead — the open stretch of a lane is seek surface, like the track. */
+  onSeek: (ms: number) => void;
+  /** A mouse click passes the clicked time along so selecting a sound also cues it. */
+  onSelect: (trackId: string, seekMs?: number) => void;
   onDragStart: (e: React.PointerEvent, kind: AudioDrag['kind'], track: AudioTrack, edge: ClipEdge) => void;
   onMoveKey: (e: React.KeyboardEvent, track: AudioTrack) => void;
   onResizeKey: (e: React.KeyboardEvent, trackId: string, edge: ClipEdge) => void;
   onToggleMute: (trackId: string) => void;
 }) {
+  const laneRef = useRef<HTMLDivElement>(null);
+  /** Where on the timeline a screen x sits. The lane shares the clips' time origin. */
+  const msAt = (clientX: number) => {
+    const rect = laneRef.current?.getBoundingClientRect();
+    return rect ? (clientX - rect.left) * msPerPx : 0;
+  };
   const width = Math.max(toPx(track.durationMs), MIN_CLIP_PX);
   const selected = selection.kind === 'audio' && selection.trackId === track.id;
   const offline = !asset;
@@ -678,13 +708,19 @@ function AudioLane({
     .join(' ');
 
   return (
-    <div className="audio-lane">
+    <div
+      className="audio-lane"
+      ref={laneRef}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onSeek(msAt(e.clientX));
+      }}
+    >
       <div className={classes} style={{ left: toPx(track.startMs), width }}>
         <button
           type="button"
           aria-label={`${track.name} audio track`}
           onPointerDown={(e) => onDragStart(e, 'move', track, 'start')}
-          onClick={() => onSelect(track.id)}
+          onClick={(e) => onSelect(track.id, e.detail > 0 ? msAt(e.clientX) : undefined)}
           onKeyDown={(e) => onMoveKey(e, track)}
           className="audio-clip__body"
           style={{ cursor: moving ? 'grabbing' : 'grab' }}
@@ -736,26 +772,67 @@ function Ruler({
   total,
   pxPerSecond,
   width,
+  onSeek,
 }: {
   total: number;
   pxPerSecond: number;
   width: number;
+  /** Cue the playhead: a press seeks, and holding the button down scrubs. */
+  onSeek: (ms: number) => void;
 }) {
+  const originRef = useRef<HTMLDivElement>(null);
+  const [scrubbing, setScrubbing] = useState(false);
+
+  const seekAt = useCallback(
+    (clientX: number) => {
+      const rect = originRef.current?.getBoundingClientRect();
+      if (rect) onSeek(((clientX - rect.left) / pxPerSecond) * 1000);
+    },
+    [onSeek, pxPerSecond],
+  );
+
+  // The same window-listener pattern the clip drags use: the scrub survives the cursor
+  // leaving the ruler, and ends wherever the button comes back up.
+  useEffect(() => {
+    if (!scrubbing) return;
+    const onMove = (e: PointerEvent) => seekAt(e.clientX);
+    const end = () => setScrubbing(false);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', end);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', end);
+      window.removeEventListener('pointercancel', end);
+    };
+  }, [scrubbing, seekAt]);
+
   // Keep the labels roughly 70px apart however far the track is zoomed.
   const step = [1, 2, 5, 10, 15, 30, 60].find((s) => s * pxPerSecond >= 70) ?? 60;
   const ticks = Math.floor(Math.max(total / 1000, width / pxPerSecond) / step) + 1;
 
   return (
-    <div className="ruler">
-      {Array.from({ length: ticks }, (_, i) => {
-        const left = i * step * pxPerSecond;
-        return (
-          <span key={i} style={{ left }}>
-            <i style={{ left: 0 }} />
-            {formatTimecode(i * step * 1000).slice(0, 5)}
-          </span>
-        );
-      })}
+    <div
+      className="ruler"
+      data-testid="timeline-ruler"
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        seekAt(e.clientX);
+        setScrubbing(true);
+      }}
+    >
+      {/* Ticks share the clips' time origin, so the time a click lands on is the time named. */}
+      <div className="ruler__origin" ref={originRef}>
+        {Array.from({ length: ticks }, (_, i) => {
+          const left = i * step * pxPerSecond;
+          return (
+            <span key={i} style={{ left }}>
+              <i style={{ left: 0 }} />
+              {formatTimecode(i * step * 1000).slice(0, 5)}
+            </span>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -787,7 +864,7 @@ function TimelineClip({
   selection: Selection;
   /** The drag that has hold of *this* clip, if any. */
   drag: ClipDrag | null;
-  onSelectClip: (clipId: string) => void;
+  onSelectClip: (clipId: string, e: React.MouseEvent) => void;
   onDragStart: (e: React.PointerEvent, kind: ClipDrag['kind'], clip: Clip, edge: ClipEdge) => void;
   onMoveKey: (e: React.KeyboardEvent, clip: Clip) => void;
   onResizeKey: (e: React.KeyboardEvent, clipId: string, edge: ClipEdge) => void;
@@ -820,9 +897,9 @@ function TimelineClip({
       <button
         type="button"
         aria-label={`${clip.name} ${clip.kind} clip`}
-        title="Drag anywhere along the track · arrow keys nudge"
+        title="Click to cue playback here · drag anywhere along the track · arrow keys nudge"
         onPointerDown={(e) => onDragStart(e, 'move', clip, 'start')}
-        onClick={() => onSelectClip(clip.id)}
+        onClick={(e) => onSelectClip(clip.id, e)}
         onKeyDown={(e) => onMoveKey(e, clip)}
         style={{
           position: 'absolute',

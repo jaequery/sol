@@ -8,7 +8,7 @@ hi-fi walkthrough artifact.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 1 | **Empty (first run)** | App opened, no media | Timeline shows a dashed drop zone with "Drop photos and videos here"; bin shows an import CTA; inspector shows "Nothing selected" | Drop a file, or click Import |
+| 1 | **Empty (first run)** | App opened, no media | Timeline shows a dashed drop zone with "Drop photos, videos and audio here"; bin shows an import CTA; inspector shows "Nothing selected" | Drop a file, or click **+ Import** in the bin |
 | 2 | **Drag-over** | OS file drag enters the window | Timeline drop zone lights up in accent; a vertical insertion marker shows where the clip will land; a count badge shows how many files are being dropped | Drop, or drag out |
 | 3 | **Importing (loading)** | Files dropped / picked | Skeleton tiles animate in the media bin; the timeline shows a ghost clip at the insertion point; the rest of the UI stays interactive | Resolves to 4, or to 5 |
 | 4 | **Imported (success)** | Probe succeeded | Clips appear on the single timeline in drop order, laid end to end from the drop boundary — anything already at or after it ripples along; first new clip is selected | — |
@@ -21,7 +21,7 @@ hi-fi walkthrough artifact.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 7 | **Nothing selected** | First run, or the selected clip was deleted | Inspector shows an explanatory empty state, not a blank panel. The 🗑 button and the Delete key are both dark — as they also are on a selected **cut**, which is a place rather than a thing and has nothing to delete. *(Clicking empty track scrubs the playhead; it does not clear the selection.)* | Select a clip |
+| 7 | **Nothing selected** | First run, or the selected clip was deleted | Inspector shows an explanatory empty state, not a blank panel. The 🗑 button and the Delete key are both dark — as they also are on a selected **cut**, which is a place rather than a thing and has nothing to delete. *(Clicking anywhere on the timeline — ruler, bare track, clip, or lane — cues the playhead; it does not clear the selection.)* | Select a clip |
 | 8 | **Video clip selected** | Click a video clip | Inspector shows clip info + trim; there is nothing AI to offer on a plain video | Select a photo, or a cut |
 | 9 | **Photo clip selected** | Click a photo clip | Inspector shows clip info and a hint pointing at the ✦ chip: put another photo beside it and bridge the cut with an AI transition (section 8) | Select a cut |
 
@@ -45,6 +45,7 @@ hi-fi walkthrough artifact.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
+| 21a | **Cued by click** | Click or press-and-drag anywhere along the timeline — the ruler (dragging scrubs), the bare track, a gap, a clip, or an audio lane | The playhead jumps to exactly the clicked time and the preview shows that frame, so play runs from the clicked point; a click on a clip or a sound also selects it. During playback a click keeps playing from the new point. A drag or a chip press never seeks | Space / ▶
 | 22 | **Playing** | Space / play | Playhead sweeps; transport shows pause; the preview plays the single track as one continuous piece, photos held covering the frame. Space only reaches the transport when the focus is not on a control — a focused button gets its own keypress — and not at all while a scrim dialog is up. Play is live whenever the timeline has any length, sound included | Pause |
 | 23 | **Exporting** | Export MP4 | Modal with per-stage progress (normalising clips → concatenating → finalising). There is no cancel: **Close** and Escape dismiss the dialog while the render carries on, and Export MP4 reads "Exporting…" and stays dark until it lands, so a second encode cannot start | Close/Escape (the render continues), or finish |
 | 24 | **Export succeeded** | ffmpeg exits 0 | Toast with the output path and "Reveal in folder" | Dismiss |
