@@ -1,97 +1,175 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useEditor } from '../state/store';
 import { clipAt, formatTimecode } from '../lib/timeline';
+import {
+  eachMedia,
+  registerMedia,
+  unregisterMedia,
+  videoKey,
+  videoPoolAt,
+} from '../lib/preview-sync';
+import type { Clip } from '../types/project';
 
 /**
  * The preview.
  *
- * A photo is drawn covering the frame, exactly as the export renders it. For a video it
- * drives an element's `currentTime` off the playhead, so the single track plays as one
- * continuous piece. A gap between two clips is black here, exactly as the exporter
- * renders it.
+ * A photo is drawn covering the frame, exactly as the export renders it. A video element
+ * owns the clock while its clip plays — the playhead follows its `currentTime` (see
+ * `lib/preview-sync`), so the frame on screen and the timecode cannot disagree. The next
+ * video clip on the track stays mounted invisibly, primed to its in-point, so crossing a
+ * cut into it needs no load and no seek. A gap between two clips is black here, exactly
+ * as the exporter renders it.
  */
 export function Preview() {
   const clips = useEditor((s) => s.clips);
   const assets = useEditor((s) => s.assets);
   const playheadMs = useEditor((s) => s.playheadMs);
-  const playing = useEditor((s) => s.playing);
-  const videoRef = useRef<HTMLVideoElement>(null);
+
+  const syncNow = usePreviewSync();
 
   const hit = clipAt(clips, playheadMs);
   const clip = hit?.placed.clip;
   const asset = clip ? assets[clip.assetId] : undefined;
-  const localMs = hit?.localMs ?? 0;
 
-  useEffect(() => {
-    const el = videoRef.current;
-    if (!el || !clip || clip.kind !== 'video') return;
-    const wanted = (clip.trimStartMs + localMs) / 1000;
-    if (Math.abs(el.currentTime - wanted) > 0.25) {
-      el.currentTime = wanted;
-    }
-    if (playing) void el.play().catch(() => {});
-    else el.pause();
-  }, [clip, localMs, playing]);
-
-  if (!clip) {
-    if (clips.length === 0) {
-      return (
-        <div className="stage">
-          <div className="stage__empty">
-            <div className="icon" aria-hidden="true">
-              🎞
-            </div>
-            <b>Nothing on the timeline</b>
-            Drop a photo or a video below to start. Photos side by side can be bridged with
-            AI transitions.
-          </div>
-        </div>
-      );
-    }
-
-    // The playhead is in a gap — before the first clip, or between two of them.
+  if (clips.length === 0) {
     return (
       <div className="stage">
-        <div className="canvas" data-testid="preview-canvas">
-          <div className="canvas__gap" data-testid="preview-gap">
-            GAP
+        <div className="stage__empty">
+          <div className="icon" aria-hidden="true">
+            🎞
           </div>
-          <div className="canvas__hud">
-            <span aria-hidden="true">◆</span> {formatTimecode(playheadMs)}
-          </div>
+          <b>Nothing on the timeline</b>
+          Drop a photo or a video below to start. Photos side by side can be bridged with
+          AI transitions.
         </div>
       </div>
     );
   }
 
-  const missing = !asset || asset.missing || !asset.src;
+  const missing = Boolean(clip && (!asset || asset.missing || !asset.src));
+  const pool = videoPoolAt(clips, playheadMs).flatMap((c) => {
+    const a = assets[c.assetId];
+    return a && !a.missing && a.src ? [{ clip: c, src: a.src }] : [];
+  });
 
   return (
     <div className="stage">
       <div className="canvas" data-testid="preview-canvas">
-        {missing ? (
+        {pool.map(({ clip: c, src }) => (
+          <PreviewVideo
+            key={c.id}
+            clip={c}
+            src={src}
+            active={c.id === clip?.id && !missing}
+            onMount={syncNow}
+          />
+        ))}
+
+        {clip?.kind === 'photo' && asset?.src && !asset.missing && (
+          <img src={asset.src} alt={clip.name} draggable={false} />
+        )}
+
+        {!clip && (
+          <div className="canvas__gap" data-testid="preview-gap">
+            GAP
+          </div>
+        )}
+
+        {clip && missing && (
           <div className="canvas__offline">
             MEDIA OFFLINE
             <br />
             <span style={{ opacity: 0.7 }}>{clip.name} is no longer available</span>
           </div>
-        ) : clip.kind === 'photo' ? (
-          <img src={asset.src} alt={clip.name} draggable={false} />
-        ) : (
-          <video
-            ref={videoRef}
-            src={asset.src}
-            data-testid="preview-video"
-            muted={false}
-            playsInline
-          />
         )}
 
         <div className="canvas__hud">
           <span aria-hidden="true">◆</span> {formatTimecode(playheadMs)}
         </div>
-        {clip.ai && <div className="canvas__ai">✦ AI GENERATED</div>}
+        {clip?.ai && <div className="canvas__ai">✦ AI GENERATED</div>}
       </div>
     </div>
   );
+}
+
+/**
+ * One mounted preview video — the active clip's, or the next clip's, primed and hidden.
+ *
+ * Every preview `<video>` renders in this one keyed array, visibility toggled by style
+ * only. That is a hard constraint, not a styling choice: a keyed element that changes its
+ * JSX position remounts cold, and the boundary handoff this exists for — the primed
+ * element *becoming* the visible one — only works while React can carry the DOM node over.
+ */
+function PreviewVideo({
+  clip,
+  src,
+  active,
+  onMount,
+}: {
+  clip: Clip;
+  src: string;
+  active: boolean;
+  onMount: () => void;
+}) {
+  // Registration rides the ref so the sync layer sees exactly the elements React has
+  // committed. The callback identity must survive the per-frame re-renders — React
+  // re-invokes a changed ref with null and then the element, which would tear the sync
+  // state down sixty times a second.
+  const ref = useCallback(
+    (el: HTMLVideoElement | null) => {
+      if (el) {
+        registerMedia(videoKey(clip.id), el, clip.trimStartMs / 1000);
+        // The store notified before React committed this element, so it has not been
+        // told anything yet — catch it up rather than waiting for the next tick.
+        onMount();
+      } else {
+        unregisterMedia(videoKey(clip.id));
+      }
+    },
+    [clip.id, clip.trimStartMs, onMount],
+  );
+
+  return (
+    <video
+      ref={ref}
+      src={src}
+      className={active ? undefined : 'canvas__preload'}
+      data-testid={active ? 'preview-video' : 'preview-video-next'}
+      muted={!active}
+      playsInline
+      preload="auto"
+    />
+  );
+}
+
+/**
+ * The one driver of every preview video element.
+ *
+ * Subscribed to the store rather than keyed on render props: zustand notifies on every
+ * `set`, so this runs once per state change — every playhead tick included — without
+ * tearing a React effect down each frame. The active clip's element is told the wanted
+ * time and whether to play; every other mounted element is told to stand down. All of
+ * the seek and play discipline lives in `lib/preview-sync`.
+ */
+function usePreviewSync(): () => void {
+  const syncNow = useCallback(() => {
+    const s = useEditor.getState();
+    const hit = clipAt(s.clips, s.playheadMs);
+    const c = hit?.placed.clip;
+    const activeKey = c && c.kind === 'video' ? videoKey(c.id) : null;
+    eachMedia('clip:', (key, media) => {
+      if (hit && c && key === activeKey) {
+        media.update((c.trimStartMs + hit.localMs) / 1000, s.playing);
+      } else {
+        media.deactivate();
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    syncNow();
+    return useEditor.subscribe(syncNow);
+  }, [syncNow]);
+
+  return syncNow;
 }

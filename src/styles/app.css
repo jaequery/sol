@@ -360,6 +360,11 @@ input {
   object-fit: cover;
   will-change: transform;
 }
+/* The next clip, mounted early and primed so the cut into it needs no load and no seek. */
+.canvas video.canvas__preload {
+  opacity: 0;
+  pointer-events: none;
+}
 .canvas__hud {
   position: absolute;
   left: 10px;
