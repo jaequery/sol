@@ -237,6 +237,9 @@ function FailedCard({ generation, heading }: { generation: Generation; heading: 
         <div className="errbox">
           <b>{error?.title ?? 'Generation failed'}</b>
           {error?.message ?? 'The job did not complete.'}
+          {/* Which backend answered — a report from a stale process is otherwise
+              indistinguishable from one produced by the current build. */}
+          {error?.build && <div className="hint">SolCut backend {error.build}</div>}
         </div>
         <div className="btn-row">
           {error?.retryable !== false && (

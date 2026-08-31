@@ -257,13 +257,16 @@ describe('AI transitions between photos', () => {
         progress: 0,
         elapsedSecs: 4,
         slow: false,
-        error: { title: 'Rate limited', message: 'rate limited', retryable: true },
+        error: { title: 'Rate limited', message: 'rate limited', retryable: true, build: '0.1.0+abc123def' },
       });
     });
 
     expect(await screen.findByText('✕ FAILED')).toBeInTheDocument();
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByText('Rate limited')).toBeInTheDocument();
+    // The report names the backend build that produced it — a failure from a stale
+    // process must not read as one from the current build.
+    expect(within(alert).getByText('SolCut backend 0.1.0+abc123def')).toBeInTheDocument();
 
     generateAnimation.mockClear();
     await user.click(within(alert).getByRole('button', { name: 'Retry' }));

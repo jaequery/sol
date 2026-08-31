@@ -32,6 +32,13 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Past this, the UI switches to its "taking longer than usual" copy.
 const SLOW_AFTER: Duration = Duration::from_secs(90);
 
+/// `version+commit` of the running backend, stamped at compile time (see `build.rs`).
+///
+/// Failure reports carry it because "still broken" has twice turned out to mean "a stale
+/// backend process was still running": the frontend hot-reloads under `tauri dev`, the
+/// Rust side does not, and nothing else in the app says which build actually answered.
+pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("SOLCUT_BUILD"));
+
 pub struct AppState {
     config_dir: PathBuf,
     media_dir: PathBuf,
@@ -65,6 +72,8 @@ pub struct GenerationError {
     pub title: String,
     pub message: String,
     pub retryable: bool,
+    /// Which backend build produced this report — [`BUILD`].
+    pub build: &'static str,
 }
 
 impl From<&HiggsfieldError> for GenerationError {
@@ -73,6 +82,7 @@ impl From<&HiggsfieldError> for GenerationError {
             title: e.title().to_string(),
             message: e.to_string(),
             retryable: e.is_retryable(),
+            build: BUILD,
         }
     }
 }
@@ -428,6 +438,18 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The regression behind "i still get this error" after the fix had merged: the
+    /// report came from a stale backend process, and nothing in it could say so. Every
+    /// failure now names the build that produced it.
+    #[test]
+    fn a_failure_event_names_the_build_that_produced_it() {
+        assert!(BUILD.starts_with(env!("CARGO_PKG_VERSION")), "{BUILD}");
+
+        let error = GenerationError::from(&HiggsfieldError::NotConfigured);
+        let json = serde_json::to_value(&error).expect("serialize");
+        assert_eq!(json["build"], BUILD);
+    }
 
     #[test]
     fn a_generate_input_without_an_endpoint_still_deserializes() {

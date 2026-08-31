@@ -62,7 +62,7 @@ export interface GenerationUpdate {
   elapsedSecs: number;
   slow: boolean;
   outputPath?: string;
-  error?: { title: string; message: string; retryable: boolean };
+  error?: { title: string; message: string; retryable: boolean; build?: string };
 }
 
 export interface ExportProgress {
