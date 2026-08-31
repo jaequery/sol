@@ -15,14 +15,15 @@ cut plays as pure motion rather than stills padded around an animation.
   preview and in the export. One track cannot show two clips at once, so a clip dropped on
   top of another slides that one right rather than stacking. Drag either edge to change how
   long a clip runs — a video's edges trim its in- and out-points and cannot leave the source
-  file — and hold **Snap** on to have a drop line itself up with a nearby edge or the
+  file — or type the length in seconds into the inspector, which is the same edit without
+  the gesture. Hold **Snap** on to have a drop line itself up with a nearby edge or the
   playhead when it comes within a few pixels. Click anywhere along the timeline — the
   ruler, a gap, a clip, an audio lane — and the playhead cues exactly there, so play runs
   from the point you clicked; hold the button down on the ruler to scrub.
 - **Audio tracks.** Sound files (mp3, wav, ogg, flac, aac, m4a) get their own lanes below
   the track — as many as you like, via **♪ Add audio** or a drop. Each lane holds one
-  sound: drag it along the lane to place it, drag its edges to trim it, set its volume or
-  mute it in the inspector. Audible lanes are mixed under the film on export; a sound that
+  sound: drag it along the lane to place it, drag its edges to trim it, and set its length,
+  its volume or its mute in the inspector. Audible lanes are mixed under the film on export; a sound that
   outlasts the last clip is cut at the film's end, never padded.
 - **Prompt-driven AI transitions.** A ✦ chip stands on every cut between two photos —
   touching, or across a gap dragged open between them. Select it, describe the motion (or

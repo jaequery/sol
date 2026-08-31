@@ -1,11 +1,21 @@
+import { useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { resolveCutMode, useEditor } from '../state/store';
 import {
   DEFAULT_TRANSITION_PROMPT,
+  MAX_PHOTO_DURATION_MS,
+  MIN_CLIP_DURATION_MS,
   type AudioTrack,
   type Clip,
   type Generation,
 } from '../types/project';
-import { formatDuration, formatTimecode, photoCuts, transitionStaleness } from '../lib/timeline';
+import {
+  durationInputValue,
+  formatDuration,
+  formatTimecode,
+  parseDurationInput,
+  photoCuts,
+  transitionStaleness,
+} from '../lib/timeline';
 import { modelLabel } from '../lib/backend';
 import { ModelSelect } from './ModelSelect';
 
@@ -36,7 +46,9 @@ export function Inspector() {
       <div className="panel-head">Inspector</div>
       <div className="inspector">
         {track ? (
-          <AudioCard track={track} />
+          // Keyed so a selection that moves to another item remounts the cards: a
+          // half-typed duration must never be carried onto whatever is selected next.
+          <AudioCard key={track.id} track={track} />
         ) : cutPair ? (
           <CutCard a={cutPair.a} b={cutPair.b} />
         ) : !clip ? (
@@ -48,17 +60,125 @@ export function Inspector() {
             Select a clip on the timeline to edit it, or drop media to begin.
           </div>
         ) : (
-          <InspectorBody clip={clip} />
+          <InspectorBody key={clip.id} clip={clip} />
         )}
       </div>
     </div>
   );
 }
 
-/** A selected audio track: where it sits, how loud it is, and a mute switch. */
+/**
+ * The Duration box's state and behaviour, shared by the clip card and the audio card.
+ *
+ * This is the one control in the app that does not commit on every keystroke, and
+ * deliberately: a numeric box passes through `""`, `"."` and `"1"` on the way to `"12"`,
+ * and committing each of those would clamp the item, destroy the number the user was
+ * halfway through, and write the project file. So it commits on Enter and on leaving the
+ * box, and Escape puts it back.
+ *
+ * `draft` is the whole of its state. While it is null the box shows the item's real length,
+ * so a render landing or an edit made elsewhere shows through a box nobody is typing in —
+ * no effect to keep the two in step. `asked` remembers what the last commit wanted, which
+ * is how the card can tell that the timeline handed back something else.
+ */
+function useDurationField(valueMs: number, commit: (durationMs: number) => void) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [asked, setAsked] = useState<number | null>(null);
+
+  const commitDraft = () => {
+    if (draft === null) return;
+    const wanted = parseDurationInput(draft);
+    // Whatever happens the box goes back to showing the item: a refused entry leaves the
+    // length alone, and an accepted one is re-read from the timeline, clamps included.
+    setDraft(null);
+    if (wanted === null) return;
+    setAsked(wanted);
+    commit(wanted);
+  };
+
+  return {
+    value: draft ?? durationInputValue(valueMs),
+    onChange: (e: ChangeEvent<HTMLInputElement>) => {
+      setDraft(e.target.value);
+      setAsked(null);
+    },
+    onBlur: commitDraft,
+    onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commitDraft();
+      } else if (e.key === 'Escape') {
+        // Escape is handled on `window` *before* the guard that leaves typing alone, so
+        // without this it would clear the box and close the film panel behind it.
+        e.stopPropagation();
+        setDraft(null);
+      }
+    },
+    /** The length that was asked for and not given — `null` while the box got its way. */
+    refusedMs: asked !== null && asked !== valueMs ? asked : null,
+  };
+}
+
+type DurationField = ReturnType<typeof useDurationField>;
+
+/** The Duration row: the same `.kv` shape as the rows around it, with the value typed. */
+function DurationRow({ id, field }: { id: string; field: DurationField }) {
+  return (
+    <div className="kv">
+      {/* The unit is on screen as the `s` beside the box; this is the same fact for a
+          screen reader, which would otherwise hear a bare number with no scale. */}
+      <label htmlFor={id}>
+        Duration<span className="visually-hidden"> in seconds</span>
+      </label>
+      <span className="num">
+        <input
+          id={id}
+          type="text"
+          inputMode="decimal"
+          autoComplete="off"
+          value={field.value}
+          onChange={field.onChange}
+          onBlur={field.onBlur}
+          onKeyDown={field.onKeyDown}
+        />
+        <span aria-hidden="true">s</span>
+      </span>
+    </div>
+  );
+}
+
+/** Why the timeline would not run this clip for as long as was asked. */
+function clipLimitNote(clip: Clip, sourceDurationMs: number | undefined): string {
+  if (clip.durationMs === MIN_CLIP_DURATION_MS) {
+    return `A clip runs for at least ${formatDuration(MIN_CLIP_DURATION_MS)}.`;
+  }
+  if (clip.kind === 'photo') {
+    return `A photo is held for at most ${MAX_PHOTO_DURATION_MS / 60_000} minutes.`;
+  }
+  if (sourceDurationMs === undefined) {
+    return 'Still reading this file’s length — it can only be shortened until that arrives.';
+  }
+  return `${clip.name} runs ${formatDuration(sourceDurationMs - clip.trimStartMs)} from here.`;
+}
+
+/** The same, for a sound: no photo cap, and its only ceiling is the file. */
+function audioLimitNote(track: AudioTrack, sourceDurationMs: number | undefined): string {
+  if (track.durationMs === MIN_CLIP_DURATION_MS) {
+    return `A sound runs for at least ${formatDuration(MIN_CLIP_DURATION_MS)}.`;
+  }
+  if (sourceDurationMs === undefined) {
+    return 'Still reading this file’s length — it can only be shortened until that arrives.';
+  }
+  return `${track.name} runs ${formatDuration(sourceDurationMs - track.trimStartMs)} from here.`;
+}
+
+/** A selected audio track: where it sits, how long it runs, how loud it is, and a mute switch. */
 function AudioCard({ track }: { track: AudioTrack }) {
+  const assets = useEditor((s) => s.assets);
   const setAudioVolume = useEditor((s) => s.setAudioVolume);
   const toggleAudioMute = useEditor((s) => s.toggleAudioMute);
+  const setAudioDuration = useEditor((s) => s.setAudioDuration);
+  const duration = useDurationField(track.durationMs, (ms) => setAudioDuration(track.id, ms));
 
   return (
     <div className="card">
@@ -70,10 +190,7 @@ function AudioCard({ track }: { track: AudioTrack }) {
           <span>Starts at</span>
           <b>{formatTimecode(track.startMs)}</b>
         </div>
-        <div className="kv">
-          <span>Duration</span>
-          <b>{formatDuration(track.durationMs)}</b>
-        </div>
+        <DurationRow id="audio-duration" field={duration} />
         <div className="kv">
           <span>Type</span>
           <b>audio</b>
@@ -90,9 +207,12 @@ function AudioCard({ track }: { track: AudioTrack }) {
         <button type="button" className="block-btn" onClick={() => toggleAudioMute(track.id)}>
           {track.muted ? '🔊 Unmute track' : '🔇 Mute track'}
         </button>
+        {duration.refusedMs !== null && (
+          <p className="hint">{audioLimitNote(track, assets[track.assetId]?.durationMs)}</p>
+        )}
         <p className="hint">
-          Drag the sound along its lane to move it, or its edges to trim it. Muted tracks are
-          left out of the export.
+          Type a length above, or drag the sound along its lane to move it and its edges to
+          trim it. Muted tracks are left out of the export.
         </p>
       </div>
     </div>
@@ -100,6 +220,10 @@ function AudioCard({ track }: { track: AudioTrack }) {
 }
 
 function InspectorBody({ clip }: { clip: Clip }) {
+  const assets = useEditor((s) => s.assets);
+  const setClipDuration = useEditor((s) => s.setClipDuration);
+  const duration = useDurationField(clip.durationMs, (ms) => setClipDuration(clip.id, ms));
+
   return (
     <>
       <div className="card">
@@ -111,10 +235,7 @@ function InspectorBody({ clip }: { clip: Clip }) {
             <span>Starts at</span>
             <b>{formatTimecode(clip.startMs)}</b>
           </div>
-          <div className="kv">
-            <span>Duration</span>
-            <b>{formatDuration(clip.durationMs)}</b>
-          </div>
+          <DurationRow id="clip-duration" field={duration} />
           <div className="kv">
             <span>Type</span>
             <b>{clip.ai ? 'AI generated' : clip.kind}</b>
@@ -126,6 +247,9 @@ function InspectorBody({ clip }: { clip: Clip }) {
             </div>
           )}
 
+          {duration.refusedMs !== null && (
+            <p className="hint">{clipLimitNote(clip, assets[clip.assetId]?.durationMs)}</p>
+          )}
           {clip.kind === 'photo' && (
             <p className="hint">
               Put another photo beside this one and tap the ✦ on their cut to bridge them with

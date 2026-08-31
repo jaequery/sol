@@ -6,6 +6,7 @@ import {
   canSplitAt,
   clipAt,
   endOfPrevious,
+  durationInputValue,
   formatDuration,
   formatTimecode,
   insertClips,
@@ -14,6 +15,7 @@ import {
   layout,
   moveAudio,
   packClips,
+  parseDurationInput,
   photoClip,
   placeClip,
   insertTransitionClip,
@@ -322,6 +324,45 @@ describe('resizing a clip', () => {
     expect(resizeClip(clip, 'end', 0)).toBe(clip);
     expect(resizeClip(clip, 'end', Number.NaN)).toBe(clip);
     expect(resizeClip(clip, 'start', 0.4)).toBe(clip);
+  });
+});
+
+describe('a typed length', () => {
+  it('seeds the box with a typed length that survives being handed straight back', () => {
+    expect(durationInputValue(5000)).toBe('5.0');
+    expect(durationInputValue(0)).toBe('0.0');
+    expect(durationInputValue(MIN_CLIP_DURATION_MS)).toBe('0.1');
+    expect(durationInputValue(600_000)).toBe('600.0');
+    // Not a round tenth: every millisecond is kept, or pressing Enter on an untouched box
+    // would quietly retime the clip to the value the box had rounded it to.
+    expect(durationInputValue(4237)).toBe('4.237');
+    expect(parseDurationInput(durationInputValue(4237))).toBe(4237);
+  });
+
+  it('reads a typed length in seconds, however it is spelled', () => {
+    expect(parseDurationInput('5')).toBe(5000);
+    expect(parseDurationInput('5.0')).toBe(5000);
+    expect(parseDurationInput(' 12 ')).toBe(12_000);
+    expect(parseDurationInput('5.')).toBe(5000);
+    expect(parseDurationInput('.5')).toBe(500);
+    expect(parseDurationInput('0.05')).toBe(50);
+    // Zero is a length; the resize is what floors it, exactly as dragging an edge shut is.
+    expect(parseDurationInput('0')).toBe(0);
+  });
+
+  it('refuses everything `Number` would have guessed at, rather than retiming on a typo', () => {
+    // An empty box is the dangerous one: `Number('')` is 0, so a stray Enter would floor
+    // the clip to the minimum.
+    expect(parseDurationInput('')).toBeNull();
+    expect(parseDurationInput('   ')).toBeNull();
+    expect(parseDurationInput('.')).toBeNull();
+    expect(parseDurationInput('abc')).toBeNull();
+    expect(parseDurationInput('-3')).toBeNull();
+    expect(parseDurationInput('1e3')).toBeNull();
+    expect(parseDurationInput('0x10')).toBeNull();
+    expect(parseDurationInput('Infinity')).toBeNull();
+    // A decimal comma is a different notation, not a length in this box.
+    expect(parseDurationInput('5,0')).toBeNull();
   });
 });
 

@@ -558,6 +558,29 @@ input {
   text-align: right;
   word-break: break-all;
 }
+/* A `.kv` value that is typed rather than read: the box is dressed as the `<b>` it stands
+   in for, so the card's rhythm does not change when a row becomes editable. */
+.kv .num {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink-3);
+}
+.kv .num input {
+  font: 600 10.5px/1 var(--mono);
+  color: var(--ink-2);
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 4px 6px;
+  width: 62px;
+  text-align: right;
+  outline: none;
+}
+.kv .num input:focus {
+  border-color: var(--accent-line);
+  color: var(--ink);
+}
 
 .prompt {
   width: 100%;

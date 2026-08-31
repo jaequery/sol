@@ -15,6 +15,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { useEditor } from './state/store';
+import { MAX_PHOTO_DURATION_MS } from './types/project';
 import { resetEditor } from './test/harness';
 import * as backend from './lib/backend';
 import type { GenerateInput, GenerationUpdate } from './lib/backend';
@@ -524,6 +525,112 @@ describe('inspector', () => {
     expect(useEditor.getState().audioTracks[0].muted).toBe(true);
     await user.click(screen.getByRole('button', { name: /unmute track/i }));
     expect(useEditor.getState().audioTracks[0].muted).toBe(false);
+  });
+
+  it('takes a typed length on a clip and pushes what is behind it along', async () => {
+    const user = userEvent.setup();
+    await mount();
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: 'sunset.jpg photo clip' }));
+
+    const box = screen.getByLabelText(/duration/i);
+    expect(box).toHaveValue('5.0');
+    await user.clear(box);
+    await user.type(box, '12{Enter}');
+
+    const clips = useEditor.getState().clips;
+    expect(clips[0].durationMs).toBe(12_000);
+    // One track cannot show two clips at once, so the photo behind it moved out of the way.
+    expect(clips[1].startMs).toBe(12_000);
+    expect(box).toHaveValue('12.0');
+  });
+
+  it('clamps a typed length the timeline will not give, and says what stopped it', async () => {
+    const user = userEvent.setup();
+    await mount();
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: 'sunset.jpg photo clip' }));
+
+    const box = screen.getByLabelText(/duration/i);
+    await user.clear(box);
+    await user.type(box, '900{Enter}');
+
+    expect(useEditor.getState().clips[0].durationMs).toBe(MAX_PHOTO_DURATION_MS);
+    expect(box).toHaveValue('600.0');
+    expect(screen.getByText(/at most 10 minutes/i)).toBeInTheDocument();
+  });
+
+  it('will not take a typed length past the end of a video’s source', async () => {
+    const user = userEvent.setup();
+    await mount();
+    await dropOnTimeline([file('surf.mp4', 'video/mp4')]);
+    const clip = await screen.findByRole('button', { name: 'surf.mp4 video clip' });
+    // The source length arrives from the probe a moment after the import.
+    await waitFor(() =>
+      expect(Object.values(useEditor.getState().assets)[0].durationMs).toBe(5000),
+    );
+    await user.click(clip);
+
+    const box = screen.getByLabelText(/duration/i);
+    await user.clear(box);
+    await user.type(box, '30{Enter}');
+
+    expect(useEditor.getState().clips[0].durationMs).toBe(5000);
+    expect(box).toHaveValue('5.0');
+    expect(screen.getByText(/surf\.mp4 runs 5\.0s from here/i)).toBeInTheDocument();
+  });
+
+  it('refuses a typed length that is not a length, and puts the box back', async () => {
+    const user = userEvent.setup();
+    await mount();
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: 'sunset.jpg photo clip' }));
+
+    const box = screen.getByLabelText(/duration/i);
+    await user.clear(box);
+    await user.type(box, 'abc{Enter}');
+    expect(useEditor.getState().clips[0].durationMs).toBe(5000);
+    expect(box).toHaveValue('5.0');
+
+    // An empty box is the dangerous one — `Number('')` is 0, which would floor the clip.
+    await user.clear(box);
+    await user.type(box, '{Enter}');
+    expect(useEditor.getState().clips[0].durationMs).toBe(5000);
+    expect(box).toHaveValue('5.0');
+  });
+
+  it('commits a typed length when the box is left, and carries it to no other clip', async () => {
+    const user = userEvent.setup();
+    await mount();
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: 'sunset.jpg photo clip' }));
+
+    const box = screen.getByLabelText(/duration/i);
+    await user.clear(box);
+    await user.type(box, '9');
+    // No Enter: selecting the other photo is what leaves the box.
+    await user.click(screen.getByRole('button', { name: 'cliff.png photo clip' }));
+
+    const clips = useEditor.getState().clips;
+    expect(clips[0].durationMs).toBe(9000);
+    expect(clips[1].durationMs).toBe(5000);
+    expect(screen.getByLabelText(/duration/i)).toHaveValue('5.0');
+  });
+
+  it('takes a typed length on an audio lane too, without moving the sound', async () => {
+    const user = userEvent.setup();
+    await mount();
+    mockPick('/media/theme.mp3', 'theme.mp3', 'audio');
+    await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+    await user.click(await screen.findByRole('button', { name: 'theme.mp3 audio track' }));
+
+    const box = screen.getByLabelText(/duration/i);
+    await user.clear(box);
+    await user.type(box, '3{Enter}');
+
+    const [track] = useEditor.getState().audioTracks;
+    expect(track.durationMs).toBe(3000);
+    expect(track.startMs).toBe(0);
   });
 
   it('a running generation can be cancelled, and a failed one dismissed', async () => {
