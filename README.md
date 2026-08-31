@@ -31,9 +31,10 @@ from one still into the other and drops it onto the timeline at that cut.
   mode**: the finished clip stands in the two photos' place — they leave the track (staying
   in the media bin) and the clip wears both source thumbnails side by side, so playback
   across that span is pure motion, never a still frame.
-- **A film from three photos — three images in, one .mp4 out.** **✦ New film from 3
-  photos** — in the title bar and in the empty timeline — opens a panel that takes exactly
+- **A film from three photos — three images in, one .mp4 out.** A panel takes exactly
   three photos, puts them in order, and offers a prompt per transition already filled in.
+  It has **no entry point in the UI right now** — the title bar's button went first and the
+  empty timeline's call to action second, and nothing replaced either.
   Generate runs the two Higgsfield transitions (photo 1 → 2 and 2 → 3) side by side and
   shows them landing leg by leg; the panel is not modal, so the editor stays usable while
   they render. When both are in, the film **puts itself on the timeline** — the two clips
@@ -115,7 +116,10 @@ dropped on the next save.)
 The shortest path through SolCut. The film is nothing but the AI transitions between the
 three photos, so no still is ever held on screen.
 
-1. **✦ New film from 3 photos**, from the empty timeline's drop zone.
+**The panel has no button to open it.** Both of its entry points were removed, and until one
+is put back the flow below is reachable only from `openFilmWizard` in the store.
+
+1. **The film panel opens.**
 2. **Drop or choose exactly three photos.** A fourth, or a video, is left out by name with
    the reason. ↑ / ↓ order them — slot order is the film's running order.
 3. **Both prompts arrive filled in.** Edit them or leave them; zero typing is required.

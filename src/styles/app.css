@@ -1570,19 +1570,3 @@ input {
   margin-top: var(--sp-2);
   padding: 6px;
 }
-
-/* The second way in, from the first-run timeline. */
-.dropzone__cta {
-  margin-top: 10px;
-  background: none;
-  border: 1px solid var(--accent-line);
-  color: var(--accent-2);
-  border-radius: var(--r);
-  padding: 5px 10px;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-}
-.dropzone__cta:hover {
-  background: var(--accent-wash);
-  color: #dcd3ff;
-}
