@@ -18,10 +18,18 @@
 //!    and [`Cli::download`] fetches the finished MP4 next to the project.
 //! 4. [`Cli::probe`] is the Settings dialog's connection check: `model list --video
 //!    --json`, which proves the binary, the login and the workspace in one free call.
+//!
+//! The [`credential`] module is the one part that does not go through the CLI: it holds
+//! the *Cloud API* key SolCut stores (a different credential, on a different host, against
+//! a different balance) and the free call that proves it. Nothing renders through it.
 
+mod credential;
 mod error;
 mod parse;
 
+pub use credential::{
+    check_credential, classify, mask, Credential, KeyVerdict, API_BASE_URL, AUTH_SCHEME,
+};
 pub use error::{HiggsfieldError, JobState, Result};
 pub use parse::{find_result_url, parse_create, parse_job, parse_model_count};
 
@@ -43,6 +51,22 @@ const CREATE_TIMEOUT: Duration = Duration::from_secs(300);
 /// A status read is one request; anything this slow is stuck.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(60);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How many times a spawn that lost the `ETXTBSY` race is retried, and how long it waits
+/// between goes. Both small: the condition clears as soon as the writer lets go, and the
+/// run's own timeout still bounds the whole thing.
+const SPAWN_RETRIES: u32 = 5;
+const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(40);
+
+/// Whether an io error is `ETXTBSY`, "text file busy" — the binary cannot be executed
+/// because someone holds it open for writing.
+///
+/// `ErrorKind` has no variant for it on stable, so it is matched by errno. Unix only;
+/// Windows refuses a busy executable with a sharing violation instead, which is not
+/// transient in the same way and is left to report itself.
+fn is_text_file_busy(error: &std::io::Error) -> bool {
+    cfg!(unix) && error.raw_os_error() == Some(26)
+}
 
 /// One "animate from this frame to that frame" job.
 ///
@@ -147,32 +171,52 @@ impl Cli {
     /// its refusals name their fix (`auth login`, `workspace set`, an unknown model id).
     /// Overrunning the budget kills the process and reports what was being asked.
     async fn run(&self, args: &[String], timeout: Duration) -> Result<String> {
-        let mut command = tokio::process::Command::new(&self.binary);
-        command
-            .args(args)
-            .arg("--json")
-            .arg("--no-color")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-
         let what = args
             .iter()
             .take(2)
             .map(String::as_str)
             .collect::<Vec<_>>()
             .join(" ");
-        let output = tokio::time::timeout(timeout, command.output())
-            .await
-            .map_err(|_| HiggsfieldError::Timeout {
-                what: what.clone(),
-                secs: timeout.as_secs(),
-            })?
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => HiggsfieldError::NotInstalled,
-                _ => HiggsfieldError::Io(format!("could not run the Higgsfield CLI: {e}")),
-            })?;
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut attempt = 0;
+        let output = loop {
+            let mut command = tokio::process::Command::new(&self.binary);
+            command
+                .args(args)
+                .arg("--json")
+                .arg("--no-color")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+
+            let spawned = tokio::time::timeout_at(deadline, command.output())
+                .await
+                .map_err(|_| HiggsfieldError::Timeout {
+                    what: what.clone(),
+                    secs: timeout.as_secs(),
+                })?;
+
+            match spawned {
+                Ok(output) => break output,
+                // `ETXTBSY` — the binary has a writer. It is transient by construction:
+                // `npm i -g @higgsfield/cli` replacing the CLI underneath us hits it, and
+                // so does any fork in a neighbouring thread that momentarily inherited a
+                // write handle to it. Retrying is the whole fix; failing here would report
+                // a perfectly good install as unrunnable.
+                Err(e) if is_text_file_busy(&e) && attempt < SPAWN_RETRIES => {
+                    attempt += 1;
+                    tokio::time::sleep(SPAWN_RETRY_DELAY).await;
+                }
+                Err(e) => {
+                    return Err(match e.kind() {
+                        std::io::ErrorKind::NotFound => HiggsfieldError::NotInstalled,
+                        _ => HiggsfieldError::Io(format!("could not run the Higgsfield CLI: {e}")),
+                    })
+                }
+            }
+        };
 
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         if output.status.success() {
@@ -500,6 +544,25 @@ mod tests {
         std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(executable_in(&dir), Some(plain));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The retry has to fire for `ETXTBSY` and for nothing else — a missing binary or a
+    /// permission problem is a real answer, and retrying it five times would only delay
+    /// reporting it.
+    #[test]
+    fn only_a_busy_binary_is_worth_another_spawn() {
+        use std::io::{Error, ErrorKind};
+
+        assert_eq!(
+            is_text_file_busy(&Error::from_raw_os_error(26)),
+            cfg!(unix),
+            "ETXTBSY is the transient one"
+        );
+        assert!(!is_text_file_busy(&Error::from(ErrorKind::NotFound)));
+        assert!(!is_text_file_busy(&Error::from(
+            ErrorKind::PermissionDenied
+        )));
+        assert!(!is_text_file_busy(&Error::from_raw_os_error(2)));
     }
 
     #[test]

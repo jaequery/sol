@@ -170,7 +170,12 @@ export interface EditorState {
 
   settings: backend.SettingsView | null;
   settingsOpen: boolean;
-  connectionMessage: { ok: boolean; text: string } | null;
+  /**
+   * The last thing a connection or key check said. `title` overrides the box's heading —
+   * the API key check reports its own, because "Could not connect" is the wrong words for
+   * a key on a machine whose CLI is fine.
+   */
+  connectionMessage: { ok: boolean; text: string; title?: string } | null;
 
   /**
    * Why the last autosave failed, or `null` while it is working.
@@ -257,6 +262,7 @@ export interface EditorState {
   closeSettings: () => void;
   saveSettings: (input: backend.SettingsInput) => Promise<void>;
   testConnection: () => Promise<void>;
+  testApiKey: (input: backend.SettingsInput) => Promise<void>;
   runExport: () => Promise<void>;
   setExportProgress: (stage: string, fraction: number) => void;
   pushToast: (toast: Omit<Toast, 'id'>) => void;
@@ -1102,6 +1108,29 @@ export const useEditor = create<EditorState>((set, get) => ({
       set({ connectionMessage: { ok: true, text: await backend.testConnection() } });
     } catch (error) {
       set({ connectionMessage: { ok: false, text: message(error) } });
+    }
+  },
+
+  /**
+   * Prove the API key, which is a different credential from the CLI's — so it reports
+   * under its own heading and never touches what `testConnection` said about the CLI.
+   *
+   * The backend answers with a verdict rather than by throwing, because "the key was
+   * refused" and "the check could not be made" are different things and only the second
+   * is an error. A throw here is the bridge itself failing (a browser, no desktop shell).
+   */
+  async testApiKey(input) {
+    try {
+      const check = await backend.testApiKey(input);
+      set({ connectionMessage: { ok: check.ok, title: check.title, text: check.text } });
+    } catch (error) {
+      set({
+        connectionMessage: {
+          ok: false,
+          title: 'Could not prove the API key',
+          text: message(error),
+        },
+      });
     }
   },
 

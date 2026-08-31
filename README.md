@@ -33,9 +33,10 @@ from one still into the other and drops it onto the timeline at that cut.
   mode**: the finished clip stands in the two photos' place — they leave the track (staying
   in the media bin) and the clip wears both source thumbnails side by side, so playback
   across that span is pure motion, never a still frame.
-- **A film from three photos — three images in, one .mp4 out.** **✦ New film from 3
-  photos** — in the title bar and in the empty timeline — opens a panel that takes exactly
+- **A film from three photos — three images in, one .mp4 out.** A panel takes exactly
   three photos, puts them in order, and offers a prompt per transition already filled in.
+  It has **no entry point in the UI right now** — the title bar's button went first and the
+  empty timeline's call to action second, and nothing replaced either.
   Generate runs the two Higgsfield transitions (photo 1 → 2 and 2 → 3) side by side and
   shows them landing leg by leg; the panel is not modal, so the editor stays usable while
   they render. When both are in, the film **puts itself on the timeline** — the two clips
@@ -79,7 +80,9 @@ sudo apt install pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
 Renders run through the **official Higgsfield CLI**
 ([github.com/higgsfield-ai/cli](https://github.com/higgsfield-ai/cli)), signed in to your
 higgsfield.ai account — so generations bill your **subscription's workspace**, not the
-pay-per-token API platform, and the app itself holds no credential at all. In a terminal:
+pay-per-token API platform, and the render path itself holds no credential at all
+(Settings can also keep a Cloud **API key**, but nothing renders through it — see
+[below](#the-api-key-which-is-a-different-credential)). In a terminal:
 
 ```bash
 npm i -g @higgsfield/cli
@@ -114,16 +117,48 @@ click on the same card.
 
 A **custom model** stays editable in the dialog, so any other job type the catalog offers
 (`higgsfield model list --video`) can be pointed at without shipping a new build: the id
-typed here appears in every Model selector as its **Custom** entry. (Settings files saved
-by earlier builds stored API-platform keys and endpoints; they load harmlessly and are
-dropped on the next save.)
+typed here appears in every Model selector as its **Custom** entry.
+
+### The API key, which is a different credential
+
+The same dialog also holds a **Higgsfield API key** — the `key_id` / `key_secret` pair
+minted at [cloud.higgsfield.ai](https://cloud.higgsfield.ai). It is worth being blunt
+about what it is and is not:
+
+|  | The CLI | The API key |
+|---|---|---|
+| Host | `fnf-api-gw.higgsfield.ai` | `api.higgsfield.ai` |
+| Authenticates with | an OAuth login on your higgsfield.ai account | `Authorization: Key {id}:{secret}` |
+| Bills | your subscription's plan credits | a separate Cloud balance |
+
+They are two systems, and the CLI has no notion of an API key at all — it carries no
+`--api-key` flag and reads no credential from the environment. **Renders go through the
+CLI**, so the key is not what generates: SolCut keeps it so it can be set in one place and
+proved on demand.
+
+Both halves are needed, and both are stored by the desktop backend in an owner-only file
+that never reaches the app window — Settings only ever shows a `••••7fa2` mask and whether
+a key is held. Pasting the whole `key_id:key_secret` string into the ID box works too; it
+is split back apart. **Test key** asks the documented read-only route,
+`GET /requests/{request_id}/status`, about a request id that belongs to nobody: a `404`
+means the credential authenticated, a `401` means it did not (quoting Higgsfield's own
+words), a `403` means the account would not serve the call — usually an empty balance
+rather than a bad key — and anything else is reported as inconclusive rather than as a
+pass. Nothing is generated and nothing is charged. It proves the key in the boxes overlaid
+on the stored one, so a key can be checked before it is saved, and **Forget key** removes
+a stored one. (Settings files saved by earlier builds stored the same key beside a base
+URL and a model endpoint: the key is read back, and the two routing fields — which served
+a submit path that no longer exists — are dropped on the next save.)
 
 ## Three photos to an .mp4
 
 The shortest path through SolCut. The film is nothing but the AI transitions between the
 three photos, so no still is ever held on screen.
 
-1. **✦ New film from 3 photos**, from the empty timeline's drop zone.
+**The panel has no button to open it.** Both of its entry points were removed, and until one
+is put back the flow below is reachable only from `openFilmWizard` in the store.
+
+1. **The film panel opens.**
 2. **Drop or choose exactly three photos.** A fourth, or a video, is left out by name with
    the reason. ↑ / ↓ order them — slot order is the film's running order.
 3. **Both prompts arrive filled in.** Edit them or leave them; zero typing is required.
@@ -140,8 +175,9 @@ three photos, so no still is ever held on screen.
 
 Two transitions give a film of about 10 s at 5 s a leg — the model decides the exact
 length, and the timeline takes it from the file. There is **no local fallback**: with no
-Higgsfield credential the panel refuses up front and sends nothing, and export refuses
-without ffmpeg on `PATH` rather than writing half a file.
+Higgsfield CLI on the machine the panel refuses up front and sends nothing — a stored API
+key is not a substitute, because it is not what renders — and export refuses without
+ffmpeg on `PATH` rather than writing half a file.
 
 ## Checks
 
@@ -160,6 +196,16 @@ plus a check that the default model `seedance_2_5` is in your account's catalog:
 
 ```bash
 cargo test -p solcut-higgsfield --test live -- --nocapture
+```
+
+The same opt-in file proves a **Cloud API key** against the real platform when one is in
+the environment — one free, read-only call that generates nothing. With no key set it says
+so and passes:
+
+```bash
+HF_API_KEY_ID=… HF_API_KEY_SECRET=… cargo test -p solcut-higgsfield --test live -- --nocapture
+# or, as Higgsfield's own SDKs carry it:
+HF_KEY=key_id:key_secret cargo test -p solcut-higgsfield --test live -- --nocapture
 ```
 
 With no CLI installed (or one that is not signed in) it says so and passes, so it is safe

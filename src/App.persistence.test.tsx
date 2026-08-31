@@ -36,6 +36,7 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   getSettings: async () => ({ configured: true, cliPath: '/usr/local/bin/higgsfield', customModel: '' }),
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
+  testApiKey: vi.fn(),
   importPaths: vi.fn(),
   loadProject: vi.fn(),
   saveProject: vi.fn(),

@@ -26,9 +26,12 @@ vi.mock('../lib/backend', async (importOriginal) => ({
     configured: true,
     cliPath: '/usr/local/bin/higgsfield',
     customModel: '',
+    hasApiKey: false,
+    apiKeyIdHint: '',
   }),
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
+  testApiKey: vi.fn(),
   importPaths: vi.fn(async () => ({ imported: [], rejected: [] })),
   // Persistence is desktop-only and every suite starts from a fresh, empty project.
   loadProject: vi.fn(async () => null),
@@ -57,6 +60,8 @@ const CONNECTED = {
   configured: true,
   cliPath: '/usr/local/bin/higgsfield',
   customModel: '',
+  hasApiKey: false,
+  apiKeyIdHint: '',
 };
 
 function photo(id: string): MediaAsset {

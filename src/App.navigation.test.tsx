@@ -26,6 +26,8 @@ const STORED_SETTINGS = {
   configured: true,
   cliPath: '/usr/local/bin/higgsfield',
   customModel: '',
+  hasApiKey: false,
+  apiKeyIdHint: '',
 };
 let storedSettings = { ...STORED_SETTINGS };
 /** Mutable so the browser-only branches are reachable, unlike the hard `true` next door. */
@@ -41,6 +43,7 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   getSettings: async () => storedSettings,
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
+  testApiKey: vi.fn(),
   importPaths: vi.fn(async () => ({ imported: [], rejected: [] })),
   // Persistence is desktop-only and every suite starts from a fresh, empty project.
   loadProject: vi.fn(async () => null),
@@ -133,11 +136,6 @@ describe('title bar', () => {
     await user.click(screen.getByRole('button', { name: 'Settings' }));
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
-
-    expect(
-      screen.queryAllByRole('button', { name: '✦ New film from 3 photos' }),
-      'the film panel is opened from the empty timeline, not from the bar',
-    ).toHaveLength(1);
   });
 
   it('offers no Import of its own — media intake belongs to the bin', async () => {
@@ -565,9 +563,11 @@ describe('settings dialog', () => {
     await mount();
     await user.click(screen.getByRole('button', { name: 'Settings' }));
 
-    const field = screen.getByLabelText('Custom model');
-    expect(field).toHaveFocus();
+    // The credential is the first thing the dialog asks for, as it was before generation
+    // moved to the CLI — the custom model below it is the escape hatch, not the headline.
+    expect(screen.getByLabelText('API key ID')).toHaveFocus();
 
+    const field = screen.getByLabelText('Custom model');
     await user.type(field, 'wan2_7');
     expect(field).toHaveValue('wan2_7');
 
@@ -668,15 +668,17 @@ describe('film wizard', () => {
     });
   }
 
-  async function openWizard(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(screen.getByRole('button', { name: '✦ New film from 3 photos' }));
+  // No button opens the panel any more — the empty timeline's call to action is gone — so
+  // this is the store action that button called, the same one the film flow reopens it with.
+  async function openWizard() {
+    await act(async () => useEditor.getState().openFilmWizard());
     return screen.getByRole('dialog', { name: 'New film from 3 photos' });
   }
 
   it('photos can be reordered and removed before generating', async () => {
     const user = userEvent.setup();
     await mount();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard(photos());
 
     await user.click(await screen.findByRole('button', { name: 'Move three.jpg earlier' }));
@@ -690,7 +692,7 @@ describe('film wizard', () => {
   it('Choose photos reaches the desktop picker', async () => {
     const user = userEvent.setup();
     await mount();
-    await openWizard(user);
+    await openWizard();
     vi.mocked(backend.pickMediaFiles).mockResolvedValue([]);
 
     await user.click(screen.getByRole('button', { name: 'Choose photos' }));
@@ -700,7 +702,7 @@ describe('film wizard', () => {
   it('a refused file is named, and the notice can be dismissed', async () => {
     const user = userEvent.setup();
     await mount();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard([file('clip.mp4', 'video/mp4')]);
 
     const notice = await screen.findByRole('alert');
@@ -712,13 +714,13 @@ describe('film wizard', () => {
   it('the footer Close leaves the panel, and the film keeps its state', async () => {
     const user = userEvent.setup();
     await mount();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard(photos());
 
     await user.click(screen.getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog', { name: 'New film from 3 photos' })).not.toBeInTheDocument();
 
-    await openWizard(user);
+    await openWizard();
     // The user's own three photos survive a close; only the last run's complaints do not.
     expect(screen.getByRole('button', { name: 'Generate film' })).toBeEnabled();
   });
@@ -726,7 +728,7 @@ describe('film wizard', () => {
   it('regression — reopening after a failure does not show the stale error', async () => {
     const user = userEvent.setup();
     await mount();
-    await openWizard(user);
+    await openWizard();
     // Through the picker rather than a drop: only a path-bearing pick reaches the importer,
     // which is the step being made to fail.
     vi.mocked(backend.pickMediaFiles).mockResolvedValue(['/p/one.jpg', '/p/two.jpg', '/p/three.jpg']);
@@ -738,7 +740,7 @@ describe('film wizard', () => {
     expect(await screen.findByText(/the film could not start/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Close the film panel' }));
-    await openWizard(user);
+    await openWizard();
     // The panel is hidden by an early return rather than unmounted, so this used to be the
     // previous attempt's error box, sitting there as if it had just happened.
     expect(screen.queryByText(/the film could not start/i)).not.toBeInTheDocument();
@@ -747,7 +749,7 @@ describe('film wizard', () => {
   it('regression — Export film is gone once the film is no longer on the timeline', async () => {
     const user = userEvent.setup();
     await mount();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard(photos());
     await user.click(screen.getByRole('button', { name: 'Generate film' }));
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(2));
@@ -782,7 +784,7 @@ describe('film wizard', () => {
   it('a running film can be cancelled from the panel', async () => {
     const user = userEvent.setup();
     await mount();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard(photos());
     await user.click(screen.getByRole('button', { name: 'Generate film' }));
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(2));
@@ -794,7 +796,7 @@ describe('film wizard', () => {
   it('Start over clears the run and returns to the picker', async () => {
     const user = userEvent.setup();
     await mount();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard(photos());
     await user.click(screen.getByRole('button', { name: 'Generate film' }));
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(2));
@@ -898,7 +900,7 @@ describe('keyboard', () => {
   it('regression — Escape closes one layer at a time, innermost first', async () => {
     const user = userEvent.setup();
     await mount();
-    await user.click(screen.getByRole('button', { name: '✦ New film from 3 photos' }));
+    await act(async () => useEditor.getState().openFilmWizard());
     await user.click(screen.getByRole('button', { name: 'Settings' }));
 
     await act(async () => fireEvent.keyDown(document.body, { key: 'Escape' }));
