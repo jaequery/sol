@@ -1061,14 +1061,14 @@ describe('the 3-photo film wizard', () => {
     customModel: '',
   };
 
-  /** Both ways in carry the same label: the title bar's, then the empty timeline's. */
-  const entryPoints = () => screen.getAllByRole('button', { name: '✦ New film from 3 photos' });
+  /** The one way in: the empty timeline's own call to action. */
+  const entryPoint = () => screen.getByRole('button', { name: '✦ New film from 3 photos' });
 
   /** Open the panel and wait for the settings load to have landed. */
-  async function openWizard(user: ReturnType<typeof userEvent.setup>, from = 0) {
+  async function openWizard(user: ReturnType<typeof userEvent.setup>) {
     render(<App />);
     await waitFor(() => expect(useEditor.getState().settings).not.toBeNull());
-    await user.click(entryPoints()[from]);
+    await user.click(entryPoint());
     return screen.getByRole('dialog', { name: 'New film from 3 photos' });
   }
 
@@ -1098,14 +1098,13 @@ describe('the 3-photo film wizard', () => {
     return (call as [GenerateInput])[0];
   }
 
-  it('opens from the title bar and from the empty timeline alike', async () => {
+  it('opens from the empty timeline, the one place a first run meets it', async () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => expect(useEditor.getState().settings).not.toBeNull());
-    expect(entryPoints()).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: '✦ New film from 3 photos' })).toHaveLength(1);
 
-    // The empty-timeline CTA, which is the one a first run actually sees.
-    await user.click(entryPoints()[1]);
+    await user.click(entryPoint());
     expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).toBeInTheDocument();
 
     // Closing only hides the panel — it is a way out, not a cancel.
