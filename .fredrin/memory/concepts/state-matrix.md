@@ -23,8 +23,8 @@ hi-fi walkthrough artifact.
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
 | 7 | **Nothing selected** | First run, or the selected clip was deleted | Inspector shows an explanatory empty state, not a blank panel. The 🗑 button and the Delete key are both dark — as they also are on a selected **cut**, which is a place rather than a thing and has nothing to delete. *(Clicking anywhere on the timeline — ruler, bare track, clip, or lane — cues the playhead; it does not clear the selection.)* | Select a clip |
-| 8 | **Video clip selected** | Click a video clip | Inspector shows clip info + trim; there is nothing AI to offer on a plain video | Select a photo, or a cut |
-| 9 | **Photo clip selected** | Click a photo clip | Inspector shows clip info and a hint pointing at the ✦ chip: put another photo beside it and bridge the cut with an AI transition (section 8) | Select a cut |
+| 8 | **Video clip selected** | Click a video clip | Inspector shows clip info, with **Duration** editable in seconds (state 38a); there is nothing AI to offer on a plain video | Select a photo, or a cut |
+| 9 | **Photo clip selected** | Click a photo clip | The same card, plus a hint pointing at the ✦ chip: put another photo beside it and bridge the cut with an AI transition (section 8) | Select a cut |
 
 ## 3. Generation (Higgsfield)
 
@@ -82,6 +82,7 @@ other clip along instead of stacking on it.
 | 36 | **Resizing** | Drag either edge handle | The clip's new length is previewed live. A tail growing into the next clip pushes it along; a shrinking tail leaves a gap rather than dragging anything back. A video's `trimStartMs` walks with its head, and the head moves the clip's own start so its tail stays on the frame it was on | Release |
 | 37 | **Resize refused at a limit** | Dragging past a bound | The edge simply stops: a video cannot pass the first or last frame of its source (nor grow at all before its length is probed), a clip cannot go under 100 ms, a photo cannot pass 10 minutes, and a head cannot be pulled back past 0:00 or past the clip in front of it | Drag the other way |
 | 38 | **Moving or trimming without a mouse** | Clip or handle focused, ← / → | The same edit at 100 ms a press, or 1 s with Shift — the body slides the clip, a handle moves that edge | Tab away |
+| 38a | **Typing a length** | Type seconds into the inspector's **Duration** box and press Enter, or leave the box | The tail edit of state 36 without the gesture, and bounded by exactly the same walls (37): growing pushes what is behind it, shrinking leaves a gap. It is the one control in the app that does not commit as you type — `""`, `"."` and `"1"` are all on the way to `"12"` — and a value that is not a length at all (empty, `abc`, `-3`) is refused rather than guessed at. A length the track will not give comes back clamped, with one line naming the wall it hit | Escape puts the box back; Enter or leaving it commits |
 
 ## 7. Audio lanes
 
@@ -95,6 +96,7 @@ Each lane holds one sound.
 | 40 | **Unsupported audio file** | A file no lane can play (e.g. `.aiff`) | The same inline error row as state 5, naming the file and the accepted formats; nothing is added | Dismiss, or re-import |
 | 41 | **Moving a sound** | Press its body and travel ≥ 4 px | The sound rides with the cursor along its lane — position previews live; it cannot start before 0:00. Arrow keys nudge it without a mouse | Release |
 | 42 | **Trimming a sound** | Drag either edge | Like a video: the head walks the in-point so the sound stays on the samples it was on, the tail cannot pass the end of the source, and nothing grows before the length is probed | Release |
+| 42a | **Typing a sound's length** | The inspector's **Duration** box on a selected lane | State 38a, on a lane: the tail edit only, so the sound stays where it was put, clamped to the file behind it. No lane pushes another — they float free and may overlap | Escape puts the box back; Enter or leaving it commits |
 | 43 | **Muted lane** | 🔇 on the lane or the inspector | The lane dims and struck through; it is silent in preview and left out of the export entirely | Unmute |
 | 44 | **Sound outlasts the visuals** | A lane's end passes the last clip | The ruler and playback extend to the end of the sound, so it is still heard; the *export* is the film's length, and the sound is cut there | Trim, or move it |
 | 45 | **Audio media offline** | Source file gone since import | The lane block turns red with "media offline"; export is blocked with a pointer to the file | Re-import, or remove |
