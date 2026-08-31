@@ -584,28 +584,21 @@ input {
   border-color: var(--accent-line);
   color: var(--ink);
 }
-/* The cut card's insert/replace pick: two plain options, the chosen one in the same
-   accent wash the toolbar's on-states wear. The card's only new control. */
-.mode {
-  display: flex;
-  gap: 6px;
-  margin-top: var(--sp-2);
-  margin-bottom: var(--sp-2);
+/* The cut card's secondary mode, kept out of the way as a quiet text action rather than a
+   control row — the default needs no control at all. */
+.linklike {
+  display: block;
+  margin: 7px auto 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 11px;
+  color: var(--ink-3);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
-.mode__opt {
-  flex: 1;
-  padding: 6px;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--ink-2);
-  border: 1px solid var(--line);
-  background: var(--sunken);
-  border-radius: var(--r-sm);
-}
-.mode__opt--on {
-  background: var(--accent-dim);
-  border-color: var(--accent-line);
-  color: #cbbcff;
+.linklike:hover {
+  color: var(--accent-2);
 }
 
 .block-btn {

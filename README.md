@@ -4,7 +4,8 @@ A simplified CapCut-style video editor for the desktop, built with **Tauri 2**.
 
 One timeline. Drop photos and videos onto it side by side. Select the cut between two
 photos and describe the motion in words — **Higgsfield** renders a real video transition
-from one still into the other and drops it onto the timeline at that cut.
+from one still into the other and stands it in the photos' place on the timeline, so the
+cut plays as pure motion rather than stills padded around an animation.
 
 ## What it does
 
@@ -26,13 +27,16 @@ from one still into the other and drops it onto the timeline at that cut.
 - **Prompt-driven AI transitions.** A ✦ chip stands on every cut between two photos —
   touching, or across a gap dragged open between them. Select it, describe the motion (or
   leave the default), and the two photos are rendered to stills and sent to Higgsfield as
-  the first and last frame of the generation. The finished MP4 lands at the cut; the
-  photos themselves are the anchor frames, so nothing else needs setting up. A **Model**
-  selector on the same card picks which model renders it — **Seedance 2.5** unless another
-  is chosen — and the pick rides with that render alone. The card also offers a **replace
-  mode**: the finished clip stands in the two photos' place — they leave the track (staying
-  in the media bin) and the clip wears both source thumbnails side by side, so playback
-  across that span is pure motion, never a still frame.
+  the first and last frame of the generation; the photos themselves are the anchor frames,
+  so nothing else needs setting up. The finished MP4 **stands in the two photos' place**:
+  they leave the track (staying in the media bin) and the clip wears both source
+  thumbnails side by side, so playback across that span is pure motion, never a still
+  frame. A **Model** selector on the same card picks which model renders it — **Seedance
+  2.5** unless another is chosen — and the pick rides with that render alone. A quiet
+  per-cut action keeps the photos on the track instead, inserting the finished clip
+  between them. **✦ Animate all** fills every cut in one go, landing leg by leg — and once
+  every leg has resolved, the run's photos leave the track too, so the whole chain ends as
+  back-to-back animation.
 - **A film from three photos — three images in, one .mp4 out.** A panel takes exactly
   three photos, puts them in order, and offers a prompt per transition already filled in.
   It has **no entry point in the UI right now** — the title bar's button went first and the

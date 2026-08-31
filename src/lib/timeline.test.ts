@@ -18,6 +18,7 @@ import {
   placeClip,
   insertTransitionClip,
   photoCuts,
+  removeClipsClosingSpans,
   replacePairWithTransition,
   replaceTransitionClip,
   resetIds,
@@ -628,6 +629,72 @@ describe('cuts & transitions', () => {
         a,
         between,
         shifted,
+      ]);
+    });
+  });
+
+  describe('removeClipsClosingSpans', () => {
+    /** a(0–2000) · t1(2000–5000) · b(5000–8000): the shape an insert landing leaves. */
+    function chain(): [Clip, Clip, Clip] {
+      return [
+        photoClip({ id: 'asset_a', name: 'a.jpg' }, 2000, 0),
+        videoClip({ id: 'asset_t1', name: 't1.mp4' }, 3000, 2000),
+        photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000, 5000),
+      ];
+    }
+
+    it('closes the removed span: everything after walks left by its duration', () => {
+      const [a, t1, b] = chain();
+      const result = removeClipsClosingSpans([a, t1, b], [a.id]);
+      expect(result.map((c) => [c.id, c.startMs])).toEqual([
+        [t1.id, 0],
+        [b.id, 3000],
+      ]);
+    });
+
+    it('accumulates shifts across multiple removals', () => {
+      // a · t1 · b · t2 · c — the two-cut animate chain; both photos and the tail go.
+      const [a, t1, b] = chain();
+      const t2 = videoClip({ id: 'asset_t2', name: 't2.mp4' }, 4000, 8000);
+      const c = photoClip({ id: 'asset_c', name: 'c.jpg' }, 1000, 12_000);
+
+      const result = removeClipsClosingSpans([a, t1, b, t2, c], [a.id, b.id, c.id]);
+      expect(result.map((x) => [x.id, x.startMs])).toEqual([
+        [t1.id, 0],
+        [t2.id, 3000],
+      ]);
+    });
+
+    it('keeps user gaps elsewhere in shape', () => {
+      // A 1 s gap the user dragged open in front of d survives the span closing before it.
+      const [a, t1, b] = chain();
+      const d = photoClip({ id: 'asset_d', name: 'd.jpg' }, 1000, 9000);
+
+      const result = removeClipsClosingSpans([a, t1, b, d], [b.id]);
+      expect(result.map((x) => [x.id, x.startMs])).toEqual([
+        [a.id, 0],
+        [t1.id, 2000],
+        [d.id, 6000],
+      ]);
+    });
+
+    it('never moves a clip that sits before the removal', () => {
+      const [a, t1, b] = chain();
+      const result = removeClipsClosingSpans([a, t1, b], [b.id]);
+      expect(result.map((x) => [x.id, x.startMs])).toEqual([
+        [a.id, 0],
+        [t1.id, 2000],
+      ]);
+    });
+
+    it('unknown ids are no-ops', () => {
+      const [a, t1, b] = chain();
+      expect(removeClipsClosingSpans([a, t1, b], ['nope'])).toEqual([a, t1, b]);
+      expect(removeClipsClosingSpans([a, t1, b], [])).toEqual([a, t1, b]);
+      // A mix removes what it knows and ignores the rest.
+      expect(removeClipsClosingSpans([a, t1, b], ['nope', a.id]).map((x) => x.id)).toEqual([
+        t1.id,
+        b.id,
       ]);
     });
   });

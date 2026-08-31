@@ -86,6 +86,8 @@ export function Timeline() {
   const resizeAudioTrack = useEditor((s) => s.resizeAudioTrack);
   const toggleAudioMute = useEditor((s) => s.toggleAudioMute);
   const animateAll = useEditor((s) => s.animateAll);
+  const animateQueue = useEditor((s) => s.animateQueue);
+  const animateRun = useEditor((s) => s.animateRun);
   const settings = useEditor((s) => s.settings);
 
   const trackRef = useRef<HTMLDivElement>(null);
@@ -439,7 +441,7 @@ export function Timeline() {
         >
           ♪ Add audio
         </button>
-        {animatable.length > 0 && (
+        {animatable.length > 0 && animateQueue === null && animateRun === null && (
           <button
             type="button"
             className="tool tool--wide tool--on"
@@ -1003,12 +1005,12 @@ function CutChip({
       className={classes}
       style={{ left: toPx(cut.timeMs) }}
       aria-label={`Select the cut between ${nameA} and ${nameB}`}
+      // Mode-neutral: the chip cannot see the cut's pick, so it promises the bridge, not
+      // where the finished clip lands.
       title={
         offline
           ? 'A photo on this cut has no media — re-import it first'
-          : cut.gapMs > 0
-            ? `Generate an AI transition to fill the ${formatDuration(cut.gapMs)} gap between ${nameA} and ${nameB}`
-            : `Generate an AI transition between ${nameA} and ${nameB}`
+          : `Bridge ${nameA} and ${nameB} with an AI motion transition`
       }
       disabled={offline}
       onPointerDown={(e) => e.stopPropagation()}
