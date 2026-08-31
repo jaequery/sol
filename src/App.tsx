@@ -11,6 +11,7 @@ import { Toasts } from './components/Toasts';
 import { TitleBar } from './components/TitleBar';
 import { Transport } from './components/Transport';
 import { onExportProgress, onGenerationUpdate } from './lib/backend';
+import { nextPlayheadMs } from './lib/preview-sync';
 import { useEditor } from './state/store';
 
 export function App() {
@@ -68,10 +69,18 @@ function useBackendEvents() {
   }, [applyGenerationUpdate, setExportProgress, loadSettings]);
 }
 
-/** Drives the playhead while playing, using real elapsed time rather than a fixed step. */
+/**
+ * Drives the playhead while playing.
+ *
+ * The wall clock is only the fallback: inside a playing video clip the element itself is
+ * the master (`nextPlayheadMs`), so the timecode can never outrun the frame on screen and
+ * a buffering video holds the playhead instead of falling behind it. `last = now` must
+ * run unconditionally every tick — time spent held by a buffering element is discarded,
+ * not accumulated, or releasing the hold would jump the playhead by the whole hold and
+ * force the very seek the hold exists to avoid.
+ */
 function usePlaybackClock() {
   const playing = useEditor((s) => s.playing);
-  const advance = useEditor((s) => s.advance);
   const frame = useRef<number>(0);
 
   useEffect(() => {
@@ -79,13 +88,15 @@ function usePlaybackClock() {
     let last = performance.now();
 
     const tick = (now: number) => {
-      advance(now - last);
+      const delta = now - last;
       last = now;
+      const s = useEditor.getState();
+      s.advance(nextPlayheadMs(s.playheadMs, delta, s.clips, now) - s.playheadMs);
       frame.current = requestAnimationFrame(tick);
     };
     frame.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame.current);
-  }, [playing, advance]);
+  }, [playing]);
 }
 
 /** Anything that consumes a keypress itself — a shortcut must not talk over it. */
