@@ -1,4 +1,4 @@
-import { useEditor } from '../state/store';
+import { resolveCutMode, useEditor } from '../state/store';
 import {
   DEFAULT_TRANSITION_PROMPT,
   type AudioTrack,
@@ -267,6 +267,7 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
   const generations = useEditor((s) => s.generations);
   const cutPrompts = useEditor((s) => s.cutPrompts);
   const cutModes = useEditor((s) => s.cutModes);
+  const animateRun = useEditor((s) => s.animateRun);
   const setCutPrompt = useEditor((s) => s.setCutPrompt);
   const setCutMode = useEditor((s) => s.setCutMode);
   const startCutGeneration = useEditor((s) => s.startCutGeneration);
@@ -291,7 +292,10 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
   }
 
   const prompt = cutPrompts[`${a.id}:${b.id}`] ?? '';
-  const mode = cutModes[`${a.id}:${b.id}`] ?? 'insert';
+  const mode = resolveCutMode({ cutModes, animateRun }, a.id, b.id);
+  // The run flips the *fallback* to insert (a replace landing would consume clips out from
+  // under the legs still behind it); an explicit pick is always the user's own.
+  const runFlipped = animateRun !== null && cutModes[`${a.id}:${b.id}`] === undefined;
   const connected = settings?.configured ?? false;
   const assetA = assets[a.assetId];
   const assetB = assets[b.assetId];
@@ -304,30 +308,17 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
       <div className="card__body">
         <p className="hint" style={{ marginTop: 0 }}>
           Higgsfield animates from the last frame of <b>{a.name}</b> to the first frame of{' '}
-          <b>{b.name}</b>.
-          {gapMs > 0 && mode === 'insert' && (
-            <> The finished clip fills the {formatDuration(gapMs)} gap between them.</>
+          <b>{b.name}</b>.{' '}
+          {mode === 'replace' ? (
+            <>The finished clip stands in the photos{'’'} place — they stay in the media bin.</>
+          ) : (
+            <>
+              The finished clip lands between the photos
+              {gapMs > 0 && <>, filling the {formatDuration(gapMs)} gap</>}.
+            </>
           )}
+          {runFlipped && <> While Animate all runs, new transitions keep the photos.</>}
         </p>
-        <div className="mode" role="radiogroup" aria-label="Where the finished clip goes">
-          {(
-            [
-              ['insert', 'Insert between photos'],
-              ['replace', 'Replace the photos'],
-            ] as const
-          ).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              role="radio"
-              aria-checked={mode === value}
-              className={`mode__opt ${mode === value ? 'mode__opt--on' : ''}`}
-              onClick={() => setCutMode(value)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
         <label className="visually-hidden" htmlFor="cut-prompt">
           Describe the transition between the two photos
         </label>
@@ -371,12 +362,20 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
             >
               ✦ Generate transition
             </button>
+            <button
+              type="button"
+              className="linklike"
+              aria-pressed={mode === 'insert'}
+              onClick={() => setCutMode(mode === 'insert' ? 'replace' : 'insert')}
+            >
+              {mode === 'insert'
+                ? 'Replace the photos instead'
+                : 'Keep the photos on the track instead'}
+            </button>
             <p className="hint">
               {offline
                 ? 'A photo on this cut has no media — re-import it first.'
-                : mode === 'replace'
-                  ? 'The finished clip replaces both photos — they stay in the media bin.'
-                  : 'No typing needed — leaving this empty uses the default prompt.'}
+                : 'No typing needed — leaving this empty uses the default prompt.'}
             </p>
           </>
         )}

@@ -95,6 +95,7 @@ beforeEach(() => {
     cutModes: {},
     animateQueue: null,
     animateSubmittingId: null,
+    animateRun: null,
     film: null,
     filmWizardOpen: false,
     importProblems: [],
@@ -174,7 +175,7 @@ describe('AI transitions between photos', () => {
     expect(await screen.findByText('◐ 46%')).toBeInTheDocument();
   });
 
-  it('3 — success inserts the transition at the cut as an editable AI video clip', async () => {
+  it('3 — success stands the transition in the photos’ place as an editable AI video clip', async () => {
     const user = userEvent.setup();
     render(<App />);
     const id = await runCutGeneration(user);
@@ -183,25 +184,26 @@ describe('AI transitions between photos', () => {
     const generated = await screen.findByRole('button', { name: /ai-.*\.mp4 video clip/i });
     expect(within(generated).getByText('✦ AI')).toBeInTheDocument();
 
+    // Both stills left the track: the reel is exactly the animation's own length, with
+    // no still padding on either side of it.
     const clips = useEditor.getState().clips;
-    expect(clips.map((c) => c.kind)).toEqual(['photo', 'video', 'photo']);
-    expect(clips[1].transition).toBeTruthy();
-    // The cut had no width, so the reel grows by the transition's length.
-    expect(clips.reduce((sum, c) => sum + c.durationMs, 0)).toBe(15_000);
-    // Its chip is gone — that boundary is no longer photo→photo…
+    expect(clips.map((c) => [c.kind, c.startMs])).toEqual([['video', 0]]);
+    expect(clips[0].transition).toMatchObject({ mode: 'replace' });
+    expect(clips.reduce((sum, c) => sum + c.durationMs, 0)).toBe(5000);
+    // Its chip is gone — there is no photo→photo boundary left…
     expect(screen.queryByRole('button', { name: CUT_CHIP })).not.toBeInTheDocument();
-    // …and the preview plays the new clip where the cut was.
-    act(() => useEditor.getState().setPlayhead(6000));
+    // …and the preview plays the animation where the stills used to hold.
+    act(() => useEditor.getState().setPlayhead(2500));
     expect(await screen.findByTestId('preview-video')).toHaveAttribute(
       'src',
       'asset:///home/u/.cache/solcut/generated/out.mp4',
     );
-    // The export spec reads photo, video, photo — the pipeline needs nothing new.
+    // The export spec reads one plain video — the pipeline needs nothing new.
     const spec = buildExportSpec(clips, useEditor.getState().assets);
-    expect(spec.clips.map((c) => c.kind)).toEqual(['photo', 'video', 'photo']);
+    expect(spec.clips.map((c) => c.kind)).toEqual(['video']);
   });
 
-  it('3b — a gap dragged open between the pair keeps its ✦ chip, and the render fills the gap', async () => {
+  it('3b — with the photos kept, a render into a dragged-open gap consumes it', async () => {
     const user = userEvent.setup();
     render(<App />);
     await dropPhotoPair();
@@ -222,7 +224,11 @@ describe('AI transitions between photos', () => {
     expect(chip.style.left).toBe('600px');
 
     await user.click(chip);
-    await user.click(await screen.findByRole('button', { name: /generate transition/i }));
+    // The gap-filling landing is the kept-photos path, picked with the quiet toggle.
+    await user.click(
+      await screen.findByRole('button', { name: 'Keep the photos on the track instead' }),
+    );
+    await user.click(screen.getByRole('button', { name: /generate transition/i }));
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
     // The frames sent are still the pair's own stills — the gap changes nothing upstream.
     const srcOf = (name: string) =>
@@ -310,7 +316,9 @@ describe('AI transitions between photos', () => {
 
     const targets = Object.values(useEditor.getState().generations).map((g) => g.target);
     expect(targets).toHaveLength(3);
-    expect(targets.every((t) => t.kind === 'cut')).toBe(true);
+    // Every queued landing keeps the photos while the run lives — the collapse at the
+    // end, not each leg, is what takes them off the track.
+    expect(targets.every((t) => t.kind === 'cut' && t.mode === 'insert')).toBe(true);
   });
 
   it('6a — a submission that fails to start does not stall the queue', async () => {
@@ -362,10 +370,118 @@ describe('AI transitions between photos', () => {
     expect(second.target).toMatchObject({ kind: 'cut', afterClipId: d.id, beforeClipId: e.id });
   });
 
-  it('7 — a replaced neighbour marks it stale; Regenerate uses the current neighbours', async () => {
+  it('6c — mid-run the cut card promises what the launch will do: keep the photos', async () => {
     const user = userEvent.setup();
     render(<App />);
-    const id = await runCutGeneration(user);
+    await dropOnTimeline(['a.jpg', 'b.jpg', 'c.jpg'].map((n) => file(n, 'image/jpeg')));
+    await screen.findByRole('button', { name: 'a.jpg photo clip' });
+    await waitFor(() => expect(useEditor.getState().settings?.configured).toBe(true));
+
+    await user.click(screen.getByRole('button', { name: 'Animate all cuts' }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+
+    // b|c has not launched yet; its card shows the run-flipped fallback, and says why.
+    await user.click(screen.getByRole('button', { name: 'Select the cut between b.jpg and c.jpg' }));
+    expect(
+      await screen.findByText(/While Animate all runs, new transitions keep the photos/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Replace the photos instead' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    // Both legs die: the run resolves with the photos kept and the fallback heals.
+    const [first] = Object.values(useEditor.getState().generations);
+    await act(async () => {
+      emitGenerationUpdate({
+        generationId: first.id,
+        status: 'failed',
+        progress: 0,
+        elapsedSecs: 4,
+        slow: false,
+        error: { title: 'Rate limited', message: 'rate limited', retryable: true },
+      });
+    });
+    const second = Object.values(useEditor.getState().generations).find((g) => g.id !== first.id)!;
+    await act(async () => {
+      emitGenerationUpdate({
+        generationId: second.id,
+        status: 'failed',
+        progress: 0,
+        elapsedSecs: 4,
+        slow: false,
+        error: { title: 'Rate limited', message: 'rate limited', retryable: true },
+      });
+    });
+    expect(useEditor.getState().animateRun).toBeNull();
+
+    // The failed card yields to the cut card again, back on the replace default.
+    act(() => useEditor.getState().dismissGeneration(second.id));
+    expect(
+      await screen.findByRole('button', { name: 'Keep the photos on the track instead' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/stands in the photos’ place/)).toBeInTheDocument();
+    expect(screen.queryByText(/While Animate all runs/)).not.toBeInTheDocument();
+  });
+
+  it('6d — Animate all over four photos ends as three AI clips and zero photos', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropOnTimeline(['a.jpg', 'b.jpg', 'c.jpg', 'd.jpg'].map((n) => file(n, 'image/jpeg')));
+    await screen.findByRole('button', { name: 'a.jpg photo clip' });
+    await waitFor(() => expect(useEditor.getState().settings?.configured).toBe(true));
+
+    await user.click(screen.getByRole('button', { name: 'Animate all cuts' }));
+    // The button stood down for the duration of the run.
+    expect(screen.queryByRole('button', { name: 'Animate all cuts' })).not.toBeInTheDocument();
+
+    // Accept each submission in turn, so all three legs go out.
+    for (let i = 0; i < 3; i += 1) {
+      await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(i + 1));
+      const id = useEditor.getState().animateSubmittingId!;
+      await act(async () => {
+        emitGenerationUpdate({
+          generationId: id,
+          status: 'queued',
+          progress: 0,
+          jobId: `job-${i + 1}`,
+          elapsedSecs: 1,
+          slow: false,
+        });
+      });
+    }
+
+    const legIds = useEditor.getState().animateRun!.legs.map((l) => l.generationId);
+    expect(legIds).toHaveLength(3);
+    for (const [i, id] of legIds.entries()) {
+      await succeed(id, `/cache/leg-${i + 1}.mp4`);
+    }
+
+    // The run collapsed: three flush AI clips, each standing in its pair's place.
+    const s = useEditor.getState();
+    expect(s.clips.map((c) => [c.kind, c.startMs])).toEqual([
+      ['video', 0],
+      ['video', 5000],
+      ['video', 10_000],
+    ]);
+    expect(s.clips.every((c) => c.transition?.mode === 'replace')).toBe(true);
+    expect(s.animateRun).toBeNull();
+    // Zero photos on the track — all four still in the bin to re-drag.
+    expect(screen.queryByRole('button', { name: /photo clip/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove a.jpg' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove d.jpg' })).toBeInTheDocument();
+    // Each clip wears its pair face; no cut chips remain anywhere.
+    for (const clip of s.clips) {
+      expect(screen.getByTestId(`clip-pair-${clip.id}`)).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: /Select the cut between/ })).not.toBeInTheDocument();
+    expect(await screen.findByText('3 transitions — pure motion')).toBeInTheDocument();
+  });
+
+  it('7 — a replaced neighbour marks a kept-photos clip stale; Regenerate reads the current neighbours', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const id = await runInsertGeneration(user);
     await succeed(id);
 
     // The right photo is swapped for a different clip after the render landed — a split,
@@ -515,53 +631,44 @@ describe('AI transitions between photos', () => {
 
     act(() => {
       const s = useEditor.getState();
-      s.setPlayhead(7500); // inside the 5s transition sitting at 5000–10000
+      s.setPlayhead(2500); // inside the 5s clip standing in the photos' place
       s.splitAtPlayhead();
     });
 
     const clips = useEditor.getState().clips;
-    expect(clips).toHaveLength(4);
+    expect(clips).toHaveLength(2);
+    expect(clips[0].ai).toBeTruthy();
     expect(clips[1].ai).toBeTruthy();
-    expect(clips[2].ai).toBeTruthy();
+    expect(clips[0].transition).toBeUndefined();
     expect(clips[1].transition).toBeUndefined();
-    expect(clips[2].transition).toBeUndefined();
   });
 });
 
-describe('replace-mode transitions', () => {
-  /** Select the pair's cut, pick replace, and press Generate. Returns the generation id. */
-  async function runReplaceGeneration(user: ReturnType<typeof userEvent.setup>): Promise<string> {
-    await dropPhotoPair();
-    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
-    await user.click(await screen.findByRole('radio', { name: 'Replace the photos' }));
-    await user.click(screen.getByRole('button', { name: /generate transition/i }));
-    await waitFor(() => expect(generateAnimation).toHaveBeenCalled());
-    return Object.keys(useEditor.getState().generations)[0];
-  }
-
-  it('the cut card offers the choice, defaults to insert, and remembers the pick per cut', async () => {
+describe('the default landing — the clip stands in the photos’ place', () => {
+  it('a fresh cut needs no pick at all; the quiet toggle keeps the photos, per cut', async () => {
     const user = userEvent.setup();
     render(<App />);
     await dropPhotoPair();
 
     await user.click(screen.getByRole('button', { name: CUT_CHIP }));
-    const replace = await screen.findByRole('radio', { name: 'Replace the photos' });
-    expect(screen.getByRole('radio', { name: 'Insert between photos' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
-    expect(replace).toHaveAttribute('aria-checked', 'false');
+    // No mode control stands on the card — the default is the card's whole promise…
+    expect(screen.queryByRole('radiogroup')).not.toBeInTheDocument();
+    expect(await screen.findByText(/stands in the photos’ place/)).toBeInTheDocument();
+    // …and the secondary path is one quiet text action below the button.
+    const keep = screen.getByRole('button', { name: 'Keep the photos on the track instead' });
+    expect(keep).toHaveAttribute('aria-pressed', 'false');
 
-    await user.click(replace);
-    expect(replace).toHaveAttribute('aria-checked', 'true');
+    await user.click(keep);
+    const back = screen.getByRole('button', { name: 'Replace the photos instead' });
+    expect(back).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText(/lands between the photos/)).toBeInTheDocument();
 
     // Away to a clip and back: the pick is remembered per cut, like its prompt.
     await user.click(screen.getByRole('button', { name: 'sunset.jpg photo clip' }));
     await user.click(screen.getByRole('button', { name: CUT_CHIP }));
-    expect(await screen.findByRole('radio', { name: 'Replace the photos' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    );
+    expect(
+      await screen.findByRole('button', { name: 'Replace the photos instead' }),
+    ).toHaveAttribute('aria-pressed', 'true');
     // Choosing spends nothing.
     expect(generateAnimation).not.toHaveBeenCalled();
   });
@@ -569,7 +676,7 @@ describe('replace-mode transitions', () => {
   it('success lands the MP4 in place of both photos, wearing both source thumbnails', async () => {
     const user = userEvent.setup();
     render(<App />);
-    const id = await runReplaceGeneration(user);
+    const id = await runCutGeneration(user);
     await succeed(id, '/home/u/.cache/solcut/generated/replace.mp4');
 
     // The two stills left the track; the animated clip holds their whole span.
@@ -600,7 +707,7 @@ describe('replace-mode transitions', () => {
   it('its inspector card shows From/To and regenerates from the bin assets, in place', async () => {
     const user = userEvent.setup();
     render(<App />);
-    const id = await runReplaceGeneration(user);
+    const id = await runCutGeneration(user);
     await succeed(id, '/home/u/.cache/solcut/generated/replace.mp4');
     const landed = useEditor.getState().clips[0];
 
@@ -1512,11 +1619,26 @@ async function dropPhotoPair() {
   await screen.findByRole('button', { name: 'sunset.jpg photo clip' });
 }
 
-/** Drop two photos, select their cut, press Generate. Returns the generation id. */
+/**
+ * Drop two photos, select their cut, press Generate — the untouched default path, which
+ * lands the finished clip in the photos' place. Returns the generation id.
+ */
 async function runCutGeneration(user: ReturnType<typeof userEvent.setup>): Promise<string> {
   await dropPhotoPair();
   await user.click(screen.getByRole('button', { name: CUT_CHIP }));
   await user.click(await screen.findByRole('button', { name: /generate transition/i }));
+  await waitFor(() => expect(generateAnimation).toHaveBeenCalled());
+  return Object.keys(useEditor.getState().generations)[0];
+}
+
+/** The same run with the quiet "keep the photos" pick made first — the insert path. */
+async function runInsertGeneration(user: ReturnType<typeof userEvent.setup>): Promise<string> {
+  await dropPhotoPair();
+  await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+  await user.click(
+    await screen.findByRole('button', { name: 'Keep the photos on the track instead' }),
+  );
+  await user.click(screen.getByRole('button', { name: /generate transition/i }));
   await waitFor(() => expect(generateAnimation).toHaveBeenCalled());
   return Object.keys(useEditor.getState().generations)[0];
 }
