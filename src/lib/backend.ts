@@ -160,6 +160,24 @@ export async function saveSettings(input: SettingsInput): Promise<SettingsView> 
 }
 
 /**
+ * The project the editor was last holding, or `null` when there is none.
+ *
+ * Untyped on purpose in both directions: what a project *is* lives in `lib/project.ts`,
+ * and the Rust side only moves the bytes. A plain browser has nowhere to keep one, so it
+ * simply has no project — the same silent answer `cancelGeneration` gives, because this is
+ * not a user action to refuse loudly at.
+ */
+export async function loadProject(): Promise<unknown> {
+  if (!isDesktop()) return null;
+  return invoke<unknown>('load_project');
+}
+
+export async function saveProject(project: unknown): Promise<void> {
+  if (!isDesktop()) return;
+  await invoke('save_project', { project });
+}
+
+/**
  * Prove the CLI connection: one free, read-only CLI call that checks the binary, the
  * login and the billing workspace, and reports the CLI's own fix when one is missing.
  */

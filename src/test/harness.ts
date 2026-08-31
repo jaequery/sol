@@ -44,6 +44,7 @@ export function resetEditor(): void {
     settingsOpen: false,
     snapping: true,
     pxPerSecond: 100,
+    saveError: null,
   });
 }
 

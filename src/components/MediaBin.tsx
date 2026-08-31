@@ -68,7 +68,15 @@ export function MediaBin() {
             clips.filter((c) => c.assetId === asset.id).length +
             audioTracks.filter((t) => t.assetId === asset.id).length;
           return (
-            <div key={asset.id} className="bin__tile" title={asset.name}>
+            <div
+              key={asset.id}
+              className={`bin__tile${asset.missing ? ' bin__tile--missing' : ''}`}
+              title={
+                asset.missing
+                  ? `${asset.name} — the file is no longer on disk${asset.path ? ` (${asset.path})` : ''}`
+                  : asset.name
+              }
+            >
               {asset.kind === 'photo' ? (
                 <img src={asset.src} alt="" draggable={false} />
               ) : asset.kind === 'video' ? (

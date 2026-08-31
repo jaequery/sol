@@ -170,3 +170,28 @@ own states; what the film underneath is doing is rows 61–67c.
 | 81 | **Reopening mid-film** | Entry action clicked while a film runs | The same panel comes back on the in-flight run, not on a fresh intake — one film at a time, and the panel says so | Cancel film, or wait |
 | 82 | **Run finished — whole** | Every leg in and placed (row 67) | The panel says **On the timeline — 2 transitions · 10.0s** and offers **Export film**, which is the title bar's export reached from where the user already is (row 67c). **Start over** forgets the film and returns the panel to row 69 | Export film, start over, or Close |
 | 83 | **Run finished — a leg short** | The run stopped with a leg failed or cancelled | No export is offered at all — there is nothing whole to write — and the panel keeps the failed leg's message and **Retry this transition** (row 65). Retrying and succeeding finishes the film, which then places itself | Retry the leg, or start over |
+
+## 11. The saved project
+
+The editor autosaves one project and puts it back at launch. There is no save action, so
+the whole feature is states rather than controls — and a working autosave is deliberately
+*not* one of them: it shows nothing at all, because the work simply being there at the next
+launch is the confirmation. Every row below is therefore a way it can go wrong, plus the
+one way it goes right.
+
+What is saved is the **document**: the media bin's paths, the clips, the audio lanes, and
+prompts typed at a cut. What is not is the **session**: an in-flight generation (its job
+died with the process, so a restored card would never finish), a film, the playhead, the
+selection, dialogs and toasts. A finished AI transition is an ordinary clip by then, so it
+comes back with everything else.
+
+| # | State | Trigger | What is shown | Way out |
+|---|---|---|---|---|
+| 84 | **Restored** | App opened with a project stored | The last session's timeline, lanes and media bin, exactly as they were left. Nothing announces it — the title bar reads "n clips" as it always would, and the playhead starts at 0:00 | Keep editing |
+| 85 | **Nothing stored** | First ever launch, or the last session ended empty | Row 1, unchanged: the empty drop zone. No message, because nothing was lost | Drop a file |
+| 86 | **Media gone since last time** | A restored file is no longer at its path | The project still restores whole. One toast names up to three files and counts the rest; each tile in the bin dims and its tooltip gives the path; the preview over that clip reads **MEDIA OFFLINE** (row 5) and export refuses by name rather than dying inside ffmpeg | Re-import the file and put it back on the track |
+| 87 | **Saving failed** | The write was refused — disk full, permissions | One toast with the reason, then a persistent **Not saved** in the title bar beside the project name, in `--err`, whose tooltip repeats the reason. It is the only thing autosave ever puts on screen. It clears itself the moment a write succeeds | Fix the disk; the next edit retries |
+| 88 | **Project unreadable** | The stored file is not a project this build knows | A toast — "The saved project could not be read. Starting empty. Anything you do now replaces it." The editor opens empty and saving stays **on**: this build owns that file, and being able to replace it is the only way out of a bad one | Keep working; the next edit overwrites it |
+| 89 | **Project from a newer SolCut** | The stored file's version is ahead of this build's | A toast saying so, an empty editor, and saving stays **off for the session** — overwriting it would destroy work a later build can still open | Update SolCut |
+| 90 | **The project could not be read at all** | The read itself failed | Same refusal as row 89: nothing is written this session, because what is on disk may be perfectly good and unreadable only right now | Restart, or fix the permissions |
+| 91 | **Edited before the restore landed** | A file dropped in the moment between launch and the read returning | The user's edit wins and stays on screen, but nothing is written over the stored project, and a toast says both | Restart SolCut to get the saved project back |

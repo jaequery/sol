@@ -70,6 +70,11 @@ input {
   color: var(--ink);
   font-weight: 600;
 }
+/* Autosave is silent while it works; a failed one is the single state that must be seen. */
+.titlebar .doc__unsaved {
+  margin-left: var(--sp-2);
+  color: var(--err);
+}
 .titlebar .spacer {
   margin-left: auto;
 }
@@ -195,6 +200,11 @@ input {
   border: 1px solid var(--line);
   background: var(--sunken);
   padding: 0;
+}
+/* Restored media whose file has gone. It stays in the bin — its clips are still on the
+   track and still say what the timeline is — but it can neither draw nor export. */
+.bin__tile--missing {
+  opacity: 0.45;
 }
 .bin__tile img,
 .bin__tile video {

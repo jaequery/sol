@@ -40,6 +40,12 @@ from one still into the other and drops it onto the timeline at that cut.
   in order, badged AI and playable — and the panel offers **Export film**. See
   [the flow](#three-photos-to-an-mp4) below.
 - **MP4 export** of the whole timeline via ffmpeg, audio lanes included.
+- **Your work is still there tomorrow.** The project saves itself as you edit — no save
+  button, no dialog, nothing on screen while it works — and comes back when the app
+  reopens: the same clips, trims, audio lanes and media bin. It lives in one
+  `project.json` beside the settings, and holds paths rather than copies, so a file that
+  moved away since last time comes back visibly **missing** (dimmed in the bin, MEDIA
+  OFFLINE in the preview, and refused by name at export) instead of failing mid-render.
 
 ## Running it
 
@@ -165,12 +171,13 @@ src/                     React + TypeScript editor
   lib/timeline.ts        pure timeline maths — placement, cuts, transitions
   lib/film.ts            pure film orchestration — three photos, two AI transitions
   lib/frames.ts          rendering a photo to a still for the API
+  lib/project.ts         the saved project — what persists, and what a bad file may not do
   lib/backend.ts         the only place that talks to Tauri
   state/store.ts         zustand store
   components/            title bar, media bin, preview, inspector, timeline, film wizard,
                          dialogs
 src-tauri/
-  src/                   Tauri commands, the generation job loop, settings storage
+  src/                   Tauri commands, the generation job loop, settings and project storage
   crates/higgsfield/     Higgsfield CLI wrapper — no Tauri or GUI dependencies
   crates/render/         ffmpeg filter graphs and export — no Tauri or GUI dependencies
 design/                  the approved concept and the hi-fi UX walkthrough
@@ -208,6 +215,16 @@ GTK toolchain.
   afterwards updates the film's own record but never lays down a second copy.
 - **Progress is queued-or-rendering.** The job status reports a state, not a percentage,
   so the bar only moves when one is volunteered.
+- **The last half-second of editing can be lost.** The project is written half a second
+  after you stop, so quitting mid-gesture drops that last change. A continuously changing
+  timeline is written at least every five seconds regardless.
+- **A film still rendering when you quit is not resumed.** A leg that had already finished
+  leaves its MP4 on disk unused. A film that fully assembled is on the track by then, and
+  persists like any other clip.
+- **A moved file is indistinguishable from a deleted one.** Nothing tracks media identity
+  beyond the absolute path, so re-importing is the way back.
+- **One project.** There is no New, Open or Save As — the editor holds a single project
+  that saves itself.
 - **Stills are uploaded, not inlined.** Each still is written to a temp file and handed
   to the CLI as `--start-image`/`--end-image`; the CLI uploads them itself and the files
   are removed the moment the submission is answered.

@@ -8,6 +8,7 @@ export function TitleBar() {
   const openFilmWizard = useEditor((s) => s.openFilmWizard);
   const runExport = useEditor((s) => s.runExport);
   const exporting = useEditor((s) => s.exporting);
+  const saveError = useEditor((s) => s.saveError);
 
   const rendering = Object.values(generations).filter(
     (g) => g.status === 'queued' || g.status === 'running',
@@ -17,6 +18,17 @@ export function TitleBar() {
     <div className="titlebar" data-tauri-drag-region>
       <span className="doc">
         SolCut — <b>{clips.length === 0 ? 'Untitled project' : `${clips.length} clips`}</b>
+        {/*
+          The whole visible surface of autosave. A working one shows nothing — the work
+          being there at the next launch is the confirmation — but a broken one has to say
+          so, or the session is lost without the user ever being told. The reason arrives
+          as a toast; this is what is still standing after the toast is dismissed.
+        */}
+        {saveError && (
+          <span className="doc__unsaved" role="status" title={saveError}>
+            Not saved
+          </span>
+        )}
       </span>
       <span className="spacer" />
       <div className="actions">
