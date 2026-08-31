@@ -350,6 +350,11 @@ input {
   object-fit: cover;
   will-change: transform;
 }
+/* The next clip, mounted early and primed so the cut into it needs no load and no seek. */
+.canvas video.canvas__preload {
+  opacity: 0;
+  pointer-events: none;
+}
 .canvas__hud {
   position: absolute;
   left: 10px;
@@ -798,13 +803,24 @@ input {
   border-bottom: 1px solid var(--line);
   background: #0a0c14;
   overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+/* The ruler's time origin, lined up with the clips' (the track's horizontal padding). */
+.ruler__origin {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--sp-3);
+  right: var(--sp-3);
 }
 .ruler span {
   position: absolute;
   top: 5px;
   font: 600 9px/1 var(--mono);
   color: var(--ink-3);
-  transform: translateX(3px);
+  padding-left: 3px;
 }
 .ruler i {
   position: absolute;
@@ -1085,6 +1101,8 @@ input {
 .playhead--lanes {
   top: 0;
   bottom: 0;
+  /* The lanes' rows sit inside the container's padding; the line follows the same origin. */
+  margin-left: var(--sp-3);
 }
 .playhead--lanes::before {
   display: none;
@@ -1562,20 +1580,4 @@ input {
 .filmwiz__leg .block-btn {
   margin-top: var(--sp-2);
   padding: 6px;
-}
-
-/* The second way in, from the first-run timeline. */
-.dropzone__cta {
-  margin-top: 10px;
-  background: none;
-  border: 1px solid var(--accent-line);
-  color: var(--accent-2);
-  border-radius: var(--r);
-  padding: 5px 10px;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-}
-.dropzone__cta:hover {
-  background: var(--accent-wash);
-  color: #dcd3ff;
 }

@@ -10,7 +10,9 @@ pub mod settings;
 
 use serde::{Deserialize, Serialize};
 use settings::{SettingsInput, SettingsView};
-use solcut_higgsfield::{Cli, GenerateRequest, HiggsfieldError, JobState, DEFAULT_MODEL};
+use solcut_higgsfield::{
+    check_credential, Cli, GenerateRequest, HiggsfieldError, JobState, API_BASE_URL, DEFAULT_MODEL,
+};
 use solcut_render::{ExportSpec, Progress, Renderer};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -179,6 +181,52 @@ async fn test_connection() -> Result<String, String> {
         "Signed in through the Higgsfield CLI — {models} ({} ms).",
         started.elapsed().as_millis()
     ))
+}
+
+/// What one API-key check concluded, for the dialog to show.
+///
+/// The key check reports its own heading rather than borrowing the CLI check's
+/// "Connection OK" / "Could not connect": the two prove different things, and a machine
+/// with a working CLI and a stale key is not disconnected.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyCheck {
+    pub ok: bool,
+    pub title: String,
+    pub text: String,
+}
+
+/// The Settings dialog's **API key** check — separate from [`test_connection`], which
+/// proves the CLI that actually renders.
+///
+/// It proves the credential the dialog is *showing*, overlaid on what is stored: the key
+/// boxes mount empty, so a freshly opened dialog proves the stored key, and a typed one
+/// proves what was typed — a key can be checked before it is saved. Nothing is written
+/// here; the overlay is in memory only.
+///
+/// One free, read-only call to the documented status route. It generates nothing.
+#[tauri::command]
+async fn test_api_key(
+    input: Option<SettingsInput>,
+    state: State<'_, AppState>,
+) -> Result<KeyCheck, String> {
+    let settings = input.unwrap_or_default().apply_to(state.settings());
+    let Some(credential) = settings.credential() else {
+        return Ok(KeyCheck {
+            ok: false,
+            title: "No API key to check".into(),
+            text: "A Higgsfield credential is a key id and a secret, and both are needed.                    Mint one at cloud.higgsfield.ai and put both halves in."
+                .into(),
+        });
+    };
+
+    let started = Instant::now();
+    let verdict = check_credential(&credential, API_BASE_URL).await;
+    Ok(KeyCheck {
+        ok: verdict.accepted(),
+        title: verdict.title().to_string(),
+        text: verdict.describe(started.elapsed()),
+    })
 }
 
 #[tauri::command]
@@ -440,6 +488,7 @@ pub fn run() {
             get_settings,
             save_settings,
             test_connection,
+            test_api_key,
             import_media,
             supported_extensions,
             generate_animation,

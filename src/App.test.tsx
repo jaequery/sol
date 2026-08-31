@@ -26,6 +26,8 @@ const STORED_SETTINGS: backend.SettingsView = {
   configured: true,
   cliPath: '/usr/local/bin/higgsfield',
   customModel: '',
+  hasApiKey: false,
+  apiKeyIdHint: '',
 };
 let storedSettings = { ...STORED_SETTINGS };
 
@@ -38,6 +40,7 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   getSettings: async () => storedSettings,
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
+  testApiKey: vi.fn(),
   importPaths: vi.fn(),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
   cancelGeneration: vi.fn(async () => {}),
@@ -741,6 +744,171 @@ describe('the default landing — the clip stands in the photos’ place', () =>
   });
 });
 
+describe('the Higgsfield API key', () => {
+  /** The stored-credential state the backend reports once a key has been saved. */
+  const WITH_KEY = { ...STORED_SETTINGS, hasApiKey: true, apiKeyIdHint: '••••7fa2' };
+
+  it('the dialog asks for both halves of the key, beside the custom model', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+
+    expect(screen.getByLabelText('API key ID')).toBeInTheDocument();
+    expect(screen.getByLabelText('API key secret')).toBeInTheDocument();
+    // Coexisting, not replacing: the custom model box is still there.
+    expect(screen.getByLabelText('Custom model')).toBeInTheDocument();
+  });
+
+  it('Save sends both halves, and the boxes never show what is stored', async () => {
+    const user = userEvent.setup();
+    const saveSettings = vi.mocked(backend.saveSettings);
+    saveSettings.mockClear();
+    storedSettings = { ...WITH_KEY };
+
+    render(<App />);
+    await waitFor(() => expect(useEditor.getState().settings?.hasApiKey).toBe(true));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+
+    // A stored key shows only as a mask on the placeholder — never as a value, because
+    // the secret does not come back to this window at all.
+    const id = screen.getByLabelText('API key ID');
+    expect(id).toHaveValue('');
+    expect(id).toHaveAttribute('placeholder', '••••7fa2');
+    expect(screen.getByLabelText('API key secret')).toHaveAttribute('placeholder', '•••• stored');
+
+    await user.type(id, 'hf-key-id');
+    await user.type(screen.getByLabelText('API key secret'), 'hf-key-secret');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKeyId: 'hf-key-id', apiKeySecret: 'hf-key-secret' }),
+    );
+  });
+
+  it('Test key proves the credential in the boxes, and reports under its own heading', async () => {
+    const user = userEvent.setup();
+    const testApiKey = vi.mocked(backend.testApiKey);
+    testApiKey.mockClear();
+    vi.mocked(backend.saveSettings).mockClear();
+    testApiKey.mockResolvedValue({
+      ok: true,
+      title: 'API key accepted',
+      text: 'Higgsfield authenticated the key (210 ms).',
+    });
+
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.type(screen.getByLabelText('API key ID'), 'typed-id');
+    await user.type(screen.getByLabelText('API key secret'), 'typed-secret');
+    await user.click(screen.getByRole('button', { name: 'Test key' }));
+
+    // It proves what is in the boxes, not what is on disk — so a key can be checked
+    // before it is saved.
+    await waitFor(() =>
+      expect(testApiKey).toHaveBeenCalledWith(
+        expect.objectContaining({ apiKeyId: 'typed-id', apiKeySecret: 'typed-secret' }),
+      ),
+    );
+    expect(await screen.findByText('API key accepted')).toBeInTheDocument();
+    expect(vi.mocked(backend.saveSettings)).not.toHaveBeenCalled();
+  });
+
+  /** A rejected key is the key's problem, and must not be dressed up as a CLI outage. */
+  it('a rejected key says so, and never claims the connection is down', async () => {
+    const user = userEvent.setup();
+    const testApiKey = vi.mocked(backend.testApiKey);
+    testApiKey.mockClear();
+    testApiKey.mockResolvedValue({
+      ok: false,
+      title: 'API key rejected',
+      text: 'Higgsfield did not accept this key id and secret: Invalid credentials.',
+    });
+
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Test key' }));
+
+    expect(await screen.findByText('API key rejected')).toBeInTheDocument();
+    expect(screen.getByText(/Invalid credentials/)).toBeInTheDocument();
+    expect(screen.queryByText('Could not connect')).not.toBeInTheDocument();
+  });
+
+  /** Blank-means-keep would make a stored key permanent; Forget is the way out. */
+  it('Forget key offers itself only when one is stored, and removes it on Save', async () => {
+    const user = userEvent.setup();
+    const saveSettings = vi.mocked(backend.saveSettings);
+    saveSettings.mockClear();
+
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    expect(screen.queryByRole('button', { name: 'Forget key' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    storedSettings = { ...WITH_KEY };
+    act(() => useEditor.setState({ settings: { ...WITH_KEY } }));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Forget key' }));
+
+    // Armed, not done: it says what Save will do, and offers itself no more.
+    expect(screen.getByText(/removed on/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Forget key' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ forgetApiKey: true }));
+  });
+
+  it('typing a new key disarms a pending forget, so the two can never both apply', async () => {
+    const user = userEvent.setup();
+    const saveSettings = vi.mocked(backend.saveSettings);
+    saveSettings.mockClear();
+    storedSettings = { ...WITH_KEY };
+
+    render(<App />);
+    await waitFor(() => expect(useEditor.getState().settings?.hasApiKey).toBe(true));
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Forget key' }));
+    await user.type(screen.getByLabelText('API key ID'), 'replacement:secret');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(saveSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKeyId: 'replacement:secret', forgetApiKey: false }),
+    );
+  });
+
+  /** A 30-second round trip behind a button that looks idle reads as a dead control. */
+  it('Test key says it is working while the check is in flight', async () => {
+    const user = userEvent.setup();
+    const testApiKey = vi.mocked(backend.testApiKey);
+    testApiKey.mockClear();
+    let answer: (check: backend.KeyCheck) => void = () => {};
+    testApiKey.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Test key' }));
+
+    const working = await screen.findByRole('button', { name: 'Testing…' });
+    expect(working).toBeDisabled();
+
+    await act(async () => {
+      answer({ ok: true, title: 'API key accepted', text: 'done' });
+    });
+    expect(await screen.findByRole('button', { name: 'Test key' })).toBeEnabled();
+  });
+
+  /** The key renders nothing — the CLI does. A stored key must not unlock generation. */
+  it('a stored key does not stand in for the CLI', async () => {
+    const user = userEvent.setup();
+    storedSettings = { ...WITH_KEY, configured: false, cliPath: null };
+
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: 'Settings' }));
+
+    expect(screen.getByText(backend.CLI_INSTALL)).toBeInTheDocument();
+    expect(useEditor.getState().settings?.configured).toBe(false);
+  });
+});
+
 describe('the Higgsfield connection', () => {
   it('Test connection proves the CLI sign-in and reports it', async () => {
     const user = userEvent.setup();
@@ -1166,16 +1334,19 @@ describe('the 3-photo film wizard', () => {
     configured: false,
     cliPath: null,
     customModel: '',
+    hasApiKey: false,
+    apiKeyIdHint: '',
   };
 
-  /** Both ways in carry the same label: the title bar's, then the empty timeline's. */
-  const entryPoints = () => screen.getAllByRole('button', { name: '✦ New film from 3 photos' });
-
-  /** Open the panel and wait for the settings load to have landed. */
-  async function openWizard(user: ReturnType<typeof userEvent.setup>, from = 0) {
+  /**
+   * Open the panel and wait for the settings load to have landed. Nothing in the UI opens it
+   * any more — the empty timeline's call to action was the last button that did — so this
+   * drives the store action that button called, the same way the film flow itself reopens it.
+   */
+  async function openWizard() {
     render(<App />);
     await waitFor(() => expect(useEditor.getState().settings).not.toBeNull());
-    await user.click(entryPoints()[from]);
+    await act(async () => useEditor.getState().openFilmWizard());
     return screen.getByRole('dialog', { name: 'New film from 3 photos' });
   }
 
@@ -1205,14 +1376,16 @@ describe('the 3-photo film wizard', () => {
     return (call as [GenerateInput])[0];
   }
 
-  it('opens from the title bar and from the empty timeline alike', async () => {
+  it('has no button left anywhere that opens it, and closing it is still not a cancel', async () => {
     const user = userEvent.setup();
     render(<App />);
     await waitFor(() => expect(useEditor.getState().settings).not.toBeNull());
-    expect(entryPoints()).toHaveLength(2);
+    // The empty timeline's call to action was the last one, and nothing took its place: the
+    // panel is reachable only from the film flow's own store action. Asserted rather than
+    // assumed, so putting a button back is a deliberate act and not an accident.
+    expect(screen.queryByRole('button', { name: '✦ New film from 3 photos' })).toBeNull();
 
-    // The empty-timeline CTA, which is the one a first run actually sees.
-    await user.click(entryPoints()[1]);
+    await act(async () => useEditor.getState().openFilmWizard());
     expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).toBeInTheDocument();
 
     // Closing only hides the panel — it is a way out, not a cancel.
@@ -1221,8 +1394,7 @@ describe('the 3-photo film wizard', () => {
   });
 
   it('two photos are not a film, and it says how many are still missing', async () => {
-    const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
 
     await dropOnWizard([file('one.jpg', 'image/jpeg'), file('two.jpg', 'image/jpeg')]);
 
@@ -1232,8 +1404,7 @@ describe('the 3-photo film wizard', () => {
   });
 
   it('a fourth photo is left out, and named with the reason', async () => {
-    const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
 
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
@@ -1250,8 +1421,7 @@ describe('the 3-photo film wizard', () => {
   });
 
   it('a video cannot be one of the three photos, and is told so', async () => {
-    const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
 
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
@@ -1270,7 +1440,7 @@ describe('the 3-photo film wizard', () => {
 
   it('both prompts arrive filled in from the default, and take an edit', async () => {
     const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
       file('two.jpg', 'image/jpeg'),
@@ -1291,7 +1461,7 @@ describe('the 3-photo film wizard', () => {
 
   it('with no credential it refuses, points at settings, and sends nothing', async () => {
     const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
     act(() => useEditor.setState({ settings: NO_CLI }));
 
     await dropOnWizard([
@@ -1311,7 +1481,7 @@ describe('the 3-photo film wizard', () => {
 
   it('generate starts two transitions pairing the photos in the chosen order', async () => {
     const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
       file('two.jpg', 'image/jpeg'),
@@ -1344,7 +1514,7 @@ describe('the 3-photo film wizard', () => {
 
   it('the model picked in the wizard rides with both legs', async () => {
     const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
       file('two.jpg', 'image/jpeg'),
@@ -1361,7 +1531,7 @@ describe('the 3-photo film wizard', () => {
 
   it('a leg that fails explains itself and offers a retry, and the app stays usable', async () => {
     const user = userEvent.setup();
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
       file('two.jpg', 'image/jpeg'),
@@ -1396,8 +1566,9 @@ describe('the 3-photo film wizard', () => {
     expect(screen.getByText('Too many requests — try again shortly.')).toBeInTheDocument();
     expect(screen.getByText('0 of 2 succeeded')).toBeInTheDocument();
 
-    // Non-modal: the editor behind the panel is still live.
-    expect(screen.getByRole('button', { name: 'Import' })).toBeEnabled();
+    // Non-modal: the editor outside the panel is still live — still in the accessibility
+    // tree and still operable, which is what the aria-modal check below pairs with.
+    expect(screen.getByRole('button', { name: 'Import media' })).toBeEnabled();
     expect(screen.getByRole('dialog', { name: 'New film from 3 photos' })).not.toHaveAttribute(
       'aria-modal',
     );
@@ -1414,7 +1585,7 @@ describe('the 3-photo film wizard', () => {
 
   /** Three photos chosen and both legs sent. Resolves to the two generation ids, in order. */
   async function startWholeFilm(user: ReturnType<typeof userEvent.setup>): Promise<string[]> {
-    await openWizard(user);
+    await openWizard();
     await dropOnWizard([
       file('one.jpg', 'image/jpeg'),
       file('two.jpg', 'image/jpeg'),
