@@ -6,6 +6,7 @@
 //! over them: commands, background jobs, events.
 
 pub mod media;
+pub mod project;
 pub mod settings;
 
 use serde::{Deserialize, Serialize};
@@ -163,6 +164,20 @@ fn save_settings(input: SettingsInput, state: State<'_, AppState>) -> Result<Set
         &settings,
         cli.as_ref().map(|c| c.binary()),
     ))
+}
+
+/// The project the editor was last holding, or `null` when there is none.
+///
+/// The shape is the frontend's — see `src/lib/project.ts`. This side only moves bytes.
+#[tauri::command]
+fn load_project(state: State<'_, AppState>) -> Option<serde_json::Value> {
+    project::load(&state.config_dir)
+}
+
+/// Store the project. Called on a debounce as the timeline changes, never by a save button.
+#[tauri::command]
+fn save_project(project: serde_json::Value, state: State<'_, AppState>) -> Result<(), String> {
+    project::save(&state.config_dir, &project)
 }
 
 /// The Settings dialog's connection check: one free, read-only CLI call
@@ -474,7 +489,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
-            let media_dir = app.path().app_cache_dir()?.join("generated");
+            // Data, not cache: a saved project points at these files by path, so an OS
+            // cache purge would turn finished renders into missing media. Nothing outlived
+            // a session before projects were saved, which is why this was ever a cache.
+            let media_dir = app.path().app_data_dir()?.join("generated");
             std::fs::create_dir_all(&config_dir)?;
             std::fs::create_dir_all(&media_dir)?;
             app.manage(AppState {
@@ -487,6 +505,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
+            load_project,
+            save_project,
             test_connection,
             test_api_key,
             import_media,

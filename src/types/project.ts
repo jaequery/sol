@@ -74,6 +74,14 @@ export interface TransitionSource {
 export type TransitionMode = 'insert' | 'replace';
 
 /**
+ * What a cut lands as when nothing picked otherwise: the finished clip stands in the
+ * photos' place, so the transition costs no still time. Only a *fallback* — a stored
+ * record with no `mode` still means `insert` (see above), because every launch since this
+ * default stamps its mode explicitly.
+ */
+export const DEFAULT_TRANSITION_MODE: TransitionMode = 'replace';
+
+/**
  * What a generation is for: the cut between two adjacent photos, or one leg of a
  * three-photo film. Success routes on this — a cut result is inserted at the cut (or
  * swapped over `replacesClipId` when it is a regeneration of an existing transition clip),

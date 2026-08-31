@@ -4,7 +4,8 @@ A simplified CapCut-style video editor for the desktop, built with **Tauri 2**.
 
 One timeline. Drop photos and videos onto it side by side. Select the cut between two
 photos and describe the motion in words — **Higgsfield** renders a real video transition
-from one still into the other and drops it onto the timeline at that cut.
+from one still into the other and stands it in the photos' place on the timeline, so the
+cut plays as pure motion rather than stills padded around an animation.
 
 ## What it does
 
@@ -14,7 +15,8 @@ from one still into the other and drops it onto the timeline at that cut.
   nearest where you let go, as a fresh copy, so the same photo can appear as often as you
   drag it, and a sound lands on its own lane at exactly the point it was released. Enter on
   a focused tile does the same at the playhead, without a mouse. Deleting a clip is
-  therefore no longer a one-way door. Drag a clip to **anywhere** on the
+  therefore no longer a one-way door. A tile whose file has gone missing is not a source:
+  it keeps its ✕ and nothing else. Drag a clip to **anywhere** on the
   track: it lands exactly where you let go, gaps and all, and a gap is black film in the
   preview and in the export. One track cannot show two clips at once, so a clip dropped on
   top of another slides that one right rather than stacking. Drag either edge to change how
@@ -31,13 +33,16 @@ from one still into the other and drops it onto the timeline at that cut.
 - **Prompt-driven AI transitions.** A ✦ chip stands on every cut between two photos —
   touching, or across a gap dragged open between them. Select it, describe the motion (or
   leave the default), and the two photos are rendered to stills and sent to Higgsfield as
-  the first and last frame of the generation. The finished MP4 lands at the cut; the
-  photos themselves are the anchor frames, so nothing else needs setting up. A **Model**
-  selector on the same card picks which model renders it — **Seedance 2.5** unless another
-  is chosen — and the pick rides with that render alone. The card also offers a **replace
-  mode**: the finished clip stands in the two photos' place — they leave the track (staying
-  in the media bin) and the clip wears both source thumbnails side by side, so playback
-  across that span is pure motion, never a still frame.
+  the first and last frame of the generation; the photos themselves are the anchor frames,
+  so nothing else needs setting up. The finished MP4 **stands in the two photos' place**:
+  they leave the track (staying in the media bin) and the clip wears both source
+  thumbnails side by side, so playback across that span is pure motion, never a still
+  frame. A **Model** selector on the same card picks which model renders it — **Seedance
+  2.5** unless another is chosen — and the pick rides with that render alone. A quiet
+  per-cut action keeps the photos on the track instead, inserting the finished clip
+  between them. **✦ Animate all** fills every cut in one go, landing leg by leg — and once
+  every leg has resolved, the run's photos leave the track too, so the whole chain ends as
+  back-to-back animation.
 - **A film from three photos — three images in, one .mp4 out.** A panel takes exactly
   three photos, puts them in order, and offers a prompt per transition already filled in.
   It has **no entry point in the UI right now** — the title bar's button went first and the
@@ -48,6 +53,12 @@ from one still into the other and drops it onto the timeline at that cut.
   in order, badged AI and playable — and the panel offers **Export film**. See
   [the flow](#three-photos-to-an-mp4) below.
 - **MP4 export** of the whole timeline via ffmpeg, audio lanes included.
+- **Your work is still there tomorrow.** The project saves itself as you edit — no save
+  button, no dialog, nothing on screen while it works — and comes back when the app
+  reopens: the same clips, trims, audio lanes and media bin. It lives in one
+  `project.json` beside the settings, and holds paths rather than copies, so a file that
+  moved away since last time comes back visibly **missing** (dimmed in the bin, MEDIA
+  OFFLINE in the preview, and refused by name at export) instead of failing mid-render.
 
 ## Running it
 
@@ -218,12 +229,13 @@ src/                     React + TypeScript editor
   lib/timeline.ts        pure timeline maths — placement, cuts, transitions
   lib/film.ts            pure film orchestration — three photos, two AI transitions
   lib/frames.ts          rendering a photo to a still for the API
+  lib/project.ts         the saved project — what persists, and what a bad file may not do
   lib/backend.ts         the only place that talks to Tauri
   state/store.ts         zustand store
   components/            title bar, media bin, preview, inspector, timeline, film wizard,
                          dialogs
 src-tauri/
-  src/                   Tauri commands, the generation job loop, settings storage
+  src/                   Tauri commands, the generation job loop, settings and project storage
   crates/higgsfield/     Higgsfield CLI wrapper — no Tauri or GUI dependencies
   crates/render/         ffmpeg filter graphs and export — no Tauri or GUI dependencies
 design/                  the approved concept and the hi-fi UX walkthrough
@@ -267,6 +279,16 @@ GTK toolchain.
   afterwards updates the film's own record but never lays down a second copy.
 - **Progress is queued-or-rendering.** The job status reports a state, not a percentage,
   so the bar only moves when one is volunteered.
+- **The last half-second of editing can be lost.** The project is written half a second
+  after you stop, so quitting mid-gesture drops that last change. A continuously changing
+  timeline is written at least every five seconds regardless.
+- **A film still rendering when you quit is not resumed.** A leg that had already finished
+  leaves its MP4 on disk unused. A film that fully assembled is on the track by then, and
+  persists like any other clip.
+- **A moved file is indistinguishable from a deleted one.** Nothing tracks media identity
+  beyond the absolute path, so re-importing is the way back.
+- **One project.** There is no New, Open or Save As — the editor holds a single project
+  that saves itself.
 - **Stills are uploaded, not inlined.** Each still is written to a temp file and handed
   to the CLI as `--start-image`/`--end-image`; the CLI uploads them itself and the files
   are removed the moment the submission is answered.

@@ -73,17 +73,23 @@ export function MediaBin() {
           return (
             <div
               key={asset.id}
-              className={`bin__tile ${draggingAssetId === asset.id ? 'bin__tile--dragging' : ''}`}
-              title={`${asset.name} · drag onto the timeline · Enter adds it at the playhead`}
-              // A focusable tile rather than a `role="button"` one: the role is in App's
+              className={`bin__tile${asset.missing ? ' bin__tile--missing' : ''}${draggingAssetId === asset.id ? ' bin__tile--dragging' : ''}`}
+              title={
+                asset.missing
+                  ? `${asset.name} — the file is no longer on disk${asset.path ? ` (${asset.path})` : ''}`
+                  : `${asset.name} · drag onto the timeline · Enter adds it at the playhead`
+              }
+              // A tile whose file is gone is not a source: a clip on it could only render as
+              // "media offline" and would block the export. It keeps its ✕ and nothing else.
+              // Focusable, but deliberately not `role="button"` — the role is in App's
               // INTERACTIVE list, which would take Delete and Backspace away from the
               // selection for as long as a tile held focus.
-              tabIndex={0}
-              aria-label={`Add ${asset.name} to the timeline`}
+              tabIndex={asset.missing ? undefined : 0}
+              aria-label={asset.missing ? undefined : `Add ${asset.name} to the timeline`}
               onPointerDown={(e) => {
                 // The timeline takes it from here — it is the half that knows where a drop
                 // would land. A right-click must not arm a drag whose release never comes.
-                if (e.button !== 0) return;
+                if (e.button !== 0 || asset.missing) return;
                 beginAssetDrag(asset.id);
               }}
               onDoubleClick={() => placeAssetOnTimeline(asset.id)}

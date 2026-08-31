@@ -14,6 +14,7 @@ import {
   DEFAULT_AUDIO_DURATION_MS,
   DEFAULT_PHOTO_DURATION_MS,
   DEFAULT_TRANSITION_DURATION_MS,
+  DEFAULT_TRANSITION_MODE,
   DEFAULT_TRANSITION_PROMPT,
   DEFAULT_VIDEO_DURATION_MS,
   type AudioTrack,
@@ -46,6 +47,7 @@ import {
   setFilmPrompt,
   type Film,
 } from '../lib/film';
+import { hydrate, markMissing, readProjectFile, toProjectFile } from '../lib/project';
 import {
   audioTrack,
   canSplitAt,
@@ -58,6 +60,7 @@ import {
   photoClip,
   photoCuts,
   placeClip,
+  removeClipsClosingSpans,
   replacePairWithTransition,
   replaceTransitionClip,
   resizeAudio,
@@ -99,6 +102,15 @@ export interface ExportState {
 }
 
 /**
+ * What restoring the stored project found — and therefore whether autosave may start.
+ *
+ * `blocked` is the one that matters: it means something is on disk that this session must
+ * not overwrite. Arming autosave after a restore that *failed* would leave an empty editor
+ * writing over the project it could not read, the moment the user touched anything.
+ */
+export type RestoreOutcome = 'restored' | 'nothing' | 'blocked';
+
+/**
  * One photo the film wizard is holding, before anything has been imported.
  *
  * Either half can be the real one: a desktop pick and an OS drop carry a `path` the Rust
@@ -108,6 +120,18 @@ export interface FilmPhotoSource {
   name: string;
   file?: File;
   path?: string;
+}
+
+/**
+ * One launched cut of an "Animate all" run, tracked until the run's terminal collapse.
+ * `landedClipId` is set once the leg's insert landing has placed a clip; a leg whose
+ * landing no-oped (the photos moved) stays without one, so its photos are kept.
+ */
+export interface AnimateLeg {
+  generationId: string;
+  afterClipId: string;
+  beforeClipId: string;
+  landedClipId?: string;
 }
 
 export const PHOTO_EXTS = ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'gif', 'avif'];
@@ -140,7 +164,7 @@ export interface EditorState {
   /**
    * The model the next render uses — a `RenderModel` id, or `custom` for the model id
    * Settings stores. Chosen at any render entry point and sent with every request; never
-   * persisted, so a fresh session is back on the default (MiniMax Hailuo-02 Standard).
+   * persisted, so a fresh session is back on the default (Seedance 2.5).
    */
   modelId: string;
   /** The three-photo film currently being made, if there is one. */
@@ -155,6 +179,13 @@ export interface EditorState {
   animateQueue: Cut[] | null;
   /** The queue's generation whose submission has not been accepted (no `jobId`) yet. */
   animateSubmittingId: string | null;
+  /**
+   * The whole "Animate all" run, one leg per launched cut. Landings stay between their
+   * photos while it lives; once the queue has drained *and* every leg is terminal, the run
+   * collapses — the photos its landings stand for leave the track and each landing is
+   * stamped `replace`, so the chain ends as pure motion. `null` when no run is active.
+   */
+  animateRun: { legs: AnimateLeg[] } | null;
   importing: number;
   importProblems: ImportProblem[];
   /**
@@ -172,6 +203,15 @@ export interface EditorState {
    * a key on a machine whose CLI is fine.
    */
   connectionMessage: { ok: boolean; text: string; title?: string } | null;
+
+  /**
+   * Why the last autosave failed, or `null` while it is working.
+   *
+   * The only thing this feature ever puts on screen. A working autosave shows nothing —
+   * the work simply being there at the next launch is the whole confirmation — but a
+   * *broken* one has to say so, or the user loses everything without ever being told.
+   */
+  saveError: string | null;
 
   exportState: ExportState | null;
   /**
@@ -242,6 +282,10 @@ export interface EditorState {
   placeFilmOnTimeline: () => void;
   dismissFilm: () => void;
 
+  // ---- the saved project
+  restoreProject: () => Promise<RestoreOutcome>;
+  persistProject: () => Promise<void>;
+
   // ---- settings, export, chrome
   loadSettings: () => Promise<void>;
   openSettings: () => void;
@@ -273,6 +317,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   cutModes: {},
   animateQueue: null,
   animateSubmittingId: null,
+  animateRun: null,
   importing: 0,
   importProblems: [],
   draggingAssetId: null,
@@ -280,6 +325,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   settings: null,
   settingsOpen: false,
   connectionMessage: null,
+
+  saveError: null,
 
   exportState: null,
   exporting: false,
@@ -421,6 +468,9 @@ export const useEditor = create<EditorState>((set, get) => ({
       set({ animateSubmittingId: null });
       get().advanceAnimateQueue();
     }
+    // Same silence for the animate run: a swept record leaves its leg terminal-by-missing,
+    // and this may have been the run's last live one.
+    maybeCollapseAnimateRun(set, get);
 
     // A browser drop owns an object URL, and this was the last reference to it.
     if (asset.src.startsWith('blob:')) URL.revokeObjectURL(asset.src);
@@ -444,7 +494,9 @@ export const useEditor = create<EditorState>((set, get) => ({
   placeAssetOnTimeline(assetId, index, audioStartMs) {
     const { assets, clips, playheadMs } = get();
     const asset = assets[assetId];
-    if (!asset) return;
+    // An asset whose file has gone is refused here, the way a generation refuses one: a clip
+    // on it could only render as "media offline" and would block the export.
+    if (!asset || asset.missing) return;
     commitImport(
       set,
       [placed(asset, audioStartMs ?? playheadMs, asset.durationMs)],
@@ -659,7 +711,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       beforeClipId,
       from,
       to,
-      mode: mode ?? s.cutModes[cutKey(afterClipId, beforeClipId)] ?? 'insert',
+      mode: resolveCutMode(s, afterClipId, beforeClipId, mode),
     };
     return launchGeneration(set, get, target, prompt, {
       fromSrc: s.assets[clipA.assetId].src,
@@ -740,11 +792,33 @@ export const useEditor = create<EditorState>((set, get) => ({
     get().dismissGeneration(generationId);
 
     const target = generation.target;
+    const leg = get().animateRun?.legs.find((l) => l.generationId === generationId);
     if (target.kind === 'film') {
       // A film leg is retried from the film panel, which is where its state is shown.
       void get().retryFilmSegment(target.filmSegmentIndex);
     } else if (target.replacesClipId !== undefined) {
       get().regenerateTransition(target.replacesClipId);
+    } else if (leg) {
+      // A run leg retries as insert — mid-run a replace landing would still consume clips
+      // out from under the others — and re-registers itself so the collapse waits for the
+      // retry's landing. When the cut no longer stands nothing launches: the record just
+      // dismissed then leaves the leg terminal-by-missing, and the check below lets the
+      // run resolve without it rather than stall.
+      const id = get().startCutGeneration(target.afterClipId, target.beforeClipId, 'insert');
+      if (id) {
+        set((s) => ({
+          animateRun: s.animateRun
+            ? {
+                legs: s.animateRun.legs.map((l) =>
+                  l.generationId === generationId
+                    ? { generationId: id, afterClipId: l.afterClipId, beforeClipId: l.beforeClipId }
+                    : l,
+                ),
+              }
+            : s.animateRun,
+        }));
+      }
+      maybeCollapseAnimateRun(set, get);
     } else {
       get().startCutGeneration(target.afterClipId, target.beforeClipId);
     }
@@ -753,11 +827,13 @@ export const useEditor = create<EditorState>((set, get) => ({
   animateAll() {
     const s = get();
     if (!s.settings?.configured) return;
+    // One run at a time — the action guards itself, not just the button that offers it.
+    if (s.animateQueue !== null || s.animateRun !== null) return;
     const eligible = photoCuts(s.clips).filter((cut) =>
       cutEligible(s, cut.afterClipId, cut.beforeClipId),
     );
     if (eligible.length === 0) return;
-    set({ animateQueue: eligible });
+    set({ animateQueue: eligible, animateRun: { legs: [] } });
     get().advanceAnimateQueue();
   },
 
@@ -784,11 +860,26 @@ export const useEditor = create<EditorState>((set, get) => ({
       // out from under the cuts still queued behind it.
       const id = get().startCutGeneration(head.afterClipId, head.beforeClipId, 'insert');
       if (id) {
-        set({ animateQueue: rest, animateSubmittingId: id });
+        set((s2) => ({
+          animateQueue: rest,
+          animateSubmittingId: id,
+          // The run tracks every launched cut as a leg; a skipped cut never becomes one.
+          animateRun: s2.animateRun
+            ? {
+                legs: [
+                  ...s2.animateRun.legs,
+                  { generationId: id, afterClipId: head.afterClipId, beforeClipId: head.beforeClipId },
+                ],
+              }
+            : s2.animateRun,
+        }));
         return;
       }
     }
     set({ animateQueue: null, animateSubmittingId: null });
+    // The last launch may already be terminal — or every cut was skipped — so the drain
+    // itself can be the run's final event, not just a generation update.
+    maybeCollapseAnimateRun(set, get);
   },
 
   applyGenerationUpdate(update) {
@@ -821,6 +912,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
 
     maybeAdvanceAnimateQueue(set, get, update.generationId);
+    maybeCollapseAnimateRun(set, get);
   },
 
   async cancelGeneration(id) {
@@ -828,6 +920,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     const existing = get().generations[id];
     if (existing) writeGeneration(set, { ...existing, status: 'cancelled' });
     maybeAdvanceAnimateQueue(set, get, id);
+    maybeCollapseAnimateRun(set, get);
   },
 
   dismissGeneration(id) {
@@ -1015,6 +1108,75 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({ film: null });
   },
 
+  // ------------------------------------------------------------- the saved project
+
+  async restoreProject() {
+    let raw: unknown;
+    try {
+      raw = await backend.loadProject();
+    } catch (error) {
+      // Nothing is on screen and nothing is known about what is on disk. Saving stays off:
+      // writing now would replace a project that may be perfectly good.
+      set({ saveError: message(error) });
+      return 'blocked';
+    }
+
+    const read = readProjectFile(raw);
+    if (read.kind === 'empty') return 'nothing';
+
+    if (read.kind === 'newer') {
+      get().pushToast({
+        tone: 'error',
+        title: 'This project was saved by a newer SolCut',
+        detail: 'It is left untouched and nothing is being saved this session. Update SolCut to open it.',
+      });
+      return 'blocked';
+    }
+
+    if (read.kind === 'unreadable') {
+      // Replaceable, unlike a newer file: this build understands the format and the stored
+      // one is not it, so the next edit overwrites it. That is the only way out.
+      get().pushToast({
+        tone: 'error',
+        title: 'The saved project could not be read',
+        detail: 'Starting empty. Anything you do now replaces it.',
+      });
+      return 'nothing';
+    }
+
+    const s = get();
+    if (s.clips.length > 0 || s.audioTracks.length > 0 || Object.keys(s.assets).length > 0) {
+      // Something landed while the project was being read. That edit is the user's and it
+      // wins — but it is not what is on disk, so nothing is written over the stored
+      // project either. Restarting is what gets it back.
+      get().pushToast({
+        tone: 'error',
+        title: 'The saved project was not restored',
+        detail: 'The editor was already in use. Nothing is being saved this session — restart SolCut to open it.',
+      });
+      return 'blocked';
+    }
+
+    // One `set`: no render ever sees clips whose assets are not in the bin yet.
+    set(hydrate(read.file, { resolveSrc: backend.assetSrc }));
+    void probeRestoredMedia(set, get);
+    return 'restored';
+  },
+
+  async persistProject() {
+    try {
+      await backend.saveProject(toProjectFile(get()));
+      if (get().saveError) set({ saveError: null });
+    } catch (error) {
+      const text = message(error);
+      // Said once, when saving starts failing — not again on every debounce after that.
+      if (!get().saveError) {
+        get().pushToast({ tone: 'error', title: 'The project could not be saved', detail: text });
+      }
+      set({ saveError: text });
+    }
+  },
+
   // ------------------------------------------------------------------ settings & export
 
   async loadSettings() {
@@ -1083,9 +1245,15 @@ export const useEditor = create<EditorState>((set, get) => ({
     // and a second encode of the same timeline.
     if (exporting) return;
 
+    // A restored clip whose file has since gone still *has* a path, so testing the path
+    // alone would wave it through and let ffmpeg die on it mid-render.
+    const unplayable = (assetId: string) => {
+      const asset = assets[assetId];
+      return !asset?.path || asset.missing === true;
+    };
     const offline =
-      clips.find((c) => !assets[c.assetId]?.path) ??
-      audioTracks.find((t) => !t.muted && !assets[t.assetId]?.path);
+      clips.find((c) => unplayable(c.assetId)) ??
+      audioTracks.find((t) => !t.muted && unplayable(t.assetId));
     if (offline) {
       set({
         exportState: {
@@ -1238,6 +1406,56 @@ async function probeDurations(set: Setter, accepted: Imported[]) {
   );
 }
 
+/**
+ * Ask the filesystem which restored media is actually still where it was left.
+ *
+ * Runs *after* the project is on screen, deliberately: `import_media` is a synchronous
+ * Tauri command doing a blocking stat per path, so probing first would hold the window
+ * shut while a sleeping drive or an unmounted share woke up. It imports nothing — the
+ * command only reads — so this is a question, not an edit.
+ */
+async function probeRestoredMedia(set: Setter, get: () => EditorState): Promise<void> {
+  const paths = [
+    ...new Set(
+      Object.values(get().assets)
+        .map((asset) => asset.path)
+        .filter(Boolean),
+    ),
+  ];
+
+  let gone: Set<string> = new Set();
+  if (paths.length > 0) {
+    try {
+      const result = await backend.importPaths(paths);
+      const found = new Set((result?.imported ?? []).map((item) => item.path));
+      gone = new Set(paths.filter((path) => !found.has(path)));
+    } catch {
+      // Only the probe failed. The media is probably exactly where it was, and calling all
+      // of it missing would make a working project look broken.
+    }
+  }
+
+  const marked = markMissing(get().assets, gone);
+  // `markMissing` hands back the same object when nothing changed, so a project whose
+  // media is all present does not look like an edit and does not cost a write.
+  if (marked.assets !== get().assets) set({ assets: marked.assets });
+  if (marked.missing.length > 0) reportMissingMedia(get, marked.missing);
+}
+
+/** One toast for everything the restore could not find, however many files that is. */
+function reportMissingMedia(get: () => EditorState, missing: MediaAsset[]): void {
+  const names = missing.map((asset) => asset.name);
+  const shown = names.slice(0, 3).join(', ');
+  const rest = names.length - 3;
+  get().pushToast({
+    tone: 'error',
+    title: `${names.length} ${names.length === 1 ? 'file is' : 'files are'} no longer on disk`,
+    detail: `${rest > 0 ? `${shown} and ${rest} more` : shown} — re-import ${
+      names.length === 1 ? 'it' : 'them'
+    } and put ${names.length === 1 ? 'it' : 'them'} back on the track. Export is blocked until then.`,
+  });
+}
+
 function safeObjectUrl(file: File): string {
   try {
     return URL.createObjectURL(file);
@@ -1250,6 +1468,27 @@ function safeObjectUrl(file: File): string {
 
 function cutKey(afterClipId: string, beforeClipId: string): string {
   return `${afterClipId}:${beforeClipId}`;
+}
+
+/**
+ * The mode a cut launch stamps — and the mode its card displays. One expression for both,
+ * so the card can never promise one landing and get another. An explicit `mode` (the
+ * animate-all queue's forced insert) wins, then the cut's own stored pick; only the
+ * *fallback* changes with the weather — replace by default, insert while an Animate all
+ * run is live, because a replace landing would consume clips out from under the legs
+ * still behind it.
+ */
+export function resolveCutMode(
+  s: Pick<EditorState, 'cutModes' | 'animateRun'>,
+  afterClipId: string,
+  beforeClipId: string,
+  mode?: TransitionMode,
+): TransitionMode {
+  return (
+    mode ??
+    s.cutModes[cutKey(afterClipId, beforeClipId)] ??
+    (s.animateRun !== null ? 'insert' : DEFAULT_TRANSITION_MODE)
+  );
 }
 
 function liveGeneration(g: Generation): boolean {
@@ -1489,6 +1728,7 @@ function launchGeneration(
       }
       get().pushToast({ tone: 'error', title: 'Generation could not start', detail: message(error) });
       maybeAdvanceAnimateQueue(set, get, generationId);
+      maybeCollapseAnimateRun(set, get);
     }
   })();
 
@@ -1573,6 +1813,22 @@ function landCutResult(
     };
   });
 
+  // An animate-run leg keeps hold of what it placed, so the run's collapse can tell a
+  // landing that still stands from one the user deleted or split away.
+  const legLanded = landedClipId;
+  if (legLanded !== null) {
+    set((s) => ({
+      animateRun:
+        s.animateRun && s.animateRun.legs.some((l) => l.generationId === generation.id)
+          ? {
+              legs: s.animateRun.legs.map((l) =>
+                l.generationId === generation.id ? { ...l, landedClipId: legLanded } : l,
+              ),
+            }
+          : s.animateRun,
+    }));
+  }
+
   // Stop paying for renders whose clips were just consumed — and if one of them was the
   // animate-all queue's in-flight submission, move the queue along past it.
   for (const id of cancelledIds) {
@@ -1626,6 +1882,105 @@ function maybeAdvanceAnimateQueue(set: Setter, get: () => EditorState, generatio
   if (!submitted && !gone) return;
   set({ animateSubmittingId: null });
   get().advanceAnimateQueue();
+}
+
+/**
+ * The end of an "Animate all" run: once its queue has fully drained and every leg is
+ * terminal, the photos whose every touching leg has motion standing in for them leave the
+ * track — spans closing behind them — and each standing landing is stamped `replace`, so
+ * the chain ends exactly where a single default cut does: pure motion, photos in the bin.
+ * Cheap and idempotent, so it is called after every event that could be the run's last.
+ *
+ * A leg is terminal when its record reached `succeeded`, `failed` or `cancelled` — or when
+ * the record is gone entirely (swept by `removeAsset`, dismissed, or pruned): nothing will
+ * ever arrive for it again. The queue check is load-bearing: the queue lingers as `[]`
+ * between the last launch and the next advance, so "empty" is not "drained" — without it,
+ * an early cancel could collapse a half-built run.
+ */
+function maybeCollapseAnimateRun(set: Setter, get: () => EditorState): void {
+  const s = get();
+  if (!s.animateRun || s.animateQueue !== null) return;
+  const legs = s.animateRun.legs;
+  const record = (leg: AnimateLeg) => s.generations[leg.generationId];
+  if (legs.some((leg) => record(leg) !== undefined && liveGeneration(record(leg)!))) return;
+
+  if (legs.length === 0) {
+    // Every cut was skipped before a single launch: nothing ran, nothing to say.
+    set({ animateRun: null });
+    return;
+  }
+
+  const clipById = new Map(s.clips.map((c) => [c.id, c]));
+  // A leg whose motion genuinely stands in for its photos: it succeeded, its landing was
+  // placed, and that clip is still on the track wearing `transition` — a delete or a split
+  // dropped the motion, so the stills it covered must stay.
+  const standing = (leg: AnimateLeg): boolean =>
+    record(leg)?.status === 'succeeded' &&
+    leg.landedClipId !== undefined &&
+    Boolean(clipById.get(leg.landedClipId)?.transition);
+
+  const legsByPhoto = new Map<string, AnimateLeg[]>();
+  for (const leg of legs) {
+    for (const id of [leg.afterClipId, leg.beforeClipId]) {
+      legsByPhoto.set(id, [...(legsByPhoto.get(id) ?? []), leg]);
+    }
+  }
+  // A photo leaves only when every leg touching it stands — and only when it is still on
+  // the track itself: one consumed mid-run by an explicit replace landing is simply
+  // absent, a no-op here.
+  const doomed = new Set(
+    [...legsByPhoto]
+      .filter(([id, touching]) => clipById.has(id) && touching.every(standing))
+      .map(([id]) => id),
+  );
+  const stamped = new Set(
+    legs.flatMap((leg) => (standing(leg) && leg.landedClipId !== undefined ? [leg.landedClipId] : [])),
+  );
+
+  set((state) => {
+    const clips = removeClipsClosingSpans(
+      state.clips.map((c) =>
+        c.transition && stamped.has(c.id)
+          ? { ...c, transition: { ...c.transition, mode: 'replace' as const } }
+          : c,
+      ),
+      [...doomed],
+    );
+    const selectionDoomed =
+      state.selection.kind === 'clip'
+        ? doomed.has(state.selection.clipId)
+        : state.selection.kind === 'cut'
+          ? doomed.has(state.selection.afterClipId) || doomed.has(state.selection.beforeClipId)
+          : false;
+    return {
+      clips,
+      animateRun: null,
+      selection: selectionDoomed ? { kind: 'none' } : state.selection,
+      playheadMs: Math.min(state.playheadMs, timelineEndMs(clips, state.audioTracks)),
+      ...prunedAfterEdit(clips, state.generations, state.cutPrompts, state.cutModes),
+    };
+  });
+
+  const landed = stamped.size;
+  if (landed === legs.length) {
+    get().pushToast({
+      tone: 'ok',
+      title: `${landed} transition${landed === 1 ? '' : 's'} — pure motion`,
+      detail: 'The photos left the track; they stay in the media bin.',
+    });
+  } else if (landed > 0) {
+    get().pushToast({
+      tone: 'ok',
+      title: `${landed} of ${legs.length} transitions in`,
+      detail: 'The photos stay where a transition did not land.',
+    });
+  } else {
+    get().pushToast({
+      tone: 'error',
+      title: 'No transitions landed',
+      detail: 'The photos stay on the track.',
+    });
+  }
 }
 
 function message(error: unknown): string {

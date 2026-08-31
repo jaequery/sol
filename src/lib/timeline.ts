@@ -598,6 +598,35 @@ export function replacePairWithTransition(
 }
 
 /**
+ * Remove the named clips and close the spans they held: everything starting at or after a
+ * removed clip's end walks left by that clip's duration, shifts accumulating across
+ * removals in time order, so each removed span closes behind it while gaps the user left
+ * elsewhere keep their shape. Unknown ids are no-ops. This is how an "Animate all" run
+ * ends — the photos its landings stand for leave the track and the chain closes up into
+ * pure motion.
+ */
+export function removeClipsClosingSpans(clips: Clip[], ids: string[]): Clip[] {
+  const doomed = new Set(ids);
+  const removed = sortClips(clips.filter((c) => doomed.has(c.id)));
+  if (removed.length === 0) return clips;
+  // Clips never overlap, so a survivor is either wholly before a removed clip (untouched)
+  // or starts at/after its end (walked left by its length).
+  const shiftAt = (startMs: number) =>
+    removed.reduce(
+      (sum, r) => (startMs >= r.startMs + r.durationMs ? sum + r.durationMs : sum),
+      0,
+    );
+  return sortClips(
+    clips
+      .filter((c) => !doomed.has(c.id))
+      .map((c) => {
+        const shift = shiftAt(c.startMs);
+        return shift === 0 ? c : { ...c, startMs: c.startMs - shift };
+      }),
+  );
+}
+
+/**
  * A regeneration swaps the finished render over the existing transition clip, keeping its
  * id (so the selection stays on it) and its start; a change of length ripples everything
  * after its old end by the difference, so what follows keeps its spacing. Identity no-op

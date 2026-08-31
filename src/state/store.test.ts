@@ -8,7 +8,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useEditor } from './store';
-import { photoClip } from '../lib/timeline';
+import { photoClip, videoClip } from '../lib/timeline';
 import { assembleFilm, defaultFilmPrompt, FILM_SEGMENT_DURATION_MS } from '../lib/film';
 import { DEFAULT_MODEL_ID, type GenerateInput, type GenerationUpdate } from '../lib/backend';
 import type { Clip, MediaAsset } from '../types/project';
@@ -32,7 +32,10 @@ vi.mock('../lib/backend', async (importOriginal) => ({
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
   testApiKey: vi.fn(),
-  importPaths: vi.fn(),
+  importPaths: vi.fn(async () => ({ imported: [], rejected: [] })),
+  // Persistence is desktop-only and every suite starts from a fresh, empty project.
+  loadProject: vi.fn(async () => null),
+  saveProject: vi.fn(async () => {}),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
   cancelGeneration: (id: string) => cancelGeneration(id),
   ffmpegAvailable: async () => true,
@@ -83,6 +86,7 @@ beforeEach(() => {
     cutModes: {},
     animateQueue: null,
     animateSubmittingId: null,
+    animateRun: null,
     importProblems: [],
     importing: 0,
     draggingAssetId: null,
@@ -90,6 +94,7 @@ beforeEach(() => {
     exportState: null,
     settings: CONNECTED,
     settingsOpen: false,
+    saveError: null,
   });
 });
 
@@ -524,11 +529,400 @@ describe('replace-mode cut transitions', () => {
   });
 });
 
+describe('the animate-all run and its terminal collapse', () => {
+  /** The named photos in the bin and on the track, 5 s each, laid end to end. */
+  function photosOnTrack(ids: string[]) {
+    useEditor.setState({
+      assets: Object.fromEntries(ids.map((id) => [id, photo(id)])),
+      clips: ids.map((id, i) => photoClip({ id, name: `${id}.jpg` }, 5000, i * 5000)),
+    });
+  }
+
+  /**
+   * Start the run and accept every submission in turn — the next cut only launches once
+   * the previous one holds a `jobId` — so the queue drains fully and every leg is live.
+   * Returns the legs' generation ids in launch order.
+   */
+  function runAnimateAll(): string[] {
+    useEditor.getState().animateAll();
+    const ids: string[] = [];
+    while (useEditor.getState().animateSubmittingId) {
+      const id = useEditor.getState().animateSubmittingId!;
+      ids.push(id);
+      emit({ generationId: id, status: 'queued', progress: 0, jobId: `job-${ids.length}`, elapsedSecs: 1, slow: false });
+    }
+    return ids;
+  }
+
+  function succeed(id: string, outputPath: string) {
+    emit({ generationId: id, status: 'succeeded', progress: 1, elapsedSecs: 60, slow: false, outputPath });
+  }
+
+  function fail(id: string) {
+    emit({
+      generationId: id,
+      status: 'failed',
+      progress: 0,
+      elapsedSecs: 4,
+      slow: false,
+      error: { title: 'Rate limited', message: 'rate limited', retryable: true },
+    });
+  }
+
+  it('collapses to pure motion once every leg lands: photos out, clips flush, stamped replace', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+    const [g1, g2] = runAnimateAll();
+    expect(useEditor.getState().animateQueue).toBeNull();
+    expect(useEditor.getState().animateRun?.legs).toHaveLength(2);
+
+    succeed(g1, '/cache/t1.mp4');
+    // Mid-run the landing is an insert: the photos are still on the track, visibly.
+    expect(useEditor.getState().clips.map((c) => c.kind)).toEqual(['photo', 'video', 'photo', 'photo']);
+    expect(useEditor.getState().animateRun).not.toBeNull();
+
+    succeed(g2, '/cache/t2.mp4');
+
+    const s = useEditor.getState();
+    // Two 5 s legs back to back — the reel is the animation and nothing else.
+    expect(s.clips.map((c) => [c.kind, c.startMs])).toEqual([
+      ['video', 0],
+      ['video', 5000],
+    ]);
+    expect(s.clips.map((c) => s.assets[c.assetId].path)).toEqual(['/cache/t1.mp4', '/cache/t2.mp4']);
+    expect(s.clips.every((c) => c.transition?.mode === 'replace')).toBe(true);
+    // The photos stay in the media bin to re-drag.
+    expect(s.assets.asset_a && s.assets.asset_b && s.assets.asset_c).toBeTruthy();
+    expect(s.animateRun).toBeNull();
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'ok', title: '2 transitions — pure motion' });
+  });
+
+  it('a failed leg keeps its photos and the rest still collapses around them', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c', 'asset_d']);
+    const [g1, g2, g3] = runAnimateAll();
+
+    succeed(g1, '/cache/t1.mp4');
+    fail(g2);
+    succeed(g3, '/cache/t3.mp4');
+
+    const s = useEditor.getState();
+    // a and d were wholly stood in for and left; b and c stay for the failed middle leg.
+    expect(s.clips.map((c) => [c.kind, c.startMs])).toEqual([
+      ['video', 0],
+      ['photo', 5000],
+      ['photo', 10_000],
+      ['video', 15_000],
+    ]);
+    expect(s.clips[0].transition?.mode).toBe('replace');
+    expect(s.clips[3].transition?.mode).toBe('replace');
+    expect(s.animateRun).toBeNull();
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'ok', title: '2 of 3 transitions in' });
+    // The failed record survives the collapse — its cut still stands, chip and card intact.
+    expect(s.generations[g2].status).toBe('failed');
+  });
+
+  it('a landing deleted mid-run keeps the photos it covered', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+    const [g1, g2] = runAnimateAll();
+
+    succeed(g1, '/cache/t1.mp4');
+    const t1 = useEditor.getState().clips.find((c) => c.transition)!;
+    useEditor.setState({ selection: { kind: 'clip', clipId: t1.id } });
+    useEditor.getState().deleteSelection();
+
+    succeed(g2, '/cache/t2.mp4');
+
+    const s = useEditor.getState();
+    // The conservative rule: motion gone means its stills stay — only c leaves.
+    expect(s.clips.map((c) => [c.kind, c.startMs])).toEqual([
+      ['photo', 0],
+      ['photo', 10_000],
+      ['video', 15_000],
+    ]);
+    expect(s.clips[2].transition?.mode).toBe('replace');
+    expect(s.animateRun).toBeNull();
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'ok', title: '1 of 2 transitions in' });
+  });
+
+  it('a landing split mid-run severed its identity, so its photos stay too', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+    const [g1, g2] = runAnimateAll();
+    succeed(g1, '/cache/t1.mp4');
+
+    // Split the landed clip (5–10 s): both halves keep `ai` but drop `transition`.
+    useEditor.getState().setPlayhead(7500);
+    useEditor.getState().splitAtPlayhead();
+
+    succeed(g2, '/cache/t2.mp4');
+
+    const s = useEditor.getState();
+    expect(s.clips.map((c) => c.kind)).toEqual(['photo', 'video', 'video', 'photo', 'video']);
+    expect(s.clips[4].transition?.mode).toBe('replace');
+    expect(s.animateRun).toBeNull();
+  });
+
+  it('clamps the playhead to the collapsed reel', () => {
+    photosOnTrack(['asset_a', 'asset_b']);
+    const [g1] = runAnimateAll();
+
+    useEditor.setState({ playheadMs: 9000 });
+    succeed(g1, '/cache/t1.mp4');
+
+    const s = useEditor.getState();
+    expect(s.clips.map((c) => [c.kind, c.startMs])).toEqual([['video', 0]]);
+    expect(s.playheadMs).toBe(5000);
+    // The landing selected the clip that survived, so nothing dangles.
+    expect(s.selection).toEqual({ kind: 'clip', clipId: s.clips[0].id });
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'ok', title: '1 transition — pure motion' });
+  });
+
+  it('resets a selection standing on a photo the collapse consumed', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+    const [g1, g2] = runAnimateAll();
+    const a = useEditor.getState().clips[0];
+
+    succeed(g1, '/cache/t1.mp4');
+    useEditor.setState({ selection: { kind: 'clip', clipId: a.id } });
+    fail(g2);
+
+    // a left with the collapse (its leg landed); the selection cannot point at a ghost.
+    expect(useEditor.getState().clips.some((c) => c.id === a.id)).toBe(false);
+    expect(useEditor.getState().selection).toEqual({ kind: 'none' });
+  });
+
+  it('resets a cut selection whose pair the collapse consumed', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+    const [g1, g2] = runAnimateAll();
+    const [a, b] = useEditor.getState().clips;
+
+    succeed(g1, '/cache/t1.mp4');
+    useEditor.setState({ selection: { kind: 'cut', afterClipId: a.id, beforeClipId: b.id } });
+    fail(g2);
+
+    expect(useEditor.getState().selection).toEqual({ kind: 'none' });
+  });
+
+  it('refuses to start a second run while one is live', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+    runAnimateAll();
+    expect(Object.keys(useEditor.getState().generations)).toHaveLength(2);
+
+    useEditor.getState().animateAll();
+
+    // Nothing new was recorded or queued — the run in flight owns the board.
+    expect(Object.keys(useEditor.getState().generations)).toHaveLength(2);
+    expect(useEditor.getState().animateRun?.legs).toHaveLength(2);
+    expect(useEditor.getState().animateQueue).toBeNull();
+  });
+
+  it('holds the collapse until the queue has fully drained, not merely emptied', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+    const [g1, g2] = runAnimateAll();
+    // Restore the window the queue really passes through: after the last launch it lingers
+    // as [] until the next advance nulls it. Every leg going terminal inside that window
+    // must not collapse the run early.
+    useEditor.setState({ animateQueue: [] });
+
+    succeed(g1, '/cache/t1.mp4');
+    fail(g2);
+
+    let s = useEditor.getState();
+    expect(s.animateRun).not.toBeNull();
+    expect(s.clips.filter((c) => c.kind === 'photo')).toHaveLength(3);
+
+    // The drain itself is then the run's final event.
+    useEditor.getState().advanceAnimateQueue();
+
+    s = useEditor.getState();
+    expect(s.animateRun).toBeNull();
+    expect(s.clips.map((c) => [c.kind, c.startMs])).toEqual([
+      ['video', 0],
+      ['photo', 5000],
+      ['photo', 10_000],
+    ]);
+  });
+
+  it('a live leg swept by removing its photo still lets the run resolve', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+    const [g1, g2] = runAnimateAll();
+    succeed(g1, '/cache/t1.mp4');
+
+    // c leaves the bin while its render runs: the record is deleted outright, so no
+    // update will ever arrive for it — the run must resolve rather than stall forever.
+    useEditor.getState().removeAsset('asset_c');
+
+    const s = useEditor.getState();
+    expect(s.generations[g2]).toBeUndefined();
+    expect(cancelGeneration).toHaveBeenCalledWith(g2);
+    expect(s.animateRun).toBeNull();
+    expect(s.clips.map((c) => [c.kind, c.startMs])).toEqual([
+      ['video', 0],
+      ['photo', 5000],
+    ]);
+    expect(s.clips[0].transition?.mode).toBe('replace');
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'ok', title: '1 of 2 transitions in' });
+  });
+
+  it('Retry of a failed leg re-registers it as insert, and the collapse waits for it', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c', 'asset_d']);
+    const [g1, g2, g3] = runAnimateAll();
+    fail(g1);
+    succeed(g2, '/cache/t2.mp4');
+
+    // The third leg is still rendering, so the run is open; retry the failed first one.
+    useEditor.getState().retryGeneration(g1);
+    const retried = useEditor.getState().animateRun!.legs[0].generationId;
+    expect(retried).not.toBe(g1);
+    expect(useEditor.getState().generations[retried].target).toMatchObject({
+      kind: 'cut',
+      mode: 'insert',
+    });
+
+    succeed(g3, '/cache/t3.mp4');
+    // Still open: the retried leg has not landed yet.
+    expect(useEditor.getState().animateRun).not.toBeNull();
+
+    succeed(retried, '/cache/t1-retry.mp4');
+
+    const s = useEditor.getState();
+    expect(s.clips.map((c) => [c.kind, c.startMs])).toEqual([
+      ['video', 0],
+      ['video', 5000],
+      ['video', 10_000],
+    ]);
+    expect(s.clips.every((c) => c.transition?.mode === 'replace')).toBe(true);
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'ok', title: '3 transitions — pure motion' });
+  });
+
+  it('a retry whose cut is gone resolves the leg by absence instead of stalling', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+    const [g1, g2] = runAnimateAll();
+    fail(g1);
+
+    // A video wedges itself between a and b while the retry is being considered — direct
+    // state surgery, so the failed record is still there to retry.
+    const [a, b, c] = useEditor.getState().clips;
+    useEditor.setState({
+      clips: [
+        a,
+        videoClip({ id: 'asset_w', name: 'w.mp4' }, 1000, 5000),
+        { ...b, startMs: 6000 },
+        { ...c, startMs: 11_000 },
+      ],
+    });
+
+    useEditor.getState().retryGeneration(g1);
+    // Nothing launched and the leg was not swapped: its dismissed record resolves it.
+    expect(useEditor.getState().animateRun!.legs[0].generationId).toBe(g1);
+    expect(useEditor.getState().generations[g1]).toBeUndefined();
+
+    succeed(g2, '/cache/t2.mp4');
+
+    const s = useEditor.getState();
+    expect(s.animateRun).toBeNull();
+    // Only c, wholly stood in for by the leg that landed, left the track.
+    expect(s.clips.map((x) => [x.kind, x.startMs])).toEqual([
+      ['photo', 0],
+      ['video', 5000],
+      ['photo', 6000],
+      ['video', 11_000],
+    ]);
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'ok', title: '1 of 2 transitions in' });
+  });
+
+  it('a manual mode-less Generate mid-run falls back to insert, never replace', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c', 'asset_d']);
+    useEditor.getState().animateAll();
+
+    // Only a|b has launched; c|d is still waiting in the queue when the user generates.
+    const clips = useEditor.getState().clips;
+    const manual = useEditor.getState().startCutGeneration(clips[2].id, clips[3].id);
+    expect(manual).toBeTruthy();
+    expect(useEditor.getState().generations[manual!].target).toMatchObject({ mode: 'insert' });
+  });
+
+  it('after the run resolves, a fresh cut launch is back on replace', () => {
+    photosOnTrack(['asset_a', 'asset_b']);
+    const [g1] = runAnimateAll();
+    fail(g1);
+    expect(useEditor.getState().animateRun).toBeNull();
+    expect(useEditor.getState().toasts.at(-1)).toMatchObject({ tone: 'error', title: 'No transitions landed' });
+
+    const [a, b] = useEditor.getState().clips;
+    const healed = useEditor.getState().startCutGeneration(a.id, b.id);
+    expect(useEditor.getState().generations[healed!].target).toMatchObject({ mode: 'replace' });
+  });
+
+  it('an explicit mid-run replace lands, cancels the legs it consumed, and the run resolves', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+    const [g1, g2] = runAnimateAll();
+    fail(g1);
+
+    // The user deliberately picks replace for the freed cut and generates by hand.
+    const [a, b] = useEditor.getState().clips;
+    useEditor.setState({ selection: { kind: 'cut', afterClipId: a.id, beforeClipId: b.id } });
+    useEditor.getState().setCutMode('replace');
+    const manual = useEditor.getState().startCutGeneration(a.id, b.id);
+    expect(useEditor.getState().generations[manual!].target).toMatchObject({ mode: 'replace' });
+
+    succeed(manual!, '/cache/manual.mp4');
+
+    const s = useEditor.getState();
+    // The landing consumed a and b, cancelling the b|c leg out from under the run…
+    expect(s.generations[g2].status).toBe('cancelled');
+    expect(cancelGeneration).toHaveBeenCalledWith(g2);
+    // …and the run still resolved, the consumed photos no-ops in its collapse.
+    expect(s.animateRun).toBeNull();
+    expect(s.clips.map((c) => [c.kind, c.startMs])).toEqual([
+      ['video', 0],
+      ['photo', 5000],
+    ]);
+    expect(s.clips[0].transition).toMatchObject({ mode: 'replace' });
+  });
+
+  it('a leg whose landing no-oped still counts terminal and keeps its photos', () => {
+    photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+    const [g1, g2] = runAnimateAll();
+
+    // a wanders off mid-render, so the a|b cut no longer stands when its render comes home.
+    const a = useEditor.getState().clips[0];
+    useEditor.getState().moveClipTo(a.id, 30_000);
+
+    succeed(g1, '/cache/t1.mp4');
+    expect(useEditor.getState().toasts.at(-1)).toMatchObject({
+      title: 'Transition finished, but its photos moved',
+    });
+
+    succeed(g2, '/cache/t2.mp4');
+
+    const s = useEditor.getState();
+    expect(s.animateRun).toBeNull();
+    // Only c, wholly animated, left; a and b both stay — the no-op leg holds them.
+    expect(s.clips.map((c) => [c.kind, c.startMs])).toEqual([
+      ['photo', 5000],
+      ['video', 10_000],
+      ['photo', 30_000],
+    ]);
+    expect(s.clips[1].transition?.mode).toBe('replace');
+    expect(s.toasts.at(-1)).toMatchObject({ tone: 'ok', title: '1 of 2 transitions in' });
+  });
+
+  it('a run whose every cut was skipped clears silently', async () => {
+    // Defensive: unreachable through the UI today, but the collapse must not stall on it.
+    useEditor.setState({ animateRun: { legs: [] }, animateQueue: null });
+    const before = useEditor.getState().toasts.length;
+
+    await useEditor.getState().cancelGeneration('gen_missing');
+
+    expect(useEditor.getState().animateRun).toBeNull();
+    expect(useEditor.getState().toasts).toHaveLength(before);
+  });
+});
+
 // ------------------------------------------------- placing an asset already in the bin
 
 describe('an asset placed from the bin', () => {
   /** Two photos side by side on the track: a (0–2000) then b (2000–5000). */
-  function pairOnTrack(): [Clip, Clip] {
+  function binPairOnTrack(): [Clip, Clip] {
     const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 2000, 0);
     const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 2000);
     useEditor.setState({ clips: [a, b] });
@@ -562,7 +956,7 @@ describe('an asset placed from the bin', () => {
   });
 
   it('an insertion between two photos takes their failed generation with it', () => {
-    const [a, b] = pairOnTrack();
+    const [a, b] = binPairOnTrack();
     const id = useEditor.getState().startCutGeneration(a.id, b.id);
     emit({
       generationId: id!,
@@ -583,9 +977,20 @@ describe('an asset placed from the bin', () => {
     expect(s.generations[id!]).toBeUndefined();
   });
 
-  it('an id that is not in the bin places nothing', () => {
-    pairOnTrack();
+  it('an id that is not in the bin, or whose file has gone, places nothing', () => {
+    binPairOnTrack();
     useEditor.getState().placeAssetOnTimeline('asset_gone');
+
+    // A clip on a missing file could only render as "media offline" and would block the
+    // export — the same refusal a generation makes.
+    useEditor.setState({
+      assets: {
+        ...useEditor.getState().assets,
+        asset_c: { ...useEditor.getState().assets.asset_c, missing: true },
+      },
+    });
+    useEditor.getState().placeAssetOnTimeline('asset_c');
+
     expect(useEditor.getState().clips).toHaveLength(2);
   });
 });
