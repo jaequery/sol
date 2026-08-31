@@ -527,7 +527,19 @@ export function Timeline() {
                     clip={clip}
                     startMs={startMs}
                     asset={assets[clip.assetId]}
-                    staleness={clip.transition ? transitionStaleness(previewClips, clip.id) : undefined}
+                    fromAsset={
+                      clip.transition?.mode === 'replace'
+                        ? assets[clip.transition.from.assetId]
+                        : undefined
+                    }
+                    toAsset={
+                      clip.transition?.mode === 'replace'
+                        ? assets[clip.transition.to.assetId]
+                        : undefined
+                    }
+                    staleness={
+                      clip.transition ? transitionStaleness(previewClips, clip.id, assets) : undefined
+                    }
                     toPx={toPx}
                     selection={selection}
                     drag={drag?.clipId === clip.id ? drag : null}
@@ -752,6 +764,8 @@ function TimelineClip({
   clip,
   startMs,
   asset,
+  fromAsset,
+  toAsset,
   staleness,
   toPx,
   selection,
@@ -764,6 +778,9 @@ function TimelineClip({
   clip: Clip;
   startMs: number;
   asset?: MediaAsset;
+  /** Only for replace-mode transition clips: the two source photos its face shows. */
+  fromAsset?: MediaAsset;
+  toAsset?: MediaAsset;
   /** Only for transition clips: whether their sources still match. */
   staleness?: TransitionStaleness;
   toPx: (ms: number) => number;
@@ -820,6 +837,14 @@ function TimelineClip({
           <span className="clip__offline-tag">⚠ MEDIA OFFLINE</span>
         ) : clip.kind === 'photo' ? (
           <img src={asset.src} alt="" draggable={false} />
+        ) : fromAsset && toAsset ? (
+          // A replace-mode transition wears its two source stills — start left, end right,
+          // animating into one another — rather than a frame of the render.
+          <span className="clip__pair" data-testid={`clip-pair-${clip.id}`} aria-hidden="true">
+            <img src={fromAsset.src} alt="" draggable={false} />
+            <img src={toAsset.src} alt="" draggable={false} />
+            <i className="clip__pair-arrow">→</i>
+          </span>
         ) : (
           <video src={asset.src} muted preload="metadata" />
         )}

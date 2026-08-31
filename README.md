@@ -27,7 +27,10 @@ from one still into the other and drops it onto the timeline at that cut.
   the first and last frame of the generation. The finished MP4 lands at the cut; the
   photos themselves are the anchor frames, so nothing else needs setting up. A **Model**
   selector on the same card picks which model renders it — **Seedance 2.5** unless another
-  is chosen — and the pick rides with that render alone.
+  is chosen — and the pick rides with that render alone. The card also offers a **replace
+  mode**: the finished clip stands in the two photos' place — they leave the track (staying
+  in the media bin) and the clip wears both source thumbnails side by side, so playback
+  across that span is pure motion, never a still frame.
 - **A film from three photos — three images in, one .mp4 out.** **✦ New film from 3
   photos** — in the title bar and in the empty timeline — opens a panel that takes exactly
   three photos, puts them in order, and offers a prompt per transition already filled in.

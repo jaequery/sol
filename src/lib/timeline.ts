@@ -18,6 +18,7 @@ import {
   type ClipEdge,
   type PlacedClip,
   type Selection,
+  type TransitionMode,
   type TransitionSource,
 } from '../types/project';
 
@@ -504,6 +505,8 @@ export interface GeneratedTransition {
   durationMs: number;
   from: TransitionSource;
   to: TransitionSource;
+  /** How the clip lands and later regenerates. Absent means `insert`, as ever. */
+  mode?: TransitionMode;
 }
 
 function transitionClip(id: string, startMs: number, generated: GeneratedTransition): Clip {
@@ -516,7 +519,12 @@ function transitionClip(id: string, startMs: number, generated: GeneratedTransit
     durationMs: Math.max(MIN_CLIP_DURATION_MS, Math.round(generated.durationMs)),
     trimStartMs: 0,
     ai: { prompt: generated.prompt, sourceAssetId: generated.from.assetId },
-    transition: { prompt: generated.prompt, from: generated.from, to: generated.to },
+    transition: {
+      prompt: generated.prompt,
+      from: generated.from,
+      to: generated.to,
+      mode: generated.mode,
+    },
   };
 }
 
@@ -550,6 +558,41 @@ export function insertTransitionClip(
   const rightStartMs = startMs + cut.gapMs;
   return sortClips([
     ...clips.map((c) => (c.startMs >= rightStartMs ? { ...c, startMs: c.startMs + delta } : c)),
+    clip,
+  ]);
+}
+
+/**
+ * Put a finished replace-mode transition in the place of its two photos. The pair must
+ * still form a cut — same guard, and same identity no-op, as `insertTransitionClip` — so
+ * an edit made while Higgsfield rendered can never have the photos yanked out from under
+ * it.
+ *
+ * The clip lands where the left photo started and both photos leave the track: the span
+ * from one still to the other is now pure film, the gap between them consumed with them.
+ * Everything from the right photo's old end shifts by the difference between the render's
+ * length and the span it replaced, so gaps further along keep their shape.
+ */
+export function replacePairWithTransition(
+  clips: Clip[],
+  afterClipId: string,
+  beforeClipId: string,
+  generated: GeneratedTransition,
+): Clip[] {
+  const cut = photoCuts(clips).find(
+    (c) => c.afterClipId === afterClipId && c.beforeClipId === beforeClipId,
+  );
+  const after = clips.find((c) => c.id === afterClipId);
+  const before = clips.find((c) => c.id === beforeClipId);
+  if (!cut || !after || !before) return clips;
+
+  const clip = transitionClip(makeId('clip'), after.startMs, generated);
+  const oldEnd = before.startMs + before.durationMs;
+  const delta = clip.durationMs - (oldEnd - after.startMs);
+  return sortClips([
+    ...clips
+      .filter((c) => c.id !== afterClipId && c.id !== beforeClipId)
+      .map((c) => (c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c)),
     clip,
   ]);
 }
@@ -604,12 +647,28 @@ export type TransitionStaleness = 'fresh' | 'stale' | 'orphaned';
  * neighbours are photos but not the ones it was rendered from, so a one-tap regenerate can
  * fix it; `orphaned` means a neighbour is missing or not a photo, so there is nothing to
  * regenerate between. Never acts — the user decides what to spend.
+ *
+ * A replace-mode transition consumed its photos, so its neighbours say nothing: it is
+ * `fresh` for as long as both source assets stand in the bin (`assets`), and `orphaned` —
+ * nothing left to regenerate from — once one is gone or its file is missing.
  */
-export function transitionStaleness(clips: Clip[], transitionClipId: string): TransitionStaleness {
+export function transitionStaleness(
+  clips: Clip[],
+  transitionClipId: string,
+  assets?: Record<string, { missing?: boolean }>,
+): TransitionStaleness {
   const placed = layout(clips);
   const at = placed.findIndex((p) => p.clip.id === transitionClipId);
   const clip = at === -1 ? undefined : placed[at].clip;
   if (!clip?.transition) return 'orphaned';
+
+  if (clip.transition.mode === 'replace') {
+    const gone = (assetId: string) =>
+      assets !== undefined && (!assets[assetId] || assets[assetId].missing);
+    return gone(clip.transition.from.assetId) || gone(clip.transition.to.assetId)
+      ? 'orphaned'
+      : 'fresh';
+  }
 
   const left = placed[at - 1]?.clip;
   const right = placed[at + 1]?.clip;

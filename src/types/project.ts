@@ -67,6 +67,13 @@ export interface TransitionSource {
 }
 
 /**
+ * Where a finished cut render goes: `insert` slots it between the two photos, `replace`
+ * removes both photos and stands the clip in their span, so playback there is pure motion.
+ * Absent anywhere it may appear means `insert` — the only behaviour older records knew.
+ */
+export type TransitionMode = 'insert' | 'replace';
+
+/**
  * What a generation is for: the cut between two adjacent photos, or one leg of a
  * three-photo film. Success routes on this — a cut result is inserted at the cut (or
  * swapped over `replacesClipId` when it is a regeneration of an existing transition clip),
@@ -80,6 +87,7 @@ export type GenerationTarget =
       from: TransitionSource;
       to: TransitionSource;
       replacesClipId?: string;
+      mode?: TransitionMode;
     }
   | {
       kind: 'film';
@@ -142,12 +150,15 @@ export interface Clip {
   /**
    * Present when this clip is a generated transition between two photos. `ai` is set too so
    * every AI-clip affordance applies; this records the exact sources so the clip can be
-   * flagged stale when its neighbours change, and regenerated in place.
+   * flagged stale when its neighbours change, and regenerated in place. A `replace`-mode
+   * clip stands where its two photos used to: it regenerates from its source *assets* in
+   * the media bin, and its neighbours say nothing about its freshness.
    */
   transition?: {
     prompt: string;
     from: TransitionSource;
     to: TransitionSource;
+    mode?: TransitionMode;
   };
 }
 
