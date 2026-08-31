@@ -14,10 +14,22 @@ import {
 } from './backend';
 
 describe('the render-model registry', () => {
-  it('defaults to Seedance 2.5', () => {
-    expect(DEFAULT_MODEL_ID).toBe('seedance-2.5');
-    expect(modelEndpoint(DEFAULT_MODEL_ID)).toBe('/bytedance/seedance/v2.5/pro/image-to-video');
-    expect(modelLabel(DEFAULT_MODEL_ID)).toBe('Seedance 2.5');
+  it('defaults to MiniMax Hailuo-02 Standard', () => {
+    expect(DEFAULT_MODEL_ID).toBe('hailuo-02-standard');
+    expect(modelEndpoint(DEFAULT_MODEL_ID)).toBe('/minimax/hailuo-02/standard/image-to-video');
+    expect(modelLabel(DEFAULT_MODEL_ID)).toBe('MiniMax Hailuo-02 Standard');
+  });
+
+  /**
+   * The regression behind "API returned HTTP 404: model_not_found" on every default
+   * render: the menu led with a Seedance 2.5 route guessed from the API's naming
+   * convention, and the published OpenAPI document has no such path. Everything the
+   * selector offers must be a route the API actually serves.
+   */
+  it('offers no guessed routes', () => {
+    for (const model of RENDER_MODELS) {
+      expect(model.endpoint).not.toContain('seedance');
+    }
   });
 
   it('every listed model resolves to its own endpoint', () => {

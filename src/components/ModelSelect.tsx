@@ -5,7 +5,7 @@
  * transition card's Regenerate, the film wizard. They all read and write the same
  * selection: the model is a per-render choice (whatever the selector shows when the
  * button is pressed is what that render uses), not a saved setting, so a fresh session
- * is back on the default — Seedance 2.5.
+ * is back on the default — MiniMax Hailuo-02 Standard.
  *
  * A Custom entry appears only when Settings stores an endpoint that is not already in
  * the list: that endpoint exists precisely so an undocumented model or an API revision

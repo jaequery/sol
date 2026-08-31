@@ -90,23 +90,19 @@ export interface RenderModel {
  *
  * Every entry's contract is a SolCut segment: a first frame, a last frame
  * (`image_url`/`end_image_url`, or the veo pair's own names) and a prompt, with nothing
- * else required. Anything else can still be reached through the Custom entry, which sends
- * whatever endpoint Settings stores.
+ * else required — and every entry's route appears in the published OpenAPI document
+ * (<https://docs.higgsfield.ai/docs/openapi.json>). Anything else can still be reached
+ * through the Custom entry, which sends whatever endpoint Settings stores.
  *
- * Seedance 2.5 leads and is the default. Higgsfield has announced it but (as of
- * 2026-08-31) not yet published its route in the API reference, so its path here follows
- * the API's own naming convention (`/bytedance/seedance/v1/…`, `/kling-video/v2.5-turbo/…`)
- * and a render against an account that does not have it yet fails with a clear error and
- * the selector right there to pick another model — nothing else in the app is blocked.
- *
- * Deliberately absent: seedance v1 and the kling operations (their schemas take no last
- * frame at all, so a "transition" would never land on the second photo) and the
- * `higgsfield-ai/dop` trio, whose live endpoints are the API face of a single-image
- * motion-preset product and reject two-frame submissions in a way their published schema
- * does not predict.
+ * Deliberately absent: Seedance — 2.5 has no route in the API (an earlier build guessed
+ * `/bytedance/seedance/v2.5/pro/image-to-video` from the naming convention, and every
+ * default render died on `404: model_not_found`), and the seedance v1 and kling
+ * operations take no last frame at all, so a "transition" would never land on the second
+ * photo. Also absent: the `higgsfield-ai/dop` trio, whose live endpoints are the API
+ * face of a single-image motion-preset product and reject two-frame submissions in a way
+ * their published schema does not predict.
  */
 export const RENDER_MODELS: RenderModel[] = [
-  { id: 'seedance-2.5', label: 'Seedance 2.5', endpoint: '/bytedance/seedance/v2.5/pro/image-to-video' },
   { id: 'hailuo-02-standard', label: 'MiniMax Hailuo-02 Standard', endpoint: '/minimax/hailuo-02/standard/image-to-video' },
   { id: 'hailuo-02-pro', label: 'MiniMax Hailuo-02 Pro', endpoint: '/minimax/hailuo-02/pro/image-to-video' },
   { id: 'veo-3.1', label: 'Veo 3.1', endpoint: '/veo3.1/first-last-frame-to-video' },
@@ -114,7 +110,7 @@ export const RENDER_MODELS: RenderModel[] = [
 ];
 
 /** What a render uses when the user never touches the selector. */
-export const DEFAULT_MODEL_ID = 'seedance-2.5';
+export const DEFAULT_MODEL_ID = 'hailuo-02-standard';
 
 /** The selector entry that sends the endpoint typed into Settings instead of a known model. */
 export const CUSTOM_MODEL_ID = 'custom';
