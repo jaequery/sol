@@ -85,9 +85,13 @@ impl Settings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsView {
-    /// The CLI binary was found — generation can at least be attempted. Deliberately
-    /// unrelated to the API key: a stored key renders nothing, so letting it flip this
-    /// would offer generations the machine cannot run.
+    /// The **Higgsfield** CLI binary was found — a Higgsfield generation can at least be
+    /// attempted. Deliberately unrelated to the API key: a stored key renders nothing, so
+    /// letting it flip this would offer generations the machine cannot run.
+    ///
+    /// Equally deliberately unrelated to [`Self::agents`]: a machine with a coding-agent CLI
+    /// and no Higgsfield can composite transitions perfectly well, and reading this as
+    /// "generation is possible" is what used to gate that off.
     pub configured: bool,
     /// Where the CLI was found, for the dialog to show; `None` when it wasn't.
     pub cli_path: Option<String>,
@@ -96,12 +100,35 @@ pub struct SettingsView {
     pub has_api_key: bool,
     /// e.g. `••••7fa2`, or blank. Never the key id itself, and never the secret.
     pub api_key_id_hint: String,
+    /// Which coding-agent CLIs this machine has, so a render surface can offer the ones
+    /// that could actually run and say how to get the ones it cannot.
+    pub agents: Vec<AgentStatus>,
+}
+
+/// One coding-agent CLI as this machine has it.
+///
+/// `path` being `Some` means the binary was found, and nothing more — exactly the promise
+/// made for the Higgsfield CLI. Whether it is *signed in* costs a process to ask and would
+/// be asked on every settings read, so it is left to fail at render time with the CLI's own
+/// words, which name their own fix.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStatus {
+    /// The id that travels with a request — `claude-code`, `codex`.
+    pub id: String,
+    pub label: String,
+    /// Where the binary was found, for the dialog to show; `None` when it was not.
+    pub path: Option<String>,
+    /// Quoted verbatim when it is missing, so the fix can be pasted.
+    pub install: String,
+    pub login: String,
 }
 
 impl SettingsView {
-    pub fn new(settings: &Settings, cli_path: Option<&Path>) -> Self {
+    pub fn new(settings: &Settings, cli_path: Option<&Path>, agents: Vec<AgentStatus>) -> Self {
         let credential = settings.credential();
         Self {
+            agents,
             configured: cli_path.is_some(),
             cli_path: cli_path.map(|p| p.display().to_string()),
             custom_model: settings.custom_model.clone(),

@@ -877,7 +877,10 @@ export const useEditor = create<EditorState>((set, get) => ({
    */
   startCutGeneration(afterClipId, beforeClipId, mode) {
     const s = get();
-    if (!s.settings?.configured) return null;
+    // Asked of the *chosen* backend, not of Higgsfield: `configured` means a `higgsfield`
+    // binary is on disk, and gating on it refused a machine that has a coding-agent CLI and
+    // could composite the cut perfectly well.
+    if (!backend.renderReady(s.modelId, s.settings, s.ffmpegAvailable)) return null;
     if (!cutEligible(s, afterClipId, beforeClipId)) return null;
 
     const clipA = s.clips.find((c) => c.id === afterClipId);
@@ -901,6 +904,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       kind: 'frames',
       from: frameOfClip(s.assets[clipA.assetId], clipA, 'out'),
       to: frameOfClip(s.assets[clipB.assetId], clipB, 'in'),
+      spanMs: spanOf(clipA, clipB),
     });
   },
 
@@ -913,7 +917,7 @@ export const useEditor = create<EditorState>((set, get) => ({
    */
   regenerateTransition(clipId) {
     const s = get();
-    if (!s.settings?.configured) return;
+    if (!backend.renderReady(s.modelId, s.settings, s.ffmpegAvailable)) return;
     const placedClips = sortClips(s.clips);
     const at = placedClips.findIndex((c) => c.id === clipId);
     const clip = at === -1 ? undefined : placedClips[at];
@@ -948,6 +952,8 @@ export const useEditor = create<EditorState>((set, get) => ({
         kind: 'frames',
         from: liveA ? frameOfClip(assetA, liveA, 'out') : frameOfSource(assetA, from),
         to: liveB ? frameOfClip(assetB, liveB, 'in') : frameOfSource(assetB, to),
+        // What it is replacing is the clip standing there now, not the pair it came from.
+        spanMs: clip.durationMs,
       });
       return;
     }
@@ -976,6 +982,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       kind: 'frames',
       from: frameOfClip(assetA, left, 'out'),
       to: frameOfClip(assetB, right, 'in'),
+      spanMs: clip.durationMs,
     });
   },
 
@@ -1030,7 +1037,7 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   animateAll() {
     const s = get();
-    if (!s.settings?.configured) return;
+    if (!backend.renderReady(s.modelId, s.settings, s.ffmpegAvailable)) return;
     // One run at a time — the action guards itself, not just the button that offers it.
     if (s.animateQueue !== null || s.animateRun !== null) return;
     const eligible = animatableCuts(s);
@@ -1340,14 +1347,14 @@ export const useEditor = create<EditorState>((set, get) => ({
    * where the user asked for it rather than two legs later.
    */
   async startFilm(assetIds, prompts) {
-    const { assets, settings, pushToast } = get();
+    const { assets, settings, ffmpegAvailable, modelId, pushToast } = get();
 
-    if (!settings?.configured) {
-      pushToast({
-        tone: 'error',
-        title: 'Connect Higgsfield first',
-        detail: 'A film is made of Higgsfield transitions — there is nothing to render it with yet.',
-      });
+    // A film is two transitions from whatever the selector is showing, so it is refused for
+    // the same reasons a single cut is — and named the same way, rather than always blaming
+    // a Higgsfield connection the user may not have chosen to use.
+    const hint = backend.readinessHint(modelId, settings, ffmpegAvailable);
+    if (hint) {
+      pushToast({ tone: 'error', title: hint.title, detail: hint.detail });
       return;
     }
 
@@ -2440,8 +2447,29 @@ async function renderFrame(source: FrameSource): Promise<string> {
  * the paths of the bin files it works from and lets the CLI upload them. Everything around
  * it — the record, the id, the failure tail — is shared, so the two cannot drift.
  */
+/**
+ * How much track a transition between these two clips will occupy.
+ *
+ * The whole stretch from where the left clip starts to where the right one ends, gap
+ * included — because a replace landing consumes both stills and stands in for exactly that.
+ * Only the local backends read it, to pick a length that keeps the film's pacing.
+ */
+function spanOf(a: Clip, b: Clip): number {
+  return Math.max(0, b.startMs + b.durationMs - a.startMs);
+}
+
 type Submission =
-  | { kind: 'frames'; from: FrameSource; to: FrameSource }
+  | {
+      kind: 'frames';
+      from: FrameSource;
+      to: FrameSource;
+      /**
+       * How long the stretch of track this transition will occupy currently runs. Only the
+       * local backends read it, and only to choose a length — a film leg has no track to
+       * measure, so it sends none rather than a made-up number.
+       */
+      spanMs?: number;
+    }
   | { kind: 'references'; paths: string[]; aspect: string };
 
 /**
@@ -2485,10 +2513,25 @@ function launchGeneration(
   void (async () => {
     try {
       if (submission.kind === 'frames') {
-        const model = backend.modelJob(modelId, get().settings?.customModel);
+        const provider = backend.providerOf(modelId);
+        // `modelJob` throws for a local backend rather than resolving to a Higgsfield job,
+        // so it is asked only when Higgsfield is the one rendering. That order is the guard:
+        // getting it wrong is a paid render for a cut the user asked to composite locally.
+        const model =
+          provider === 'higgsfield'
+            ? backend.modelJob(modelId, get().settings?.customModel)
+            : undefined;
         const startFrame = await renderFrame(submission.from);
         const endFrame = await renderFrame(submission.to);
-        await backend.generateAnimation({ generationId, prompt, startFrame, endFrame, model });
+        await backend.generateAnimation({
+          generationId,
+          prompt,
+          startFrame,
+          endFrame,
+          model,
+          provider,
+          spanMs: submission.spanMs,
+        });
       } else {
         await backend.generateImage({
           generationId,

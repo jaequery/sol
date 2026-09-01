@@ -44,6 +44,8 @@ export function FilmWizard() {
   const assets = useEditor((s) => s.assets);
   const clips = useEditor((s) => s.clips);
   const settings = useEditor((s) => s.settings);
+  const modelId = useEditor((s) => s.modelId);
+  const ffmpegAvailable = useEditor((s) => s.ffmpegAvailable);
   const close = useEditor((s) => s.closeFilmWizard);
   const openSettings = useEditor((s) => s.openSettings);
   const addFilmPhotos = useEditor((s) => s.addFilmPhotos);
@@ -80,7 +82,10 @@ export function FilmWizard() {
 
   if (!open) return null;
 
-  const connected = settings?.configured ?? false;
+  // The whole film renders with whatever the selector shows, so it is refused for the same
+  // reasons a single cut is — and named the same way rather than always blaming Higgsfield.
+  const notReady = backend.readinessHint(modelId, settings, ffmpegAvailable);
+  const connected = notReady === null;
   const progress = film ? filmProgress(film) : null;
   const short = FILM_IMAGE_COUNT - picks.length;
   // The film puts itself on the track the moment its last leg is in; until that has
@@ -359,15 +364,20 @@ export function FilmWizard() {
                 transitions match instead of each wearing a different model's look. */}
             <ModelSelect id="film-model" />
 
-            {!connected && (
+            {notReady && (
               <div className="callout" role="status">
-                <b>Connect Higgsfield to generate</b>
+                <b>{notReady.title}</b>
                 {backend.isDesktop()
-                  ? 'A film is nothing but Higgsfield transitions — there is no local renderer to fall back on. Nothing has been sent.'
+                  ? notReady.detail
                   : 'Rendering needs the SolCut desktop app — run it with `pnpm tauri dev`. Nothing has been sent.'}
-                <button type="button" onClick={openSettings}>
-                  Open settings →
-                </button>
+                {backend.isDesktop() && notReady.command && (
+                  <code className="callout__cmd">{notReady.command}</code>
+                )}
+                {(notReady.opensSettings || !backend.isDesktop()) && (
+                  <button type="button" onClick={openSettings}>
+                    Open settings →
+                  </button>
+                )}
               </div>
             )}
 

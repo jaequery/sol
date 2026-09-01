@@ -808,6 +808,16 @@ input {
   color: var(--warn);
   margin-bottom: 3px;
 }
+/* A command to paste, on its own line so it can be selected without catching the sentence
+   around it. No new colour: it borrows the callout's own, one shade dimmer. */
+.callout__cmd {
+  display: block;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: #ffd489;
+  word-break: break-all;
+}
 .callout button {
   margin-top: 7px;
   background: none;

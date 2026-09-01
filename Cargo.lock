@@ -3453,12 +3453,24 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "solcut-agent",
  "solcut-higgsfield",
  "solcut-render",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "tokio",
+]
+
+[[package]]
+name = "solcut-agent"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "solcut-render",
+ "thiserror 2.0.20",
  "tokio",
 ]
 

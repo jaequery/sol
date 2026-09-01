@@ -29,8 +29,29 @@ const STORED_SETTINGS: backend.SettingsView = {
   customModel: '',
   hasApiKey: false,
   apiKeyIdHint: '',
+  // No coding-agent CLI on the imaginary machine these suites run on, so every existing
+  // expectation still describes a Higgsfield-only install. Tests that need one add it.
+  agents: [],
 };
 let storedSettings = { ...STORED_SETTINGS };
+/** Flipped by the one suite that asks what happens with no ffmpeg on the machine. */
+let ffmpegPresent = true;
+
+/** A machine that has the Claude Code CLI installed. */
+const CLAUDE_FOUND: backend.AgentStatus = {
+  id: 'claude-code',
+  label: 'the Claude Code CLI',
+  path: '/usr/local/bin/claude',
+  install: 'npm install -g @anthropic-ai/claude-code',
+  login: 'claude auth login',
+};
+
+/** A machine with no Higgsfield CLI — which used to mean no generation of any kind. */
+const NO_HIGGSFIELD: backend.SettingsView = {
+  ...STORED_SETTINGS,
+  configured: false,
+  cliPath: null,
+};
 
 // The real module's pure exports (the model registry above all) come through untouched;
 // only the pieces that would reach for Tauri are stubbed.
@@ -53,7 +74,7 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
   generateImage: (input: backend.GenerateImageInput) => generateImage(input),
   cancelGeneration: vi.fn(async () => {}),
-  ffmpegAvailable: async () => true,
+  ffmpegAvailable: async () => ffmpegPresent,
   captureVideoFrame: async (path: string, atMs: number) =>
     `data:image/jpeg;base64,grab-of-${path}@${atMs}`,
   exportTimeline: vi.fn(),
@@ -95,6 +116,7 @@ beforeEach(() => {
   generateAnimation.mockClear();
   generateImage.mockClear();
   storedSettings = { ...STORED_SETTINGS };
+  ffmpegPresent = true;
   useEditor.setState({
     settings: null,
     connectionMessage: null,
@@ -1471,6 +1493,7 @@ describe('the 3-photo film wizard', () => {
     customModel: '',
     hasApiKey: false,
     apiKeyIdHint: '',
+    agents: [],
   };
 
   /**
@@ -1913,6 +1936,139 @@ describe('the per-render model selector', () => {
     await user.click(screen.getByRole('button', { name: /generate transition/i }));
     await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
     expect(generateAnimation.mock.calls[0][0].model).toBe('wan2_7');
+  });
+
+  it('an untouched selector names Higgsfield as the backend, not just the model', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await runCutGeneration(user);
+    expect(generateAnimation.mock.calls[0][0]).toMatchObject({
+      provider: 'higgsfield',
+      model: 'seedance_2_5',
+    });
+  });
+
+  it('picking a local backend sends it, and sends no Higgsfield job id at all', async () => {
+    // The failure this pins: every unknown model id used to resolve to `seedance_2_5`, so a
+    // local pick that slipped past the provider branch would quietly start a *paid* render.
+    // A job id on this request is that bug, whatever else is right about it.
+    const user = userEvent.setup();
+    storedSettings = { ...STORED_SETTINGS, agents: [CLAUDE_FOUND] };
+    render(<App />);
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+
+    await user.selectOptions(await screen.findByLabelText('Model'), 'claude-code');
+    await user.click(screen.getByRole('button', { name: /generate transition/i }));
+
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    const sent = generateAnimation.mock.calls[0][0];
+    expect(sent.provider).toBe('claude-code');
+    expect(sent.model).toBeUndefined();
+    // The stills still travel: the agent picks the motion, ffmpeg needs the frames.
+    expect(sent.startFrame).toContain('frame-of-');
+    expect(sent.endFrame).toContain('frame-of-');
+  });
+
+  it('a local render is told how much of the timeline it is replacing', async () => {
+    // It is choosing a length, and between two photos that length is how much of the film
+    // survives — a model told what it replaces answers far better than one guessing.
+    const user = userEvent.setup();
+    storedSettings = { ...STORED_SETTINGS, agents: [CLAUDE_FOUND] };
+    render(<App />);
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+    await user.selectOptions(await screen.findByLabelText('Model'), 'claude-code');
+    await user.click(screen.getByRole('button', { name: /generate transition/i }));
+
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    // Two 5 s photos laid end to end: the pair's own stretch of track.
+    expect(generateAnimation.mock.calls[0][0].spanMs).toBe(10_000);
+  });
+
+  it('the backend rides in the Model control rather than a second dropdown', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+
+    const select = await screen.findByLabelText('Model');
+    expect(within(select).getByRole('option', { name: 'Claude Code CLI' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Codex CLI' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Seedance 2.5' })).toBeInTheDocument();
+    // One control on the card, not two: no separate backend picker was added anywhere.
+    expect(screen.queryByLabelText('Backend')).not.toBeInTheDocument();
+  });
+});
+
+describe('choosing a backend the machine can actually run', () => {
+  it('a machine with only a coding-agent CLI can still render a cut', async () => {
+    // The gate that used to make this impossible: `configured` means "a binary named
+    // `higgsfield` is on disk", and every generate path asked it — so a machine that could
+    // composite a transition perfectly well was refused before it was tried.
+    const user = userEvent.setup();
+    storedSettings = { ...NO_HIGGSFIELD, agents: [CLAUDE_FOUND] };
+    render(<App />);
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+
+    await user.selectOptions(await screen.findByLabelText('Model'), 'claude-code');
+    await user.click(await screen.findByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    expect(generateAnimation.mock.calls[0][0].provider).toBe('claude-code');
+  });
+
+  it('and refuses by name the moment a Higgsfield model is chosen on it', async () => {
+    const user = userEvent.setup();
+    storedSettings = { ...NO_HIGGSFIELD, agents: [CLAUDE_FOUND] };
+    render(<App />);
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+
+    await user.selectOptions(await screen.findByLabelText('Model'), 'seedance-2.5');
+    expect(await screen.findByText('Connect Higgsfield to generate')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /generate transition/i })).not.toBeInTheDocument();
+    expect(generateAnimation).not.toHaveBeenCalled();
+  });
+
+  it('a local backend that is not installed says so, and quotes how to get it', async () => {
+    const user = userEvent.setup();
+    storedSettings = { ...NO_HIGGSFIELD, agents: [{ ...CLAUDE_FOUND, path: null }] };
+    render(<App />);
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+
+    await user.selectOptions(await screen.findByLabelText('Model'), 'claude-code');
+    expect(await screen.findByText(/Install the Claude Code CLI/)).toBeInTheDocument();
+    expect(screen.getByText('npm install -g @anthropic-ai/claude-code')).toBeInTheDocument();
+    expect(generateAnimation).not.toHaveBeenCalled();
+  });
+
+  it('without ffmpeg a local render is refused before anything is spawned', async () => {
+    // ffmpeg is what composites these, so a missing one is not a late failure to discover
+    // halfway through a render the user is already waiting on.
+    const user = userEvent.setup();
+    storedSettings = { ...STORED_SETTINGS, agents: [CLAUDE_FOUND] };
+    ffmpegPresent = false;
+    render(<App />);
+    await dropPhotoPair();
+    await user.click(screen.getByRole('button', { name: CUT_CHIP }));
+
+    await user.selectOptions(await screen.findByLabelText('Model'), 'claude-code');
+    expect(await screen.findByText('ffmpeg is needed to composite')).toBeInTheDocument();
+    expect(generateAnimation).not.toHaveBeenCalled();
+  });
+
+  it('photos are still Higgsfield\u2019s alone — a local backend does not unlock them', async () => {
+    // The ticket is about transitions. An agent CLI compositing a *still* would be a much
+    // thinner thing than generating one, so the compose panel was deliberately left out.
+    const user = userEvent.setup();
+    storedSettings = { ...NO_HIGGSFIELD, agents: [CLAUDE_FOUND] };
+    render(<App />);
+    await user.click(await screen.findByRole('button', { name: /generate/i }));
+
+    expect(await screen.findByText(/Connect Higgsfield/)).toBeInTheDocument();
+    expect(generateImage).not.toHaveBeenCalled();
   });
 });
 
