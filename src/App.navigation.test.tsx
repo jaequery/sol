@@ -932,6 +932,159 @@ describe('inspector', () => {
   });
 });
 
+// ------------------------------------------------------- a typed length, on every element
+
+/**
+ * Every element type the timeline gives edge handles to, and what it takes to put one on
+ * screen and select it.
+ *
+ * The promise is that a length can be *typed* on any element that can be *dragged* to a
+ * length — not on a subset — so this table, rather than one sampled clip, is what the box is
+ * proven against. `covers every element the timeline gives edge handles` below fails if an
+ * element type grows handles without being added here, and every case in the loop then has
+ * to pass for it.
+ */
+const RESIZABLE = [
+  {
+    what: 'a clip on the visual track',
+    /** What its handles are labelled after: `Resize the end of <subject>`. */
+    subject: 'sunset.jpg',
+    async place(user: ReturnType<typeof userEvent.setup>) {
+      await dropOnTimeline([file('sunset.jpg', 'image/jpeg')]);
+      await user.click(await screen.findByRole('button', { name: 'sunset.jpg photo clip' }));
+    },
+    lengthMs: () => useEditor.getState().clips[0].durationMs,
+    /** A length this kind of element will not give, and the wall it answers with. */
+    tooLong: { typed: '900', landsMs: MAX_PHOTO_DURATION_MS, wall: /at most 10 minutes/i },
+  },
+  {
+    what: 'a sound on an audio lane',
+    subject: 'theme.mp3 audio',
+    async place(user: ReturnType<typeof userEvent.setup>) {
+      mockPick('/media/theme.mp3', 'theme.mp3', 'audio');
+      await user.click(screen.getByRole('button', { name: 'Add audio track' }));
+      await user.click(await screen.findByRole('button', { name: 'theme.mp3 audio track' }));
+      // The wall is the file's own length, which arrives from the probe just after the
+      // import. Found by name, not by index: a case may have put other media on the track.
+      await waitFor(() =>
+        expect(
+          Object.values(useEditor.getState().assets).find((a) => a.name === 'theme.mp3')
+            ?.durationMs,
+        ).toBe(5000),
+      );
+    },
+    lengthMs: () => useEditor.getState().audioTracks[0].durationMs,
+    tooLong: { typed: '30', landsMs: 5000, wall: /theme\.mp3 runs 5\.0s from here/i },
+  },
+];
+
+/** Drag an edge handle: the track draws at 10 ms per pixel, so 100 px is one second. */
+async function dragFromTo(target: Element, fromX: number, toX: number) {
+  await act(async () => fireEvent.pointerDown(target, { button: 0, clientX: fromX }));
+  await act(async () => fireEvent.pointerMove(window, { clientX: toX }));
+  await act(async () => fireEvent.pointerUp(window, { clientX: toX }));
+}
+
+describe('a typed length', () => {
+  it('covers every element the timeline gives edge handles', async () => {
+    const user = userEvent.setup();
+    await mount();
+    for (const element of RESIZABLE) await element.place(user);
+
+    // Whatever wears a resize handle is something a length can be dragged onto, and this
+    // file only proves the box for what `RESIZABLE` lists. The two sets being equal is what
+    // makes "any element type, not a subset" a claim that can fail.
+    const handled = screen
+      .getAllByRole('button', { name: /^Resize the (start|end) of / })
+      .map((b) => (b.getAttribute('aria-label') ?? '').replace(/^Resize the (start|end) of /, ''));
+
+    expect(new Set(handled)).toEqual(new Set(RESIZABLE.map((e) => e.subject)));
+  });
+
+  describe.each(RESIZABLE)('on $what', (element) => {
+    async function selected() {
+      const user = userEvent.setup();
+      await mount();
+      await element.place(user);
+      return { user, box: screen.getByLabelText(/duration/i) };
+    }
+
+    it('takes the length exactly as typed', async () => {
+      const { user, box } = await selected();
+
+      await user.clear(box);
+      await user.type(box, '3.25{Enter}');
+
+      // Exactly 3.25 s — not rounded to a tenth, and not snapped to anything nearby.
+      expect(element.lengthMs()).toBe(3250);
+      expect(box).toHaveValue('3.25');
+    });
+
+    it('lands where dragging the end handle lands, from the other side', async () => {
+      const { user, box } = await selected();
+      const handle = screen.getByRole('button', { name: `Resize the end of ${element.subject}` });
+
+      // Shortening, because it is the one direction every element type has room for: a
+      // sound already runs the whole of its file, so there is nothing past its tail to give.
+      await dragFromTo(handle, 500, 300);
+      const dragged = element.lengthMs();
+      expect(dragged).toBe(3000);
+
+      // Back to where it started, then the same length again — typed this time.
+      await user.clear(box);
+      await user.type(box, '5{Enter}');
+      expect(element.lengthMs()).toBe(5000);
+      await user.clear(box);
+      await user.type(box, '3{Enter}');
+
+      expect(element.lengthMs()).toBe(dragged);
+      // And the handle went with it: the box and the drag are one length, not two.
+      expect(box).toHaveValue('3.0');
+    });
+
+    it('clamps a length it will not give, and retires the note once that length changes', async () => {
+      const { user, box } = await selected();
+
+      await user.clear(box);
+      await user.type(box, `${element.tooLong.typed}{Enter}`);
+      expect(element.lengthMs()).toBe(element.tooLong.landsMs);
+      expect(screen.getByText(element.tooLong.wall)).toBeInTheDocument();
+
+      // The note is about the entry that was refused, not about where the element stands
+      // now: dragging the handle answers the user, so the wall stops being on screen.
+      const handle = screen.getByRole('button', { name: `Resize the end of ${element.subject}` });
+      await dragFromTo(handle, 500, 400);
+      expect(element.lengthMs()).toBe(element.tooLong.landsMs - 1000);
+      expect(screen.queryByText(element.tooLong.wall)).toBeNull();
+    });
+
+    it('refuses an entry that is not a length, says so, and leaves the timing alone', async () => {
+      const { user, box } = await selected();
+      const before = element.lengthMs();
+
+      for (const bad of ['abc', '-3', '0x10']) {
+        await user.clear(box);
+        await user.type(box, `${bad}{Enter}`);
+        expect(element.lengthMs()).toBe(before);
+        expect(screen.getByText(`“${bad}” is not a length — type seconds, like 4.5.`))
+          .toBeInTheDocument();
+      }
+
+      // An empty box is the dangerous one — `Number('')` is 0, which would floor the element
+      // — and the one with no entry to quote back.
+      await user.clear(box);
+      await user.type(box, '{Enter}');
+      expect(element.lengthMs()).toBe(before);
+      expect(screen.getByText('Type a length in seconds, like 4.5.')).toBeInTheDocument();
+
+      // Typing again is the user answering: the complaint goes as soon as it might be wrong.
+      await user.type(box, '2');
+      expect(screen.queryByText(/is not a length/)).toBeNull();
+      expect(screen.queryByText('Type a length in seconds, like 4.5.')).toBeNull();
+    });
+  });
+});
+
 // ------------------------------------------------------------------------ settings dialog
 
 describe('settings dialog', () => {

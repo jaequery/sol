@@ -299,7 +299,7 @@ export interface EditorState {
   // ---- audio tracks
   moveAudioTrack: (trackId: string, startMs: number) => void;
   resizeAudioTrack: (trackId: string, edge: ClipEdge, deltaMs: number) => void;
-  setAudioDuration: (trackId: string, durationMs: number) => void;
+  setAudioDuration: (trackId: string, durationMs: number) => number | null;
   setAudioVolume: (trackId: string, volume: number) => void;
   toggleAudioMute: (trackId: string) => void;
 
@@ -309,7 +309,7 @@ export interface EditorState {
   splitAtPlayhead: () => void;
   moveClipTo: (clipId: string, startMs: number) => void;
   resizeClip: (clipId: string, edge: ClipEdge, deltaMs: number) => void;
-  setClipDuration: (clipId: string, durationMs: number) => void;
+  setClipDuration: (clipId: string, durationMs: number) => number | null;
   toggleSnapping: () => void;
 
   // ---- playback
@@ -622,8 +622,9 @@ export const useEditor = create<EditorState>((set, get) => ({
   /** The same as `setClipDuration`, for a sound on its lane. */
   setAudioDuration(trackId, durationMs) {
     const track = get().audioTracks.find((t) => t.id === trackId);
-    if (!track) return;
+    if (!track) return null;
     get().resizeAudioTrack(trackId, 'end', Math.round(durationMs) - track.durationMs);
+    return get().audioTracks.find((t) => t.id === trackId)?.durationMs ?? null;
   },
 
   setAudioVolume(trackId, volume) {
@@ -734,11 +735,17 @@ export const useEditor = create<EditorState>((set, get) => ({
    * behind it and the pruning all come from `resizeClip` and cannot drift from it. The
    * delta is taken from the live clip, so the number the user typed is what lands even if
    * the timeline moved under them while they were typing.
+   *
+   * Answers with the length the clip ended up at — the one that was asked for, or the wall
+   * it was clamped to. The box that asked is the only thing that can tell those apart, and
+   * it cannot read the clamp off the clip afterwards: a later drag would look identical.
+   * `null` when there is no such clip to set.
    */
   setClipDuration(clipId, durationMs) {
     const clip = get().clips.find((c) => c.id === clipId);
-    if (!clip) return;
+    if (!clip) return null;
     get().resizeClip(clipId, 'end', Math.round(durationMs) - clip.durationMs);
+    return get().clips.find((c) => c.id === clipId)?.durationMs ?? null;
   },
 
   toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
