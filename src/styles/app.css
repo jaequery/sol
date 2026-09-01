@@ -66,9 +66,62 @@ input {
   font-size: var(--fs);
   color: var(--ink-2);
 }
-.titlebar .doc b {
+/* The project name is the control: the menu hangs off it rather than off chrome of its
+   own, so three rarely-used actions cost the bar nothing while they are not being used. */
+.titlebar .doc__project {
+  position: relative;
+  display: inline-block;
+}
+.titlebar .doc__name {
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--ink);
+  font-size: var(--fs);
   font-weight: 600;
+}
+/* A pseudo-element, so the button's accessible name stays the project's name alone. */
+.titlebar .doc__name::after {
+  content: ' \25be';
+  color: var(--ink-3);
+}
+.titlebar .doc__name:hover,
+.titlebar .doc__name[aria-expanded='true'] {
+  color: var(--accent-2);
+}
+
+/* The app's one popover. It reuses the floating-surface recipe the modals and the film
+   panel already share rather than inventing a second: a hairline and an elevation are what
+   separate it from the timeline underneath, and nothing else here is decoration. */
+.menu {
+  position: absolute;
+  top: calc(100% + var(--sp-2));
+  left: 0;
+  /* Over the film panel, which it is drawn across; under the scrim, so a modal always
+     covers it rather than leaving a menu floating on top of one. */
+  z-index: 45;
+  min-width: 168px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-1);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-pop);
+}
+.menu > button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink-2);
+  font-size: var(--fs);
+  text-align: left;
+  white-space: nowrap;
+}
+.menu > button:hover {
+  background: var(--panel-2);
+  color: var(--ink);
 }
 /* Autosave is silent while it works; a failed one is the single state that must be seen. */
 .titlebar .doc__unsaved {

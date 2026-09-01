@@ -310,7 +310,7 @@ export async function saveSettings(input: SettingsInput): Promise<SettingsView> 
 }
 
 /**
- * The project the editor was last holding, or `null` when there is none.
+ * The untitled scratch project, or `null` when there is none.
  *
  * Untyped on purpose in both directions: what a project *is* lives in `lib/project.ts`,
  * and the Rust side only moves the bytes. A plain browser has nowhere to keep one, so it
@@ -322,9 +322,33 @@ export async function loadProject(): Promise<unknown> {
   return invoke<unknown>('load_project');
 }
 
-export async function saveProject(project: unknown): Promise<void> {
+/**
+ * The project stored at `path`, or a throw naming why it could not be read.
+ *
+ * The counterpart to `loadProject`, and loud where that one is silent: this is a file the
+ * user pointed at, so "there is nothing there" is an answer they have to be given rather
+ * than an empty editor aimed at their project.
+ */
+export async function readProject(path: string): Promise<unknown> {
+  requireDesktop();
+  return invoke<unknown>('read_project', { path });
+}
+
+/**
+ * The project the last write went to, or `null` for the untitled scratch.
+ *
+ * Guarded like `loadProject` rather than `readProject`: this runs at every launch,
+ * including in a browser, where the answer is simply that there is no project to reopen.
+ */
+export async function lastProjectPath(): Promise<string | null> {
+  if (!isDesktop()) return null;
+  return invoke<string | null>('last_project_path');
+}
+
+/** Store the project — at `path`, or in the untitled scratch when there is none. */
+export async function saveProject(project: unknown, path: string | null = null): Promise<void> {
   if (!isDesktop()) return;
-  await invoke('save_project', { project });
+  await invoke('save_project', { project, path });
 }
 
 /**
@@ -435,6 +459,38 @@ export async function pickExportPath(defaultName: string): Promise<string | null
   requireDesktop();
   const { save } = await import('@tauri-apps/plugin-dialog');
   return save({ defaultPath: defaultName, filters: [{ name: 'MP4 video', extensions: ['mp4'] }] });
+}
+
+/** The extension a project file is expected to carry. */
+export const PROJECT_EXT = 'solcut';
+
+/**
+ * Where to save a project, or `null` if the picker was dismissed.
+ *
+ * The extension is forced on rather than suggested: the panel does not append one on every
+ * platform, and a project saved as `beach` or `beach.v2` would then be hidden by the very
+ * filter `pickProjectFile` opens with — a file the user cannot find again.
+ */
+export async function pickProjectSavePath(defaultName: string): Promise<string | null> {
+  requireDesktop();
+  const { save } = await import('@tauri-apps/plugin-dialog');
+  const picked = await save({
+    defaultPath: `${defaultName}.${PROJECT_EXT}`,
+    filters: [{ name: 'SolCut project', extensions: [PROJECT_EXT] }],
+  });
+  if (!picked) return null;
+  return picked.toLowerCase().endsWith(`.${PROJECT_EXT}`) ? picked : `${picked}.${PROJECT_EXT}`;
+}
+
+/** Which project to open, or `null` if the picker was dismissed. */
+export async function pickProjectFile(): Promise<string | null> {
+  requireDesktop();
+  const { open } = await import('@tauri-apps/plugin-dialog');
+  const picked = await open({
+    multiple: false,
+    filters: [{ name: 'SolCut project', extensions: [PROJECT_EXT] }],
+  });
+  return typeof picked === 'string' ? picked : null;
 }
 
 export async function revealPath(path: string): Promise<void> {
