@@ -123,9 +123,16 @@ input {
   background: var(--panel-2);
   color: var(--ink);
 }
-/* Autosave is silent while it works; a failed one is the single state that must be seen. */
-.titlebar .doc__unsaved {
+/*
+  One word beside the project name, and nothing else — no dot, no pill, no border. The quiet
+  states take the same dim the `▾` and the zoom readout use, so a working autosave reads as
+  ambient rather than as a message; only the states that need acting on take a colour.
+*/
+.titlebar .doc__save {
   margin-left: var(--sp-2);
+  color: var(--ink-3);
+}
+.titlebar .doc__save--problem {
   color: var(--err);
 }
 .titlebar .spacer {

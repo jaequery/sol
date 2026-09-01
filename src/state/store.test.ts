@@ -8,7 +8,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { emptyImagePanel, useEditor } from './store';
+import { emptyImagePanel, forgetSavedSnapshot, useEditor } from './store';
 import {
   audioTrack,
   bridgeableCuts,
@@ -104,6 +104,7 @@ beforeEach(() => {
   generateAnimation.mockClear();
   generateImage.mockClear();
   cancelGeneration.mockClear();
+  forgetSavedSnapshot();
   useEditor.setState({
     assets: Object.fromEntries(PHOTO_IDS.map((id) => [id, photo(id)])),
     clips: [],
@@ -127,6 +128,8 @@ beforeEach(() => {
     settings: CONNECTED,
     settingsOpen: false,
     saveError: null,
+    saving: false,
+    savedAt: null,
     projectPath: null,
     saveBlocked: false,
     pendingSwitch: null,

@@ -9,13 +9,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   hydrate,
+  INTERRUPTED,
   markMissing,
   PROJECT_VERSION,
   readProjectFile,
   toProjectFile,
   type ProjectDocument,
 } from './project';
-import type { AudioTrack, Clip, MediaAsset } from '../types/project';
+import { MAX_PX_PER_SECOND, type AudioTrack, type Clip, type Generation, type MediaAsset } from '../types/project';
 
 const resolveSrc = (path: string) => `asset://${path}`;
 
@@ -115,12 +116,175 @@ describe('a project through disk and back', () => {
     expect(back.assets.asset_s.durationMs).toBe(30_000);
   });
 
-  /** A session's own state is not the project, and a restored generation would never finish. */
+  /**
+   * A session's own state is not the project. Two things now survive it — where the user was
+   * looking, and what was still rendering — and everything else is as absent as it ever was.
+   * A document with nothing in flight still writes no `generations` key at all.
+   */
   it('stores nothing about the session that made it', () => {
     const raw = JSON.stringify(toProjectFile(doc));
     for (const ephemeral of ['generations', 'film', 'playing', 'selection', 'toasts', 'exportState']) {
       expect(raw).not.toContain(ephemeral);
     }
+  });
+});
+
+describe('where the user was looking', () => {
+  const doc = documentOf();
+
+  it('round-trips the playhead, the zoom and the snap toggle', () => {
+    const view = { playheadMs: 42_000, pxPerSecond: 80, snapping: false };
+    const read = throughDisk({ ...doc, view });
+    if (read.kind !== 'project') throw new Error('expected a project');
+    expect(hydrate(read.file, { resolveSrc }).view).toEqual(view);
+  });
+
+  /** A project written before there was anywhere to put it, and the common case besides. */
+  it('is simply absent when the stored project has none, rather than a default on screen', () => {
+    const read = throughDisk(doc);
+    if (read.kind !== 'project') throw new Error('expected a project');
+    expect(read.file.view).toBeUndefined();
+    expect(hydrate(read.file, { resolveSrc }).view).toBeUndefined();
+  });
+
+  /**
+   * The file is hand-editable. A zoom outside the slider's own range would draw a timeline
+   * the control that produced it cannot represent, and a negative playhead is not a place.
+   */
+  it('clamps a zoom the slider could never have produced, and a playhead before the start', () => {
+    const read = readProjectFile({
+      ...toProjectFile(doc),
+      view: { playheadMs: -5000, pxPerSecond: 100_000, snapping: true },
+    });
+    if (read.kind !== 'project') throw new Error('expected a project');
+    expect(read.file.view).toEqual({ playheadMs: 0, pxPerSecond: MAX_PX_PER_SECOND, snapping: true });
+  });
+
+  it('reads a half-written viewport as no viewport at all', () => {
+    const read = readProjectFile({ ...toProjectFile(doc), view: { snapping: false } });
+    if (read.kind !== 'project') throw new Error('expected a project');
+    expect(read.file.view).toBeUndefined();
+  });
+});
+
+describe('a render that was still going when the app went away', () => {
+  // A cut record only survives the read if its pair is still on the track, so the document
+  // it round-trips through has to actually carry that pair.
+  const doc = documentOf({
+    assets: { asset_p: asset({ id: 'asset_p' }) },
+    clips: [
+      clip({ id: 'clip_1', assetId: 'asset_p' }),
+      clip({ id: 'clip_2', assetId: 'asset_p', startMs: 5000 }),
+    ],
+  });
+
+  function generation(over: Partial<Generation> = {}): Generation {
+    return {
+      id: 'gen_1',
+      target: {
+        kind: 'cut',
+        afterClipId: 'clip_1',
+        beforeClipId: 'clip_2',
+        from: { clipId: 'clip_1', assetId: 'asset_p' },
+        to: { clipId: 'clip_2', assetId: 'asset_p' },
+      },
+      prompt: 'a gentle push in',
+      modelId: 'seedance_2_5',
+      status: 'running',
+      progress: 0.4,
+      elapsedSecs: 12,
+      slow: true,
+      jobId: 'd2f79a31-live',
+      ...over,
+    };
+  }
+
+  it('comes back as a card that can be retried, saying it was interrupted rather than that it failed', () => {
+    const read = throughDisk({ ...doc, generations: { gen_1: generation() } });
+    if (read.kind !== 'project') throw new Error('expected a project');
+    const back = hydrate(read.file, { resolveSrc }).generations?.gen_1;
+    expect(back?.status).toBe('failed');
+    expect(back?.error).toEqual(INTERRUPTED);
+    expect(back?.error?.retryable).toBe(true);
+    expect(back?.prompt).toBe('a gentle push in');
+    expect(back?.modelId).toBe('seedance_2_5');
+  });
+
+  /**
+   * The job handle is the one field that would make a restored record *look* resumable, and
+   * there is nothing on either side of the app that could re-attach to it. The rest is what
+   * a running card draws with, and there is no running card any more.
+   */
+  it('writes down nothing that belonged to the process that died', () => {
+    const raw = JSON.stringify(toProjectFile({ ...doc, generations: { gen_1: generation() } }));
+    for (const dead of ['jobId', 'd2f79a31-live', 'progress', 'elapsedSecs', 'slow', 'outputPath']) {
+      expect(raw).not.toContain(dead);
+    }
+  });
+
+  it.each(['succeeded', 'failed', 'cancelled'] as const)(
+    'does not write down a %s one — that is not work in flight',
+    (status) => {
+      const file = toProjectFile({ ...doc, generations: { gen_1: generation({ status }) } });
+      expect(file.generations).toBeUndefined();
+    },
+  );
+
+  /**
+   * A film's own state is not part of the project, so a restored leg would be a record no
+   * component renders, whose Retry dismisses the card and then silently does nothing.
+   */
+  it('never writes a film leg, and refuses one that was put there by hand', () => {
+    const leg: Generation = {
+      ...generation(),
+      id: 'gen_film',
+      target: { kind: 'film', startAssetId: 'asset_p', endAssetId: 'asset_v', filmSegmentIndex: 0 },
+    };
+    expect(toProjectFile({ ...doc, generations: { gen_film: leg } }).generations).toBeUndefined();
+
+    const byHand = readProjectFile({
+      ...toProjectFile(doc),
+      generations: [
+        { id: 'gen_film', prompt: 'x', modelId: 'seedance_2_5', target: { kind: 'film', startAssetId: 'a', endAssetId: 'b', filmSegmentIndex: 0 } },
+      ],
+    });
+    if (byHand.kind !== 'project') throw new Error('expected a project');
+    expect(byHand.file.generations).toBeUndefined();
+  });
+
+  /** The same rule a cut prompt gets: with no cut left, there is no chip and no card. */
+  it('drops a cut record whose clips went with a dropped asset', () => {
+    const read = readProjectFile({
+      ...toProjectFile(doc),
+      generations: [
+        {
+          id: 'gen_1',
+          prompt: 'x',
+          modelId: 'seedance_2_5',
+          target: {
+            kind: 'cut',
+            afterClipId: 'clip_gone',
+            beforeClipId: 'clip_also_gone',
+            from: { clipId: 'clip_gone', assetId: 'asset_p' },
+            to: { clipId: 'clip_also_gone', assetId: 'asset_p' },
+          },
+        },
+      ],
+    });
+    if (read.kind !== 'project') throw new Error('expected a project');
+    expect(read.file.generations).toBeUndefined();
+  });
+
+  /** A photo is retried from its prompt alone, so it never depended on the track. */
+  it('keeps a photo record, which has no clips to lose', () => {
+    const image: Generation = {
+      ...generation(),
+      id: 'gen_img',
+      target: { kind: 'image', referenceAssetIds: ['asset_p'], aspect: '16:9' },
+    };
+    const read = throughDisk({ ...doc, clips: [], generations: { gen_img: image } });
+    if (read.kind !== 'project') throw new Error('expected a project');
+    expect(read.file.generations?.map((g) => g.id)).toEqual(['gen_img']);
   });
 });
 

@@ -9,7 +9,7 @@
 
 import { DEFAULT_MODEL_ID } from '../lib/backend';
 import { resetPreviewSync } from '../lib/preview-sync';
-import { emptyImagePanel, useEditor } from '../state/store';
+import { emptyImagePanel, forgetSavedSnapshot, useEditor } from '../state/store';
 
 /**
  * Put the editor back to first-run.
@@ -21,6 +21,8 @@ import { emptyImagePanel, useEditor } from '../state/store';
 export function resetEditor(): void {
   // Media elements from an unmounted tree must not keep steering the next test's playhead.
   resetPreviewSync();
+  // Nothing has been written for *this* editor, whatever the last one managed to write.
+  forgetSavedSnapshot();
   useEditor.setState({
     settings: null,
     connectionMessage: null,
@@ -53,6 +55,8 @@ export function resetEditor(): void {
     snapping: true,
     pxPerSecond: 100,
     saveError: null,
+    saving: false,
+    savedAt: null,
     projectPath: null,
     saveBlocked: false,
     pendingSwitch: null,

@@ -9,6 +9,8 @@ export function TitleBar() {
   const exporting = useEditor((s) => s.exporting);
   const saveError = useEditor((s) => s.saveError);
   const saveBlocked = useEditor((s) => s.saveBlocked);
+  const saving = useEditor((s) => s.saving);
+  const savedAt = useEditor((s) => s.savedAt);
   const projectPath = useEditor((s) => s.projectPath);
   const menuOpen = useEditor((s) => s.projectMenuOpen);
   const openProjectMenu = useEditor((s) => s.openProjectMenu);
@@ -17,6 +19,8 @@ export function TitleBar() {
   const rendering = Object.values(generations).filter(
     (g) => g.status === 'queued' || g.status === 'running',
   ).length;
+
+  const save = saveState({ saveBlocked, saveError, saving, savedAt });
 
   return (
     <div className="titlebar" data-tauri-drag-region>
@@ -39,21 +43,17 @@ export function TitleBar() {
           {menuOpen && <ProjectMenu />}
         </span>
         {/*
-          The whole visible surface of autosave. A working one shows nothing — the work
-          being there at the next launch is the confirmation — but a session that is not
-          writing has to say so, or it is lost without the user ever being told. Two ways in:
-          a write that failed, and a project this build must not overwrite.
+          The whole visible surface of autosave: one word, in the one slot. `role="status"`
+          only on the problem states — an always-announced region would read "Saving… Saved"
+          at every debounce, which is noise about the thing that is going *right*.
         */}
-        {(saveError || saveBlocked) && (
+        {save && (
           <span
-            className="doc__unsaved"
-            role="status"
-            title={
-              saveError ??
-              'This project is left untouched — open another, or start a new one, to save again.'
-            }
+            className={'doc__save' + (save.problem ? ' doc__save--problem' : '')}
+            role={save.problem ? 'status' : undefined}
+            title={save.detail}
           >
-            Not saved
+            {save.text}
           </span>
         )}
       </span>
@@ -86,4 +86,34 @@ export function TitleBar() {
       </div>
     </div>
   );
+}
+
+/** What the save indicator is showing, or `null` for the states worth showing nothing for. */
+function saveState(s: {
+  saveBlocked: boolean;
+  saveError: string | null;
+  saving: boolean;
+  savedAt: number | null;
+}): { text: string; detail: string; problem: boolean } | null {
+  // Order is load-bearing, and `saveBlocked` has to come first: `persistProject` answers
+  // "true" while blocked — nothing failed, there was simply nothing it was allowed to write
+  // — so a session writing nothing at all would otherwise sit here claiming "Saved" beside
+  // the name of a real file it is not touching.
+  if (s.saveBlocked) {
+    return {
+      text: 'Not saved',
+      detail: 'This project is left untouched — open another, or start a new one, to save again.',
+      problem: true,
+    };
+  }
+  if (s.saveError) return { text: 'Not saved', detail: s.saveError, problem: true };
+  if (s.saving) return { text: 'Saving…', detail: 'Writing the project to disk.', problem: false };
+  // Nothing at all until a write has actually landed. A fresh launch has saved nothing yet,
+  // and the bar claiming otherwise is the exact lie this indicator exists to stop telling.
+  if (s.savedAt === null) return null;
+  return {
+    text: 'Saved',
+    detail: `Last saved at ${new Date(s.savedAt).toLocaleTimeString()}.`,
+    problem: false,
+  };
 }

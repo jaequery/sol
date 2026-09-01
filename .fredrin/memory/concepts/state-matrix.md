@@ -196,29 +196,49 @@ own states; what the film underneath is doing is rows 61–67c.
 
 ## 11. The saved project
 
-The editor autosaves the open project and puts it back at launch. A working autosave is
-deliberately invisible: it shows nothing at all, because the work simply being there at the
-next launch is the confirmation. Most rows below are therefore a way it can go wrong, plus
-the one way it goes right. Which project is open, and how that changes, is section 13.
+The editor autosaves the open project and puts it back at launch. Three things trigger a
+write: a change to the document (debounced half a second, and at least every five seconds
+through a continuous gesture), a five-second heartbeat while anything is still unwritten,
+and the window closing, which is held open for one last write. Which project is open, and
+how that changes, is section 13.
 
-What is saved is the **document**: the media bin's paths, the clips, the audio lanes, and
-prompts typed at a cut. What is not is the **session**: an in-flight generation (its job
-died with the process, so a restored card would never finish), a film, the playhead, the
-selection, dialogs and toasts. A finished AI transition is an ordinary clip by then, so it
-comes back with everything else.
+Autosave used to be deliberately invisible. It is not any more: one dim word sits beside the
+project's name and says which state it is in — **Saving…**, **Saved**, **Not saved** — in
+`--ink-3` for the first two and `--err` for the last. Nothing at all is shown until the
+session's first write has actually landed, because a bar claiming "Saved" over a project
+nothing has written is the exact lie the indicator exists to stop telling; `saveBlocked` is
+checked ahead of everything else for the same reason.
+
+What is saved is the **document** — the media bin's paths, the clips, the audio lanes and
+prompts typed at a cut — plus two things about *where you were*:
+
+- **The viewport**: playhead, zoom and the snap toggle. It never triggers a write of its own
+  (the playhead moves sixty times a second during playback); it rides along with the next
+  document write, the heartbeat, or the close.
+- **A render still in flight**: its target, prompt and model, and nothing that belonged to
+  the process — no job id, no progress. It comes back as row 92b below.
+
+What is still **not** saved: a film, the selection, an unsent prompt draft, dialogs and
+toasts. A finished AI transition is an ordinary clip by then, so it comes back with
+everything else.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 84 | **Restored** | App opened with a project stored | The last session's timeline, lanes and media bin, exactly as they were left. Nothing announces it — the title bar reads "n clips" as it always would, and the playhead starts at 0:00 | Keep editing |
+| 84 | **Restored** | App opened with a project stored | The last session's timeline, lanes and media bin, exactly as they were left — and at the playhead, zoom and snap setting it was left at. Nothing announces it; the title bar names the project and shows no save state until the session's first write lands. A project stored before viewports were saved simply keeps the zoom the user is already working at | Keep editing |
 | 85 | **Nothing stored** | First ever launch, or the last session ended empty | Row 1, unchanged: the empty drop zone. No message, because nothing was lost | Drop a file |
 | 86 | **Media gone since last time** | A restored file is no longer at its path | The project still restores whole. One toast names up to three files and counts the rest; each tile in the bin dims and its tooltip gives the path; the preview over that clip reads **MEDIA OFFLINE** (row 5) and export refuses by name rather than dying inside ffmpeg | Re-import the file and put it back on the track |
-| 87 | **Saving failed** | The write was refused — disk full, permissions | One toast with the reason, then a persistent **Not saved** in the title bar beside the project name, in `--err`, whose tooltip repeats the reason. It clears itself the moment a write succeeds | Fix the disk; the next edit retries |
+| 86a | **Saving** | A write is on the wire | **Saving…** beside the project name, in `--ink-3`. Not a live region: an always-announced one would read "Saving… Saved" at every debounce | Nothing to do |
+| 86b | **Saved** | A write has landed this session | **Saved**, in `--ink-3`, with the time of the last write in its tooltip. Before the first write of a session there is nothing here at all | Nothing to do |
+| 87 | **Saving failed** | The write was refused — disk full, permissions | One toast with the reason, then a persistent **Not saved** in the title bar beside the project name, in `--err`, whose tooltip repeats the reason. The heartbeat keeps retrying on its own, so it clears itself the moment a write succeeds — no edit required | Fix the disk; it retries itself |
 | 87a | **Not saving at all** | The open project is one this build must not overwrite (rows 89, 90, 92) | The same **Not saved** chip, with a tooltip saying the project is left untouched. A session that is writing nothing has to say so, and this is the only place it can | Save as… or open another project — either one turns saving back on |
 | 88 | **Project unreadable** | The stored file is not a project this build knows | A toast — "The saved project could not be read. Starting empty. Anything you do now replaces it." The editor opens empty and saving stays **on**: this build owns that file, and being able to replace it is the only way out of a bad one | Keep working; the next edit overwrites it |
 | 89 | **Project from a newer SolCut** | The stored file's version is ahead of this build's | A toast saying so, an empty editor, and saving stays **off for the session** — overwriting it would destroy work a later build can still open | Update SolCut |
 | 90 | **The project could not be read at all** | The read itself failed | Same refusal as row 89: nothing is written this session, because what is on disk may be perfectly good and unreadable only right now | Restart, or fix the permissions |
 | 91 | **Edited before the restore landed** | A file dropped in the moment between launch and the read returning | The user's edit wins and stays on screen, but nothing is written over the stored project, and a toast says both | Restart SolCut to get the saved project back |
 | 92 | **Last project would not open** | The remembered project is gone, unreadable, or from a newer build | An empty editor that *still names that project* in the title bar, with **Not saved** beside it and a toast saying so. It does **not** fall back to the untitled scratch: that would clear the only pointer to a file which may be sitting on an unplugged drive, and overwrite whatever untitled work the scratch holds | Plug the drive back in and relaunch, or open another project |
+| 92a | **Leaving a session that never saved** | New/Open from any blocked session (rows 89–92) with work in it | The same save/discard question row 103 asks of untitled work. Having a *path* is not having somewhere to go: a blocked session is pointed at a file it must not touch, so its work has been written nowhere at all and a silent switch would take the untitled scratch with it | Save as…, Discard, or Cancel |
+| 92b | **A render interrupted by the restart** | The app closed while a generation was in flight | It comes back as an ordinary failed card — a red **✕ FAILED** chip on its cut, or a card at the top of the media bin for a photo — reading **Interrupted**: *"SolCut closed while this was rendering. Nothing was sent again — Retry to start it over."* **Retry** and **Dismiss**, exactly as any failure. Nothing re-submits itself, and the bar's "n rendering" count stays at zero. It is written down only while the render is actually running, so the report is made once and the next save lets it go | Retry, or Dismiss |
+| 92c | **A film leg interrupted** | The same, for a leg of a three-photo film | Nothing. A film's own state is not part of the project, so a leg has nothing to come back to; the record is refused rather than restored into a card that could never act | Start the film again |
 
 ## 12. Generating a photo (the compose panel)
 
@@ -263,8 +283,8 @@ anything on screen changes, and the app reopens whichever project was last writt
 |---|---|---|---|---|
 | 100 | **Untitled** | First run, or New project | The bar reads **Untitled project ▾**. Autosave goes to the scratch, exactly as it always did | Save as… |
 | 101 | **Named** | Save as…, or opening a project | The bar reads the file's name without its extension. Autosave follows the file, and Save as… again moves it somewhere new rather than leaving a copy behind | New, Open, Save as… |
-| 102 | **Switching, silently** | New or Open while the project has a file, or while the editor is empty | The project being left is written first, then the timeline, bin, lanes and playhead are replaced in one step. Nothing is announced — there was nothing to lose | — |
-| 103 | **Switching, asked** | New or Open while the project is *untitled and has work* — clips, lanes, or anything in the bin | A modal: **Save this project first?** with Cancel · Discard · **Save as…**. The one case with nowhere to flush to | Any of the three; Escape is Cancel |
+| 102 | **Switching, silently** | New or Open while the project has a file *it is actually writing to*, or while the editor is empty | The project being left is written first, then the timeline, bin, lanes and playhead are replaced in one step. Nothing is announced — there was nothing to lose | — |
+| 103 | **Switching, asked** | New or Open with work in the editor — clips, lanes, or anything in the bin — and nowhere it is being written: an *untitled* project, or any **blocked** one (row 92a) | A modal: **Save this project first?** with Cancel · Discard · **Save as…**. Blocked belongs here because a path it may not touch is not somewhere to flush to, and the switch would otherwise write the empty document over the untitled scratch on its way in | Any of the three; Escape is Cancel |
 | 103a | **Discarded** | Discard at row 103 | The work goes, *and so does the copy autosave left in the scratch* — otherwise a later New would destroy it silently, and the word would have been a lie | — |
 | 103b | **Save panel dismissed** | Cancel in the native save panel, opened from row 103 | The modal stays exactly where it was and nothing switches, so a mis-click cannot take the work the modal exists to protect | Discard, Cancel, or Save as… again |
 | 104 | **Opened file will not read** | Open project… on a file that is not a project, or is from a newer build | A toast naming which, and **nothing changes** — the project you were in is still open and the file is untouched. Unlike the scratch (row 88), a file the user pointed at is never replaced | Pick another file |

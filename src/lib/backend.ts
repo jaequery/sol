@@ -583,6 +583,42 @@ export async function onExportProgress(cb: (p: ExportProgress) => void): Promise
   return listen<ExportProgress>('export:progress', (e) => cb(e.payload));
 }
 
+/**
+ * The window is closing: `cb` is awaited, and only then does it actually go.
+ *
+ * Three things about this are not obvious, and getting any of them wrong is worse than not
+ * having it at all.
+ *
+ * **It cannot use the bare `listen` above.** Tauri only delivers `tauri://close-requested`
+ * to a *window-scoped* listener, and only auto-prevents the native close when it finds one
+ * — an `Any`-target listener would fail silently in both directions, so the callback would
+ * never run and the window would close anyway.
+ *
+ * **Nothing here calls `preventDefault`.** `onCloseRequested` awaits the handler and then
+ * calls `destroy()` itself; preventing the default is how you keep a window *open*, which
+ * is not what a flush wants. That also means the handler must never reject — the `destroy`
+ * is downstream of it, so a thrown error leaves an app the user cannot quit. Hence the
+ * catch: a last write that failed is not a reason to trap somebody in the editor.
+ *
+ * **`destroy` needs `core:window:allow-destroy`** in `src-tauri/capabilities/default.json`.
+ * It is not in `core:window`'s default permission set, and without it the IPC call is
+ * refused after the close has already been prevented — the same unquittable window.
+ */
+export async function onWindowClose(cb: () => void | Promise<void>): Promise<() => void> {
+  if (!isDesktop()) return () => {};
+  // Imported lazily, like the plugin modules below: `getCurrentWindow` reads
+  // `__TAURI_INTERNALS__` metadata and throws outside a real webview, so it must stay off
+  // the browser and jsdom module graphs entirely.
+  const { getCurrentWindow } = await import('@tauri-apps/api/window');
+  return getCurrentWindow().onCloseRequested(async () => {
+    try {
+      await cb();
+    } catch {
+      // Deliberately swallowed. See above: a rejection here is an app that will not close.
+    }
+  });
+}
+
 export async function pickMediaFiles(): Promise<string[]> {
   requireDesktop();
   const { open } = await import('@tauri-apps/plugin-dialog');

@@ -143,6 +143,8 @@ beforeEach(() => {
     settingsOpen: false,
     snapping: true,
     saveError: null,
+    saving: false,
+    savedAt: null,
     projectPath: null,
     saveBlocked: false,
     pendingSwitch: null,
