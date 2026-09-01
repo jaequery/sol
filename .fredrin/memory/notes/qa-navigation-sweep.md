@@ -127,7 +127,13 @@ to align it; the insert marker — a drop decoration — still sits 12 px off.)*
 
 **R4 — No `setPointerCapture` anywhere.** Drags listen on `window`, which survives leaving the
 track but not a `pointerup` delivered outside the window. The drag then never commits and the
-next stray pointer event commits it at an arbitrary offset.
+next stray pointer event commits it at an arbitrary offset. *(Half-answered for the bin drag
+in SOL-OB53U2: a `pointermove` carrying no held button now ends it, so a lost release is
+noticed on the next movement instead of landing on the next click. Capture itself stays
+rejected — captured events retarget to the capturing element, which would break the
+`track.contains(e.target)` hit test that is the only one a harness with no layout can answer.
+The clip, audio and ruler drags still have the exposure, and their stale edits are visible
+and re-draggable where a bin drop is neither.)*
 
 **R5 — Snap does not apply to edge trims**, only to moves, though its tooltip promises
 "drags … nudge onto a nearby edge" without qualification.
@@ -201,3 +207,29 @@ What that cannot reach, and why R1–R3 are reported rather than fixed: jsdom pe
 layout, so `getBoundingClientRect` returns zeros and pixel-accurate hit-testing cannot be
 asserted; and no headless harness can prove what a packaged Tauri webview does with an OS
 drop. Those need a human running `pnpm tauri dev`.
+
+### The event-ordering blind spot (SOL-OB53U2)
+
+There is a fourth limit, and it shipped a bug none of the above would have caught. **jsdom
+runs a whole event dispatch in one JS stack frame, so it never reaches the microtask
+checkpoint a browser reaches after every listener it calls.** React commits a discrete update
+in exactly that checkpoint, and a sync-lane commit flushes its passive effects with it — so in
+a browser, an effect armed by a press is installed *while that press is still bubbling*, and
+any `window` listener it adds receives the press that armed it. In jsdom the effect lands
+after the dispatch is over and the hazard is invisible.
+
+That is how `window.addEventListener('pointerdown', abort)` in the bin-drag effect killed
+every drag out of the media bin while four tests covering the drag stayed green.
+`pressTile` in `App.navigation.test.tsx` restores the checkpoint with a `document`-level
+`flushSync`, which is what makes those tests fail against the broken build. Any future
+window-listener drag should be pressed through that helper.
+
+**Verifying a drag in a real engine.** No committed test can do this (adding Playwright for
+one script is not worth it), so the harness lives outside the repo. With the app running under
+`pnpm dev`, drive it with `playwright-core` and real mouse input — `page.mouse.down()`, a
+couple of `page.mouse.move(..., { steps })` from the tile to `[data-testid="timeline-track"]`,
+`page.mouse.up()` — and count `[data-testid^="clip-"]` before and after. Against the broken
+build it reported `{ clipsAfter: 1, tileOpacityMidDrag: "1", dragWorks: false }` — the tile
+never even dims; against the fix, `{ clipsAfter: 2, tileOpacityMidDrag: "0.5", dragWorks: true }`.
+Chromium only on this machine: Playwright's WebKit needs system libraries the box lacks, and
+the ordering is spec-mandated rather than engine-specific.
