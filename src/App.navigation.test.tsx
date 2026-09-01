@@ -11,6 +11,7 @@
  */
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { flushSync } from 'react-dom';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
@@ -132,6 +133,32 @@ async function dropPhotoPair() {
 }
 
 /**
+ * Press a bin tile the way a browser presses one.
+ *
+ * A browser reaches a microtask checkpoint after every listener it calls, and that is where
+ * React commits the discrete update the press just made — passive effects flushed with it,
+ * because the commit is on a sync lane. So the window listeners the track installs for the
+ * drag are already in place while the press is still on its way up to `window`, and anything
+ * among them that answers `pointerdown` answers the very press that armed the drag. That is
+ * SOL-OB53U2: the drag died on arrival in every browser and no test could see it.
+ *
+ * jsdom runs a whole dispatch in one stack frame and reaches no such checkpoint, so the
+ * flush has to be put back by hand. `document` is the one place it can go: below React's
+ * container listener, which is what runs the tile's `onPointerDown`, and above the window
+ * listeners that press installs. Verified against React 19.2 — it leans on that scheduling,
+ * so if this stops discriminating a broken build, suspect a React upgrade first.
+ */
+async function pressTile(tile: HTMLElement) {
+  const flush = () => flushSync(() => {});
+  document.addEventListener('pointerdown', flush);
+  try {
+    await act(async () => fireEvent.pointerDown(tile, { button: 0, clientX: 0, buttons: 1 }));
+  } finally {
+    document.removeEventListener('pointerdown', flush);
+  }
+}
+
+/**
  * Carry a bin tile onto the track and let go of it there.
  *
  * The move and the release are dispatched on the track, not on `window` as the other pointer
@@ -143,8 +170,10 @@ async function dragTileToTrack(name: string, clientX = 0) {
   const track = screen.getByTestId('timeline-track');
   // One act per event, as the ruler and clip drags in this file are written: the press is
   // what puts the track in charge of the drag, and it has to land before the release does.
-  await act(async () => fireEvent.pointerDown(tile, { button: 0, clientX: 0 }));
-  await act(async () => fireEvent.pointerMove(track, { clientX }));
+  await pressTile(tile);
+  // `buttons: 1` is not decoration: a move with nothing held is how the track recognises a
+  // release it never saw, and a drag that does not hold the button down is not a drag.
+  await act(async () => fireEvent.pointerMove(track, { clientX, buttons: 1 }));
   await act(async () => fireEvent.pointerUp(track, { clientX }));
 }
 
@@ -222,6 +251,59 @@ describe('media bin', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
+  it('the press that arms a drag does not also cancel it', async () => {
+    await mount();
+    await binnedPhoto();
+    const assetId = Object.keys(useEditor.getState().assets)[0];
+
+    // The bin arms the drag on the press; the track answers by installing the window
+    // listeners that carry it. In a browser both happen inside that one press, in that
+    // order — so anything up there that ends a drag on `pointerdown` ends the drag the
+    // press just started, and no tile can ever leave the bin (SOL-OB53U2).
+    await pressTile(screen.getByLabelText('Add sunset.jpg to the timeline'));
+
+    expect(
+      useEditor.getState().draggingAssetId,
+      'the press that armed the drag also killed it',
+    ).toBe(assetId);
+  });
+
+  it('a stray press elsewhere does not cancel a drag already under way', async () => {
+    await mount();
+    await binnedPhoto();
+    const assetId = Object.keys(useEditor.getState().assets)[0];
+    const track = screen.getByTestId('timeline-track');
+
+    await pressTile(screen.getByLabelText('Add sunset.jpg to the timeline'));
+    await act(async () => fireEvent.pointerMove(track, { clientX: 40, buttons: 1 }));
+    // Whatever else a second press means, it is not "throw away what is in the user's hand".
+    await act(async () => fireEvent.pointerDown(window, { button: 0 }));
+
+    expect(useEditor.getState().draggingAssetId).toBe(assetId);
+  });
+
+  it('a drag that loses its release ends, and drops nothing on the next click', async () => {
+    await mount();
+    await binnedPhoto();
+    const assetId = Object.keys(useEditor.getState().assets)[0];
+    const track = screen.getByTestId('timeline-track');
+
+    await pressTile(screen.getByLabelText('Add sunset.jpg to the timeline'));
+    await act(async () => fireEvent.pointerMove(track, { clientX: 40, buttons: 1 }));
+    // A live drag first, or the rest of this test is satisfied by one that never started.
+    expect(useEditor.getState().draggingAssetId).toBe(assetId);
+    // The release went missing — let go outside the window, say. The next move carries no
+    // held button, which is the only evidence there is that the drag is over.
+    await act(async () => fireEvent.pointerMove(track, { clientX: 60, buttons: 0 }));
+
+    expect(useEditor.getState().draggingAssetId).toBeNull();
+
+    // And the click that follows is a click, not the drop of a tile let go minutes ago.
+    // There is no undo in this store, so a stale drop would be unrecoverable.
+    await act(async () => fireEvent.pointerUp(track, { clientX: 60 }));
+    expect(useEditor.getState().clips).toHaveLength(0);
+  });
+
   it('a tile dragged onto the track lands there as a clip', async () => {
     await mount();
     // Deleting a clip used to be a one-way door: the asset stayed in the bin with no way
@@ -260,14 +342,18 @@ describe('media bin', () => {
   it('a tile let go anywhere but the track adds nothing', async () => {
     await mount();
     await binnedPhoto();
+    const assetId = Object.keys(useEditor.getState().assets)[0];
     const tile = screen.getByLabelText('Add sunset.jpg to the timeline');
     const track = screen.getByTestId('timeline-track');
 
     // Out over the track and back again: changing your mind has to be possible, and a press
     // that never leaves the bin is not a drop either.
-    await act(async () => fireEvent.pointerDown(tile, { button: 0, clientX: 0 }));
-    await act(async () => fireEvent.pointerMove(track, { clientX: 100 }));
-    await act(async () => fireEvent.pointerMove(tile, { clientX: 0 }));
+    await pressTile(tile);
+    // Said out loud, because "nothing landed" is also what a drag that never started looks
+    // like: this test has to be watching a live drag change its mind, not a dead one.
+    expect(useEditor.getState().draggingAssetId).toBe(assetId);
+    await act(async () => fireEvent.pointerMove(track, { clientX: 100, buttons: 1 }));
+    await act(async () => fireEvent.pointerMove(tile, { clientX: 0, buttons: 1 }));
     await act(async () => fireEvent.pointerUp(tile, { clientX: 0 }));
 
     expect(useEditor.getState().clips).toHaveLength(0);

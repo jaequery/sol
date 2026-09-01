@@ -164,7 +164,9 @@ export function MediaBin() {
               {asset.kind === 'photo' ? (
                 <img src={asset.src} alt="" draggable={false} />
               ) : asset.kind === 'video' ? (
-                <video src={asset.src} muted preload="metadata" />
+                // `draggable={false}` for the same reason the photo above carries it: a
+                // native drag started here would strand the tile drag with no pointerup.
+                <video src={asset.src} muted preload="metadata" draggable={false} />
               ) : (
                 <div className="bin__audio" aria-hidden="true">
                   ♪

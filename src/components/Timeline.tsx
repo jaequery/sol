@@ -379,7 +379,27 @@ export function Timeline() {
       };
     };
 
-    const onMove = (e: PointerEvent) => setTileDrop(positionOf(e));
+    // This store has no undo, so a drag that loses its release — a context menu, a window
+    // switch, Escape — has to end here rather than stay armed and land on a later click.
+    //
+    // Deliberately *not* on `pointerdown`, however tempting a fifth way out looks. React
+    // commits a discrete update in a microtask, a browser reaches one after every listener
+    // it calls, and a sync-lane commit flushes its passive effects with it — so this effect
+    // is installed inside the very press that arms the drag, before that press has finished
+    // bubbling to `window`. A `pointerdown` listener here therefore aborts the drag it just
+    // started, and the tile never even dims. jsdom reaches no such checkpoint and cannot see
+    // it; `pressTile` in App.navigation.test.tsx puts the ordering back so the suite can.
+    const abort = () => {
+      setTileDrop(null);
+      endAssetDrag();
+    };
+
+    const onMove = (e: PointerEvent) => {
+      // A move carrying no held button means the release went missing — the drag has
+      // outlived its `pointerup`, and this is the first moment anything can notice.
+      if (e.buttons === 0) return abort();
+      setTileDrop(positionOf(e));
+    };
 
     const commit = (e: PointerEvent) => {
       const at = positionOf(e);
@@ -390,19 +410,12 @@ export function Timeline() {
       if (at) placeAssetOnTimeline(draggingAssetId, insertIndexAt(clips, at.ratio), at.timeMs);
     };
 
-    // This store has no undo, so a drag that loses its release — a context menu, a window
-    // switch, Escape — has to end here rather than stay armed and land on a later click.
-    const abort = () => {
-      setTileDrop(null);
-      endAssetDrag();
-    };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') abort();
     };
 
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', commit);
-    window.addEventListener('pointerdown', abort);
     window.addEventListener('pointercancel', abort);
     window.addEventListener('contextmenu', abort);
     window.addEventListener('blur', abort);
@@ -410,7 +423,6 @@ export function Timeline() {
     return () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', commit);
-      window.removeEventListener('pointerdown', abort);
       window.removeEventListener('pointercancel', abort);
       window.removeEventListener('contextmenu', abort);
       window.removeEventListener('blur', abort);
