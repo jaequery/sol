@@ -17,8 +17,30 @@ import {
   parseDurationInput,
   transitionStaleness,
 } from '../lib/timeline';
-import { modelLabel } from '../lib/backend';
+import { modelLabel, readinessHint, type ReadinessHint } from '../lib/backend';
 import { ModelSelect } from './ModelSelect';
+
+/**
+ * Why the chosen backend cannot render, and what to do about it.
+ *
+ * One component for all three surfaces, because the answer differs by backend and there is
+ * no version of this worth writing twice: Higgsfield is connected in Settings, while a local
+ * backend is a CLI you install, so only one of them has a button to offer.
+ */
+function NotReady({ hint, onOpenSettings }: { hint: ReadinessHint; onOpenSettings: () => void }) {
+  return (
+    <div className="callout">
+      <b>{hint.title}</b>
+      {hint.detail}
+      {hint.command && <code className="callout__cmd">{hint.command}</code>}
+      {hint.opensSettings && (
+        <button type="button" onClick={onOpenSettings}>
+          Open settings →
+        </button>
+      )}
+    </div>
+  );
+}
 
 const TRANSITION_SUGGESTIONS = ['crossfade morph', 'whip pan', 'zoom through', 'dreamy dissolve'];
 
@@ -460,6 +482,8 @@ function FailedCard({ generation, heading }: { generation: Generation; heading: 
  */
 function CutCard({ a, b }: { a: Clip; b: Clip }) {
   const settings = useEditor((s) => s.settings);
+  const modelId = useEditor((s) => s.modelId);
+  const ffmpegAvailable = useEditor((s) => s.ffmpegAvailable);
   const assets = useEditor((s) => s.assets);
   const generations = useEditor((s) => s.generations);
   const cutPrompts = useEditor((s) => s.cutPrompts);
@@ -498,7 +522,9 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
   // under the legs still behind it); an explicit pick is always the user's own.
   const runFlipped =
     offersReplace && animateRun !== null && cutModes[`${a.id}:${b.id}`] === undefined;
-  const connected = settings?.configured ?? false;
+  // Asked of the backend the selector is showing, not of Higgsfield: on a machine with a
+  // coding-agent CLI and no Higgsfield this card is perfectly able to render.
+  const notReady = readinessHint(modelId, settings, ffmpegAvailable);
   const assetA = assets[a.assetId];
   const assetB = assets[b.assetId];
   const offline = !assetA || !assetB || assetA.missing || assetB.missing;
@@ -509,8 +535,8 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
       <div className="card__head">✦ Transition · {heading}</div>
       <div className="card__body">
         <p className="hint" style={{ marginTop: 0 }}>
-          Higgsfield animates from the last frame of <b>{a.name}</b> to the first frame of{' '}
-          <b>{b.name}</b>.{' '}
+          {modelLabel(modelId)} animates from the last frame of <b>{a.name}</b> to the first
+          frame of <b>{b.name}</b>.{' '}
           {mode === 'replace' ? (
             bothPhotos ? (
               <>The finished clip stands in the photos{'’'} place — they stay in the media bin.</>
@@ -553,14 +579,8 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
 
         <ModelSelect id="cut-model" />
 
-        {!connected ? (
-          <div className="callout">
-            <b>Connect Higgsfield to generate</b>
-            No API key is stored yet. Nothing has been sent.
-            <button type="button" onClick={openSettings}>
-              Open settings →
-            </button>
-          </div>
+        {notReady ? (
+          <NotReady hint={notReady} onOpenSettings={openSettings} />
         ) : (
           <>
             <button
@@ -604,6 +624,8 @@ function TransitionCard({ clip }: { clip: Clip }) {
   const clips = useEditor((s) => s.clips);
   const assets = useEditor((s) => s.assets);
   const settings = useEditor((s) => s.settings);
+  const modelId = useEditor((s) => s.modelId);
+  const ffmpegAvailable = useEditor((s) => s.ffmpegAvailable);
   const generations = useEditor((s) => s.generations);
   const setTransitionPrompt = useEditor((s) => s.setTransitionPrompt);
   const regenerateTransition = useEditor((s) => s.regenerateTransition);
@@ -631,7 +653,7 @@ function TransitionCard({ clip }: { clip: Clip }) {
     return <FailedCard generation={generation} heading="Transition" />;
   }
 
-  const connected = settings?.configured ?? false;
+  const notReady = readinessHint(modelId, settings, ffmpegAvailable);
 
   return (
     <div className="card card--ai">
@@ -674,14 +696,8 @@ function TransitionCard({ clip }: { clip: Clip }) {
           </div>
         )}
 
-        {!connected ? (
-          <div className="callout">
-            <b>Connect Higgsfield to regenerate</b>
-            No API key is stored yet. Nothing has been sent.
-            <button type="button" onClick={openSettings}>
-              Open settings →
-            </button>
-          </div>
+        {notReady ? (
+          <NotReady hint={notReady} onOpenSettings={openSettings} />
         ) : (
           <>
             <button

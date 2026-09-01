@@ -31,6 +31,12 @@ pub enum RenderError {
         stderr: String,
     },
 
+    /// A transition name that is not in [`TRANSITIONS`]. Refused before ffmpeg is spawned,
+    /// so a model that answered with a motion this build cannot render is reported as that
+    /// rather than as an ffmpeg parse failure sixty frames in.
+    #[error("{0:?} is not a transition SolCut can render")]
+    UnknownTransition(String),
+
     #[error("io error: {0}")]
     Io(String),
 }
@@ -376,6 +382,121 @@ fn encode_args(spec: &ExportSpec, duration: &str, out: &Path) -> Vec<String> {
     ]
 }
 
+// ---------------------------------------------------------------- agent transitions
+
+/// The motions a locally composited transition may be, and the only strings that ever
+/// reach ffmpeg's `xfade=transition=` from a model's answer.
+///
+/// A closed list rather than a filter graph: an agent CLI picks one of these by name, so
+/// nothing it writes is ever parsed as ffmpeg syntax and there is no injection surface to
+/// guard. Two rules picked the sixteen.
+///
+/// **They all predate the ffmpeg the user is likely to have.** `xfade` landed in 4.3 with
+/// transitions 0–34; `hblur`, the wipe corners, `zoomin` and the wind/cover/reveal family
+/// came later. Everything here is in that original set, so a recipe cannot outrun an
+/// older build and fail at the last step of a render the user already paid for.
+///
+/// **They are visually distinct.** ffmpeg also offers `smoothleft`, `hlslice` and
+/// `diagtl`, but "slide left" versus "smooth left" versus "hl slice" is a distinction no
+/// prompt can make reliably and no test can score — so the near-duplicates are left out
+/// and the vocabulary stays one a human can review by eye.
+pub const TRANSITIONS: &[&str] = &[
+    "fade",
+    "dissolve",
+    "fadeblack",
+    "fadewhite",
+    "wipeleft",
+    "wiperight",
+    "wipeup",
+    "wipedown",
+    "slideleft",
+    "slideright",
+    "slideup",
+    "slidedown",
+    "circleopen",
+    "circleclose",
+    "radial",
+    "pixelize",
+];
+
+/// The shortest a composited transition may run.
+///
+/// A floor rather than a formality: between two photos the finished clip **stands in their
+/// place** and both stills leave the track, so a transition shorter than this replaces two
+/// five-second photos with a blink and there is no undo for the span it consumed. One
+/// second is the least that still reads as motion.
+pub const MIN_TRANSITION_SECS: f32 = 1.0;
+
+/// The longest. Past this it stops being a cut and starts being the film.
+pub const MAX_TRANSITION_SECS: f32 = 8.0;
+
+/// Whether `name` is a motion this crate will render.
+pub fn is_transition(name: &str) -> bool {
+    TRANSITIONS.contains(&name)
+}
+
+/// A duration the renderer will accept, whatever was asked for.
+pub fn clamp_transition_secs(secs: f32) -> f32 {
+    if !secs.is_finite() {
+        return MIN_TRANSITION_SECS;
+    }
+    secs.clamp(MIN_TRANSITION_SECS, MAX_TRANSITION_SECS)
+}
+
+/// Full ffmpeg argv for compositing one transition between two stills.
+///
+/// The timing is the whole trick. Each still is held for exactly `secs` and the crossfade
+/// is `duration=secs:offset=0`, so the output is `2·secs − secs = secs` long and **every
+/// frame of it is mid-transition** — there is no held still at either end. That is what
+/// lets the result stand in for the two photos it replaces rather than being inserted
+/// between them, which is the landing a photo-to-photo cut already defaults to.
+///
+/// Both sides go through [`photo_filter`], the same cover-crop the export gives a photo,
+/// so two sources of different shapes meet `xfade` at identical size, rate and pixel
+/// aspect — which it requires — and the motion is framed the way the finished film is.
+pub fn transition_args(
+    spec: &ExportSpec,
+    start: &Path,
+    end: &Path,
+    transition: &str,
+    secs: f32,
+    out: &Path,
+) -> Vec<String> {
+    let secs = num(clamp_transition_secs(secs));
+    let filter = photo_filter(spec);
+    let mut args: Vec<String> = vec!["-hide_banner".into(), "-nostdin".into(), "-y".into()];
+
+    for path in [start, end] {
+        args.extend(["-loop".into(), "1".into()]);
+        args.extend(["-framerate".into(), spec.fps.to_string()]);
+        args.extend(["-t".into(), secs.clone()]);
+        args.extend(["-i".into(), path.display().to_string()]);
+    }
+
+    // A silent stereo bed, exactly as `normalize_args` gives every other part: the clip
+    // this produces is imported like any other video, and one that arrives with no audio
+    // stream at all is a shape the rest of the pipeline never has to meet.
+    args.extend([
+        "-f".into(),
+        "lavfi".into(),
+        "-t".into(),
+        secs.clone(),
+        "-i".into(),
+        "anullsrc=channel_layout=stereo:sample_rate=48000".into(),
+    ]);
+
+    args.extend([
+        "-filter_complex".into(),
+        format!(
+            "[0:v]{filter}[a];[1:v]{filter}[b];             [a][b]xfade=transition={transition}:duration={secs}:offset=0,format=yuv420p[v]"
+        ),
+    ]);
+    args.extend(["-map".into(), "[v]".into()]);
+    args.extend(["-map".into(), "2:a:0".into()]);
+    args.extend(encode_args(spec, &secs, out));
+    args
+}
+
 /// One piece of the finished film, in play order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimelinePart {
@@ -615,6 +736,59 @@ impl Renderer {
         Ok(output.stdout)
     }
 
+    /// Composite one transition between two stills and write it to `out`.
+    ///
+    /// The single-call sibling of [`Self::capture_frame`], and it takes the same view of a
+    /// missing binary: no `is_available` preflight, because `From<io::Error>` already turns
+    /// that into [`RenderError::FfmpegMissing`] and a second spawned process would buy
+    /// nothing.
+    ///
+    /// The transition name is checked here as well as where the recipe was parsed. It costs
+    /// one list lookup and it means this function cannot be handed a string that reaches
+    /// ffmpeg's filter parser unvetted, whoever calls it.
+    pub async fn render_transition(
+        &self,
+        spec: &ExportSpec,
+        start: &Path,
+        end: &Path,
+        transition: &str,
+        secs: f32,
+        out: &Path,
+    ) -> Result<()> {
+        if !is_transition(transition) {
+            return Err(RenderError::UnknownTransition(transition.to_string()));
+        }
+        for path in [start, end] {
+            if !path.exists() {
+                return Err(RenderError::SourceMissing {
+                    clip: file_name(path),
+                    path: path.display().to_string(),
+                });
+            }
+        }
+        if let Some(parent) = out.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| RenderError::Io(e.to_string()))?;
+        }
+
+        let args = transition_args(spec, start, end, transition, secs, out);
+        let output = Command::new(&self.ffmpeg)
+            .args(&args)
+            .kill_on_drop(true)
+            .output()
+            .await?;
+
+        if !output.status.success() {
+            return Err(RenderError::Ffmpeg {
+                stage: "compositing a transition".into(),
+                code: output.status.code().unwrap_or(-1),
+                stderr: tail(&String::from_utf8_lossy(&output.stderr), 20),
+            });
+        }
+        Ok(())
+    }
+
     async fn has_audio(&self, path: &Path) -> bool {
         let output = Command::new(&self.ffprobe)
             .args([
@@ -775,6 +949,125 @@ fn tail(s: &str, lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_transition_offered_predates_the_ffmpeg_a_user_is_likely_to_have() {
+        // `xfade` shipped in ffmpeg 4.3 with transitions 0-34; `hblur` (35), the wipe
+        // corners, `zoomin` and the wind/cover/reveal families all came later. A recipe
+        // naming one of those would compose fine here and die on an older build at the last
+        // step of a render the user had already waited for.
+        const AFTER_4_3: &[&str] = &[
+            "hblur",
+            "fadegrays",
+            "wipetl",
+            "squeezeh",
+            "zoomin",
+            "fadefast",
+            "hlwind",
+            "coverleft",
+            "revealright",
+        ];
+        for name in TRANSITIONS {
+            assert!(
+                !AFTER_4_3.contains(name),
+                "{name} postdates the 4.3 xfade set this vocabulary is pinned to"
+            );
+        }
+        assert!(is_transition("slideleft"));
+        assert!(
+            !is_transition("zoomin"),
+            "a real filter, but not one of ours"
+        );
+        assert!(!is_transition(""));
+    }
+
+    #[test]
+    fn a_transition_is_never_short_enough_to_swallow_the_photos_it_replaces() {
+        // The failure this guards: between two photos the finished clip stands in their
+        // place and both stills leave the track. A model answering 0.2 s would trade two
+        // five-second photos for a blink, and the span it consumed does not come back.
+        assert_eq!(clamp_transition_secs(0.2), MIN_TRANSITION_SECS);
+        assert_eq!(clamp_transition_secs(-4.0), MIN_TRANSITION_SECS);
+        assert_eq!(clamp_transition_secs(f32::NAN), MIN_TRANSITION_SECS);
+        assert_eq!(clamp_transition_secs(99.0), MAX_TRANSITION_SECS);
+        assert_eq!(clamp_transition_secs(3.5), 3.5);
+    }
+
+    #[test]
+    fn a_transition_holds_each_still_for_exactly_its_own_length() {
+        // `2D - D = D`: hold each still for D and crossfade for D from offset 0, and every
+        // frame of the output is mid-motion. Getting either number wrong shows up as a held
+        // frame at one end, which is the one thing a replace landing may not have.
+        let spec = ExportSpec::default();
+        let args = transition_args(
+            &spec,
+            Path::new("/m/a.jpg"),
+            Path::new("/m/b.jpg"),
+            "slideleft",
+            3.0,
+            Path::new("/m/out.mp4"),
+        );
+        assert_eq!(
+            args.iter().filter(|a| *a == "-t").count(),
+            4,
+            "two stills, the silent bed, and the encoder cap"
+        );
+        assert_eq!(args.iter().filter(|a| *a == "3").count(), 4);
+        let filter = args
+            .iter()
+            .position(|a| a == "-filter_complex")
+            .map(|i| args[i + 1].clone())
+            .expect("a filter graph");
+        assert!(
+            filter.contains("xfade=transition=slideleft:duration=3:offset=0"),
+            "{filter}"
+        );
+        // Both sides get the export's own cover-crop, or xfade refuses the pair outright.
+        assert_eq!(filter.matches(&photo_filter(&spec)).count(), 2, "{filter}");
+    }
+
+    #[test]
+    fn a_transition_takes_its_frame_from_the_export_rather_than_a_constant_of_its_own() {
+        // A hardcoded 1920x1080 here would silently disagree with the export the day the
+        // spec's default moves, and the transition would be the one clip that got scaled.
+        let spec = ExportSpec {
+            width: 1280,
+            height: 720,
+            fps: 24,
+            ..ExportSpec::default()
+        };
+        let args = transition_args(
+            &spec,
+            Path::new("/m/a.jpg"),
+            Path::new("/m/b.jpg"),
+            "fade",
+            2.0,
+            Path::new("/m/out.mp4"),
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("scale=1280:720"), "{joined}");
+        assert!(joined.contains("fps=24"), "{joined}");
+    }
+
+    #[test]
+    fn a_transition_argv_clamps_before_it_is_built() {
+        let args = transition_args(
+            &ExportSpec::default(),
+            Path::new("/m/a.jpg"),
+            Path::new("/m/b.jpg"),
+            "fade",
+            0.2,
+            Path::new("/m/out.mp4"),
+        );
+        assert!(
+            !args.iter().any(|a| a == "0.2"),
+            "a sub-floor ask must not reach ffmpeg"
+        );
+        assert!(
+            args.iter().any(|a| a == "1"),
+            "it is clamped to the floor instead"
+        );
+    }
 
     #[test]
     fn a_still_request_never_seeks_past_the_last_frame_there_is() {

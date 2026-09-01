@@ -19,5 +19,6 @@ tauri-plugin-opener = "2"
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+solcut-agent = { path = "crates/agent" }
 solcut-higgsfield = { path = "crates/higgsfield" }
 solcut-render = { path = "crates/render" }

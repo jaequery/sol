@@ -27,11 +27,12 @@ hi-fi walkthrough artifact.
 | 8 | **Video clip selected** | Click a video clip | Inspector shows clip info, with **Duration** editable in seconds (state 38a), and the same hint a photo gets: put another clip beside it and bridge the cut with an AI transition (section 8) | Select a cut |
 | 9 | **Photo clip selected** | Click a photo clip | The same card, plus a hint pointing at the ✦ chip: put another clip beside it and bridge the cut with an AI transition (section 8) | Select a cut |
 
-## 3. Generation (Higgsfield)
+## 3. Generation (Higgsfield, or a local backend)
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
-| 13 | **No CLI** | Generate clicked with no Higgsfield CLI found on the machine | Inline callout in the cut card: "Connect Higgsfield to generate" + Open settings; nothing is sent | Install the CLI (`npm i -g @higgsfield/cli`) and sign in (`higgsfield auth login`) |
+| 13 | **Backend not ready** | A render surface is showing a backend this machine cannot run. Asked of the **chosen** backend, not of Higgsfield — a machine with a coding-agent CLI and no Higgsfield can render perfectly well | Inline callout replacing the button. Higgsfield: "Connect Higgsfield to generate" + Open settings. A local backend that is not installed: "Install the Claude Code CLI to composite" with its `npm install` line to paste and **no** settings button — there is nothing to connect. No ffmpeg with a local backend chosen: "ffmpeg is needed to composite". Nothing is sent in any of them | Install what it named, then reopen the dialog or reselect the cut |
+| 13a | **Local motion chosen** | The Model selector's second group — Claude Code CLI or Codex CLI | The same card and the same button. The agent CLI is asked, in one call, for a motion recipe (`{transition, duration_secs}`); ffmpeg composites it locally. There is no job id, so the inspector shows none, and Animate all runs one cut at a time rather than pipelining on a submit-ack it never gets. About two cents and ten seconds a cut | Generate, or pick a Higgsfield model |
 | 14 | **Settings dialog** | Open settings | Three things, in order: CLI status (found + path, or the three setup commands); the **API key** — id + secret, both masked and both starting empty, the id first focused, with a stored one showing only as a `••••7fa2` placeholder; and the custom model id (what the render cards’ Custom entry sends). Test connection reports the CLI's pass/fail in its own words | Save / Cancel / Escape — Escape discards, exactly as Cancel does |
 | 14a | **API key checked** | Test key | Its own heading, never the CLI's: *API key accepted* (green) when the documented status route answers 404 to the credential, *API key rejected* on 401 quoting Higgsfield's `detail`, *Higgsfield refused the key* on 403 (an account that will not serve the call — usually an empty balance, not a bad key), *Could not prove the API key* for any other answer, and *Could not reach Higgsfield* for no answer at all. The key is proved from the boxes overlaid on what is stored, so it can be checked before it is saved; nothing is written and nothing is generated | Fix the key and check again, or Save / Cancel |
 | 14b | **API key armed to be forgotten** | Forget key, offered only while one is stored | Both boxes clear, the hint reads "removed on Save", and the control retires itself. Typing into either box disarms it, so a forget and a new key can never both apply | Save removes it / Cancel keeps it |
@@ -128,9 +129,9 @@ own.
 |---|---|---|---|---|
 | 46 | **Idle chip** | Two clips sit side by side on the track — any kinds, edge to edge or with a gap between them, neither of them an already-landed transition | A small ✦ chip vertically centred on the shared edge, or floating in the middle of the gap (its tooltip names the gap's length); the toolbar shows ✦ Animate all · n counting the **photo-to-photo** cuts only | Tap the chip, or Animate all |
 | 47 | **Chip disabled (media offline)** | A clip on the cut lost its source file | The chip dims with the reason in its tooltip; nothing can be sent for a frame that cannot be rendered | Re-import the clip |
-| 48 | **Cut selected** | Chip tapped | The chip takes the accent ring; the inspector shows the transition card naming both clips, a hint stating the outcome, an *optional* prompt (empty means the default `Smooth cinematic motion transition`), suggestion chips, a model selector (default Seedance 2.5), and one ✦ Generate transition button. Beneath the button, a quiet text action toggles "keep the photo(s) on the track" per cut, remembered like its prompt — **absent entirely between two videos**, which have no still to stand in for | Generate, type first, or click elsewhere |
+| 48 | **Cut selected** | Chip tapped | The chip takes the accent ring; the inspector shows the transition card naming both clips, a hint stating the outcome, an *optional* prompt (empty means the default `Smooth cinematic motion transition`), suggestion chips, a model selector (default Seedance 2.5, with a second group offering the **local motion** backends), and one ✦ Generate transition button. Beneath the button, a quiet text action toggles "keep the photo(s) on the track" per cut, remembered like its prompt — **absent entirely between two videos**, which have no still to stand in for | Generate, type first, or click elsewhere |
 | 48a | **Cut selected — video on one or both sides** | Chip tapped on a cut with video | The same card. With a photo on the other side the landing pick stands, in the singular, and applies to that photo alone. With video on both sides there is no pick, and the hint says the clip lands between them. A video side needs ffmpeg on `PATH`; without it the render fails at submission and says so | Generate, or click elsewhere |
-| 49 | **No CLI** | Cut selected with no Higgsfield CLI found | The card's button is replaced by the "Connect Higgsfield to generate" callout; nothing is sent | Install and sign in to the CLI |
+| 49 | **Backend not ready** | Cut selected while the Model selector shows a backend this machine cannot run | The card's button is replaced by the callout of state 13, which names the backend that is actually missing rather than always blaming Higgsfield | Install what it named, or pick a backend that is ready |
 | 50 | **Queued** | Generate pressed, job accepted | The chip widens into a dashed mono pill reading ◐ QUEUED — the cut has no width on the track, so the chip itself is the progress surface; the title bar counts the render | Cancel, or wait |
 | 51 | **Running** | Poll returns progress | The pill shows ◐ n% (or elapsed seconds when the API reports no percentage); **the rest of the app stays fully usable** | Cancel, or wait |
 | 52 | **Slow (> 90 s)** | Still running past the soft threshold | The pill takes an amber tint and the card adds the calm "taking longer than usual" advisory — no modal, no lock | Cancel, or wait |
@@ -195,11 +196,10 @@ own states; what the film underneath is doing is rows 61–67c.
 
 ## 11. The saved project
 
-The editor autosaves one project and puts it back at launch. There is no save action, so
-the whole feature is states rather than controls — and a working autosave is deliberately
-*not* one of them: it shows nothing at all, because the work simply being there at the next
-launch is the confirmation. Every row below is therefore a way it can go wrong, plus the
-one way it goes right.
+The editor autosaves the open project and puts it back at launch. A working autosave is
+deliberately invisible: it shows nothing at all, because the work simply being there at the
+next launch is the confirmation. Most rows below are therefore a way it can go wrong, plus
+the one way it goes right. Which project is open, and how that changes, is section 13.
 
 What is saved is the **document**: the media bin's paths, the clips, the audio lanes, and
 prompts typed at a cut. What is not is the **session**: an in-flight generation (its job
@@ -212,11 +212,13 @@ comes back with everything else.
 | 84 | **Restored** | App opened with a project stored | The last session's timeline, lanes and media bin, exactly as they were left. Nothing announces it — the title bar reads "n clips" as it always would, and the playhead starts at 0:00 | Keep editing |
 | 85 | **Nothing stored** | First ever launch, or the last session ended empty | Row 1, unchanged: the empty drop zone. No message, because nothing was lost | Drop a file |
 | 86 | **Media gone since last time** | A restored file is no longer at its path | The project still restores whole. One toast names up to three files and counts the rest; each tile in the bin dims and its tooltip gives the path; the preview over that clip reads **MEDIA OFFLINE** (row 5) and export refuses by name rather than dying inside ffmpeg | Re-import the file and put it back on the track |
-| 87 | **Saving failed** | The write was refused — disk full, permissions | One toast with the reason, then a persistent **Not saved** in the title bar beside the project name, in `--err`, whose tooltip repeats the reason. It is the only thing autosave ever puts on screen. It clears itself the moment a write succeeds | Fix the disk; the next edit retries |
+| 87 | **Saving failed** | The write was refused — disk full, permissions | One toast with the reason, then a persistent **Not saved** in the title bar beside the project name, in `--err`, whose tooltip repeats the reason. It clears itself the moment a write succeeds | Fix the disk; the next edit retries |
+| 87a | **Not saving at all** | The open project is one this build must not overwrite (rows 89, 90, 92) | The same **Not saved** chip, with a tooltip saying the project is left untouched. A session that is writing nothing has to say so, and this is the only place it can | Save as… or open another project — either one turns saving back on |
 | 88 | **Project unreadable** | The stored file is not a project this build knows | A toast — "The saved project could not be read. Starting empty. Anything you do now replaces it." The editor opens empty and saving stays **on**: this build owns that file, and being able to replace it is the only way out of a bad one | Keep working; the next edit overwrites it |
 | 89 | **Project from a newer SolCut** | The stored file's version is ahead of this build's | A toast saying so, an empty editor, and saving stays **off for the session** — overwriting it would destroy work a later build can still open | Update SolCut |
 | 90 | **The project could not be read at all** | The read itself failed | Same refusal as row 89: nothing is written this session, because what is on disk may be perfectly good and unreadable only right now | Restart, or fix the permissions |
 | 91 | **Edited before the restore landed** | A file dropped in the moment between launch and the read returning | The user's edit wins and stays on screen, but nothing is written over the stored project, and a toast says both | Restart SolCut to get the saved project back |
+| 92 | **Last project would not open** | The remembered project is gone, unreadable, or from a newer build | An empty editor that *still names that project* in the title bar, with **Not saved** beside it and a toast saying so. It does **not** fall back to the untitled scratch: that would clear the only pointer to a file which may be sitting on an unplugged drive, and overwrite whatever untitled work the scratch holds | Plug the drive back in and relaunch, or open another project |
 
 ## 12. Generating a photo (the compose panel)
 
@@ -244,3 +246,29 @@ else: the timeline is never edited on the user's behalf.
 | 101 | **Cancelled** | ✕ on a generating tile | The tile goes. Uploading a dozen references takes minutes, so the cancel is honoured the moment the submission is answered rather than a poll later; the job runs out on Higgsfield's side and its result is dropped | — |
 | 102 | **Failed** | The CLI or the job refused | An error row in the bin in the CLI's own words, with **Retry** (only when retrying could help) and **Dismiss**. The prompt and references are on the generation's record, so a retry re-sends exactly what the first attempt did — and a reference removed from the bin meanwhile is simply left out | Retry, or dismiss |
 | 103 | **Landed** | The job completed and the file downloaded | A new photo tile in the bin, named after the file itself, and one **Photo ready** toast. **Nothing on the timeline moves** — drag it on when you want it, exactly like an import. It is an ordinary photo asset with a real path, so it persists like any other (section 11) | Drag it to the track |
+
+## 13. Which project is open
+
+The title bar's project name is the control: clicking it opens a menu of **New project**,
+**Open project…** and **Save as…**. There is no plain Save, because autosave has already
+done it — the only save that means anything is the one that decides *where*, so that is the
+only one offered.
+
+A project that has a file is an ordinary `.solcut` anywhere on disk, and its **name is its
+filename**; one that does not is *untitled* and lives in the `project.json` scratch beside
+the settings until it is given a home. Switching writes the project being left before
+anything on screen changes, and the app reopens whichever project was last written.
+
+| # | State | Trigger | What is shown | Way out |
+|---|---|---|---|---|
+| 100 | **Untitled** | First run, or New project | The bar reads **Untitled project ▾**. Autosave goes to the scratch, exactly as it always did | Save as… |
+| 101 | **Named** | Save as…, or opening a project | The bar reads the file's name without its extension. Autosave follows the file, and Save as… again moves it somewhere new rather than leaving a copy behind | New, Open, Save as… |
+| 102 | **Switching, silently** | New or Open while the project has a file, or while the editor is empty | The project being left is written first, then the timeline, bin, lanes and playhead are replaced in one step. Nothing is announced — there was nothing to lose | — |
+| 103 | **Switching, asked** | New or Open while the project is *untitled and has work* — clips, lanes, or anything in the bin | A modal: **Save this project first?** with Cancel · Discard · **Save as…**. The one case with nowhere to flush to | Any of the three; Escape is Cancel |
+| 103a | **Discarded** | Discard at row 103 | The work goes, *and so does the copy autosave left in the scratch* — otherwise a later New would destroy it silently, and the word would have been a lie | — |
+| 103b | **Save panel dismissed** | Cancel in the native save panel, opened from row 103 | The modal stays exactly where it was and nothing switches, so a mis-click cannot take the work the modal exists to protect | Discard, Cancel, or Save as… again |
+| 104 | **Opened file will not read** | Open project… on a file that is not a project, or is from a newer build | A toast naming which, and **nothing changes** — the project you were in is still open and the file is untouched. Unlike the scratch (row 88), a file the user pointed at is never replaced | Pick another file |
+| 105 | **Already open** | Open project… on the project already open | Nothing at all — no read, no write, no swap. Reading it and then flushing over it would lose every edit since the last autosave, from both the screen and the file | — |
+| 106 | **The flush is refused** | The project being left cannot be written — full disk, unplugged drive | The switch is abandoned and the project stays on screen, with the failed write's own toast. Everything since the last autosave landed would have gone with it | Fix the disk and switch again |
+| 107 | **A render was in flight** | Any switch with a generation queued or running | It is cancelled. The clip it would land on is about to stop existing, so the job has nowhere to go, and paying for a result nothing can use is worse than stopping it | Regenerate in the project it belongs to |
+| 108 | **An import was in flight** | A switch while files are still being stat'ed | The import lands in the project it was started in, or nowhere. It never lands in the project that happens to be open when it returns | Re-import |

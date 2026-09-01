@@ -33,6 +33,9 @@ const STORED_SETTINGS: backend.SettingsView = {
   customModel: '',
   hasApiKey: false,
   apiKeyIdHint: '',
+  // No coding-agent CLI on the imaginary machine these suites run on, so every existing
+  // expectation still describes a Higgsfield-only install. Tests that need one add it.
+  agents: [],
 };
 let storedSettings = { ...STORED_SETTINGS };
 /** Mutable so the browser-only branches are reachable, unlike the hard `true` next door. */
@@ -52,7 +55,11 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   importPaths: vi.fn(async () => ({ imported: [], rejected: [] })),
   // Persistence is desktop-only and every suite starts from a fresh, empty project.
   loadProject: vi.fn(async () => null),
+  readProject: vi.fn(async () => null),
+  lastProjectPath: vi.fn(async () => null),
   saveProject: vi.fn(async () => {}),
+  pickProjectSavePath: vi.fn(async () => null),
+  pickProjectFile: vi.fn(async () => null),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
   generateImage: (input: backend.GenerateImageInput) => generateImage(input),
   cancelGeneration: vi.fn(async () => {}),
@@ -221,6 +228,104 @@ describe('title bar', () => {
     await dropOnTimeline([file('a.jpg', 'image/jpeg')]);
     await screen.findByRole('button', { name: 'a.jpg photo clip' });
     expect(screen.getByRole('button', { name: 'Export MP4' })).toBeEnabled();
+  });
+});
+
+// -------------------------------------------------------------------------- project menu
+
+describe('the project menu', () => {
+  it('opens off the project name and offers the three project actions', async () => {
+    const user = userEvent.setup();
+    await mount();
+
+    const name = screen.getByRole('button', { name: 'Untitled project' });
+    expect(name).toHaveAttribute('aria-expanded', 'false');
+
+    await user.click(name);
+    const menu = screen.getByRole('group', { name: 'Project' });
+    expect(name).toHaveAttribute('aria-expanded', 'true');
+    expect(within(menu).getByRole('button', { name: 'New project' })).toBeEnabled();
+    expect(within(menu).getByRole('button', { name: 'Open project…' })).toBeEnabled();
+    expect(within(menu).getByRole('button', { name: 'Save as…' })).toBeEnabled();
+  });
+
+  it('the name follows the project once it has a file', async () => {
+    await mount();
+    act(() => useEditor.setState({ projectPath: '/x/beach.solcut' }));
+
+    expect(screen.getByRole('button', { name: 'beach' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Untitled project' })).toBeNull();
+  });
+
+  it('closes on Escape, and on the next click landing anywhere else', async () => {
+    const user = userEvent.setup();
+    await mount();
+
+    await user.click(screen.getByRole('button', { name: 'Untitled project' }));
+    await act(async () => fireEvent.keyDown(document.body, { key: 'Escape' }));
+    expect(screen.queryByRole('group', { name: 'Project' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Untitled project' }));
+    await user.click(screen.getByTestId('timeline-track'));
+    expect(screen.queryByRole('group', { name: 'Project' })).toBeNull();
+  });
+
+  it('regression — a menu item is not a second Import: intake still belongs to the bin', async () => {
+    const user = userEvent.setup();
+    await mount();
+
+    // The bar's negative test is scoped and case-blind, and the menu renders inside it.
+    await user.click(screen.getByRole('button', { name: 'Untitled project' }));
+    const bar = document.querySelector('.titlebar') as HTMLElement;
+    expect(within(bar).queryByRole('button', { name: /import/i })).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------------- switch confirmation
+
+describe('the switch confirmation', () => {
+  /** Untitled with work on the track: the one state a switch has to ask about. */
+  async function askToSwitch(user: ReturnType<typeof userEvent.setup>) {
+    await mount();
+    await dropOnTimeline([file('sunset.jpg', 'image/jpeg')]);
+    await screen.findByRole('button', { name: 'sunset.jpg photo clip' });
+
+    await user.click(screen.getByRole('button', { name: 'Untitled project' }));
+    await user.click(screen.getByRole('button', { name: 'New project' }));
+    return screen.findByRole('dialog', { name: 'Save this project first?' });
+  }
+
+  it('every button in it is live, and Cancel leaves the project alone', async () => {
+    const user = userEvent.setup();
+    const dialog = await askToSwitch(user);
+
+    expect(within(dialog).getByRole('button', { name: 'Discard' })).toBeEnabled();
+    expect(within(dialog).getByRole('button', { name: 'Save as…' })).toBeEnabled();
+    await user.click(
+      within(dialog).getByRole('button', { name: 'Cancel — keep this project open' }),
+    );
+
+    expect(screen.queryByRole('dialog', { name: 'Save this project first?' })).toBeNull();
+    expect(useEditor.getState().clips).toHaveLength(1);
+  });
+
+  it('regression — Escape is its Cancel too, and closes only it', async () => {
+    const user = userEvent.setup();
+    await askToSwitch(user);
+
+    await act(async () => fireEvent.keyDown(document.body, { key: 'Escape' }));
+    expect(screen.queryByRole('dialog', { name: 'Save this project first?' })).toBeNull();
+    expect(useEditor.getState().clips).toHaveLength(1);
+  });
+
+  it('regression — the timeline behind it does not hear the keyboard', async () => {
+    const user = userEvent.setup();
+    await askToSwitch(user);
+    const clipId = useEditor.getState().clips[0].id;
+    act(() => useEditor.getState().select({ kind: 'clip', clipId }));
+
+    await act(async () => fireEvent.keyDown(document.body, { key: 'Backspace' }));
+    expect(useEditor.getState().clips).toHaveLength(1);
   });
 });
 

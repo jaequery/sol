@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["src-tauri", "src-tauri/crates/higgsfield", "src-tauri/crates/render"]
+members = [
+    "src-tauri",
+    "src-tauri/crates/agent",
+    "src-tauri/crates/higgsfield",
+    "src-tauri/crates/render",
+]
 
 [workspace.package]
 version = "0.1.0"

@@ -53,7 +53,11 @@ vi.mock('../lib/backend', async (importOriginal) => ({
   importPaths: vi.fn(async () => ({ imported: [], rejected: [] })),
   // Persistence is desktop-only and every suite starts from a fresh, empty project.
   loadProject: vi.fn(async () => null),
+  readProject: vi.fn(async () => null),
+  lastProjectPath: vi.fn(async () => null),
   saveProject: vi.fn(async () => {}),
+  pickProjectSavePath: vi.fn(async () => null),
+  pickProjectFile: vi.fn(async () => null),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
   generateImage: (input: GenerateImageInput) => generateImage(input),
   cancelGeneration: (id: string) => cancelGeneration(id),
@@ -85,6 +89,9 @@ const CONNECTED = {
   customModel: '',
   hasApiKey: false,
   apiKeyIdHint: '',
+  // A Higgsfield-only machine, which is what every expectation below assumes. The suites
+  // that exercise a local backend put one in themselves.
+  agents: [],
 };
 
 function photo(id: string): MediaAsset {
@@ -120,6 +127,10 @@ beforeEach(() => {
     settings: CONNECTED,
     settingsOpen: false,
     saveError: null,
+    projectPath: null,
+    saveBlocked: false,
+    pendingSwitch: null,
+    projectMenuOpen: false,
   });
 });
 
@@ -307,7 +318,13 @@ describe('a cross-asset generation', () => {
 
     expect(generateAnimation).not.toHaveBeenCalled();
     expect(useEditor.getState().film).toBeNull();
-    expect(useEditor.getState().toasts[0]).toMatchObject({ tone: 'error', title: 'Connect Higgsfield first' });
+    // The same sentence every other render surface uses. It stopped being film-specific
+    // when the film stopped being "nothing but Higgsfield transitions" — it renders with
+    // whatever the Model selector shows, so it is refused for whatever that backend needs.
+    expect(useEditor.getState().toasts[0]).toMatchObject({
+      tone: 'error',
+      title: 'Connect Higgsfield to generate',
+    });
   });
 
   it('refuses a film whose photos are not in the bin', async () => {

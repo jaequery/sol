@@ -26,6 +26,9 @@ const STORED_SETTINGS: backend.SettingsView = {
   customModel: '',
   hasApiKey: false,
   apiKeyIdHint: '',
+  // No coding-agent CLI on the imaginary machine these suites run on, so every existing
+  // expectation still describes a Higgsfield-only install. Tests that need one add it.
+  agents: [],
 };
 let storedSettings = { ...STORED_SETTINGS };
 
@@ -39,7 +42,11 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   testApiKey: vi.fn(),
   importPaths: vi.fn(async () => ({ imported: [], rejected: [] })),
   loadProject: vi.fn(async () => null),
+  readProject: vi.fn(async () => null),
+  lastProjectPath: vi.fn(async () => null),
   saveProject: vi.fn(async () => {}),
+  pickProjectSavePath: vi.fn(async () => null),
+  pickProjectFile: vi.fn(async () => null),
   generateAnimation: vi.fn(async () => {}),
   generateImage: (input: GenerateImageInput) => generateImage(input),
   cancelGeneration: vi.fn(async () => {}),

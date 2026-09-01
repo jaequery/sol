@@ -8,6 +8,11 @@ from the frame on one side into the frame on the other, so the cut plays as moti
 than a hard join. Between two photos it stands in the stills' place; where the footage is
 real video, the footage stays.
 
+The same cut can also be composited **locally** instead, with the **Claude Code CLI** or the
+**Codex CLI** reading your words to pick the motion and ffmpeg making the frames — a couple
+of cents rather than a plan credit. Both live in the same Model selector; see
+[Local motion](#local-motion-the-agent-cli-backends).
+
 ## What it does
 
 - **A single track.** Photos and videos land on the same lane in drop order. No layers, no
@@ -46,8 +51,12 @@ real video, the footage stays.
   up the frame at the cut: a photo *is* that frame, and a video's is pulled off the file at
   the exact point it runs out or begins, trims and all. The two go to Higgsfield as the
   first and last frame of the generation, so nothing else needs setting up. A **Model**
-  selector on the same card picks which model renders it — **Seedance 2.5** unless another
-  is chosen — and the pick rides with that render alone.
+  selector on the same card picks what renders it — **Seedance 2.5** unless another is
+  chosen — and the pick rides with that render alone. The same control carries the backend:
+  below the Higgsfield models sits **Local motion — composited, not generated**, where the
+  **Claude Code CLI** or the **Codex CLI** reads your words, picks the motion, and ffmpeg
+  makes the frames on your own machine (see
+  [below](#local-motion-the-agent-cli-backends)).
 
   Where the finished MP4 lands follows what is on the cut, because only a **still** can be
   stood in for. Between two photos it **stands in both their places**: they leave the track
@@ -72,11 +81,18 @@ real video, the footage stays.
   [the flow](#three-photos-to-an-mp4) below.
 - **MP4 export** of the whole timeline via ffmpeg, audio lanes included.
 - **Your work is still there tomorrow.** The project saves itself as you edit — no save
-  button, no dialog, nothing on screen while it works — and comes back when the app
-  reopens: the same clips, trims, audio lanes and media bin. It lives in one
-  `project.json` beside the settings, and holds paths rather than copies, so a file that
-  moved away since last time comes back visibly **missing** (dimmed in the bin, MEDIA
-  OFFLINE in the preview, and refused by name at export) instead of failing mid-render.
+  button to remember, nothing on screen while it works — and comes back when the app
+  reopens: the same clips, trims, audio lanes and media bin. It holds paths rather than
+  copies, so a file that moved away since last time comes back visibly **missing** (dimmed
+  in the bin, MEDIA OFFLINE in the preview, and refused by name at export) instead of
+  failing mid-render.
+- **More than one project.** The title bar's project name is also the menu that changes
+  which project it is: **New project**, **Open project…**, **Save as…**. A project you have
+  named is an ordinary `.solcut` file wherever you put it, and autosave follows it there; an
+  unnamed one lives in a `project.json` beside the settings until you give it a home. There
+  is no plain Save, because there is nothing for it to do — the only save that means
+  anything is the one that decides *where*. Switching projects writes the one you are
+  leaving first, and the app reopens whichever one you were last in.
 
 ## Running it
 
@@ -92,8 +108,9 @@ pnpm dev            # the UI alone in a browser; desktop-only actions refuse lou
 |---|---|
 | Node | 20+ with pnpm 10+ |
 | Rust | stable (1.80+) |
-| ffmpeg + ffprobe | on `PATH` — needed for export, and for a transition with video on either side |
-| Higgsfield CLI | `npm i -g @higgsfield/cli`, signed in — needed for AI transitions and generated photos only |
+| ffmpeg + ffprobe | on `PATH` — needed for export, for a transition with video on either side, and for **every** local motion transition |
+| Higgsfield CLI | `npm i -g @higgsfield/cli`, signed in — needed for Higgsfield transitions and generated photos only |
+| Claude Code CLI *or* Codex CLI | optional — `npm install -g @anthropic-ai/claude-code` (`claude auth login`) or `npm install -g @openai/codex` (`codex login`). Only for the local motion backends |
 | Linux system libraries | `pkg-config`, `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libsoup-3.0-dev`, `libjavascriptcoregtk-4.1-dev` |
 
 On Debian/Ubuntu:
@@ -148,6 +165,47 @@ click on the same card.
 A **custom model** stays editable in the dialog, so any other job type the catalog offers
 (`higgsfield model list --video`) can be pointed at without shipping a new build: the id
 typed here appears in every Model selector as its **Custom** entry.
+
+### Local motion: the agent CLI backends
+
+Beside Higgsfield, a transition can be composited on your own machine with a **coding-agent
+CLI choosing the motion**. Pick **Claude Code CLI** or **Codex CLI** in the Model selector on
+any cut; nothing else about the flow changes.
+
+**Be clear about what this is.** Neither CLI generates pixels — they are coding agents, with
+no image or video model behind them. So the work is split: the agent reads your prose and
+answers with a *motion recipe*, and ffmpeg makes the frames. Ask for "the camera sweeps
+across to the right, quick and snappy" and it answers `{"transition": "wiperight",
+"duration_secs": 0.6}`, which SolCut composites into a real MP4 between your two frames.
+That is a genuine transition and it costs about **two cents and ten seconds** instead of a
+plan credit — but it is compositing, not diffusion, and the menu heading says so rather than
+letting you find out from the result.
+
+The recipe is a **closed vocabulary**: sixteen of ffmpeg's `xfade` motions, all present
+since ffmpeg 4.3, and a length between 1 and 8 seconds. That is a security property rather
+than a limitation — nothing the model writes is ever parsed as ffmpeg syntax, so there is no
+filter-graph injection to guard against, and an answer naming anything else is refused by
+name before ffmpeg is spawned. It is also why **no permission bypass is involved**: Claude
+Code is run with `--tools ""`, which empties its tool array outright, so there is nothing to
+permit in the first place.
+
+What actually runs, per transition:
+
+| | |
+|---|---|
+| Ask Claude Code | `claude -p <prompt> --output-format json --tools "" --json-schema <schema> --model haiku`, plus `--strict-mcp-config`, `--setting-sources ""`, `--disable-slash-commands` and `--no-session-persistence` so your own configuration cannot change what SolCut is answered. The recipe arrives in `structured_output`, guaranteed by the schema |
+| Ask Codex | `codex exec <prompt> --sandbox read-only --skip-git-repo-check --ephemeral --ignore-user-config --ignore-rules -C <tmpdir>`. Codex has **no** way to disable tools and no structured-output mode, so its posture is genuinely weaker — a read-only agent that may still run shell commands — and its answer is read by a tolerant parser rather than guaranteed by a schema |
+| Composite | `ffmpeg -loop 1 -t D -i start -loop 1 -t D -i end -filter_complex "…xfade=transition=<name>:duration=D:offset=0"`. Each still is held for exactly `D` and the crossfade runs the whole of it, so the output is `D` seconds of **pure motion with no held frame** — which is what lets it stand in for the photos it replaces, exactly as a Higgsfield render does |
+
+Both CLIs are found the way the Higgsfield one is: `PATH` first, then the npm and Homebrew
+prefixes a GUI-launched app does not inherit. Found means the binary is there and nothing
+more — one that is not signed in fails at render time with its own words, which name their
+own fix. A CLI that has updated past the flags above is reported as *that*, with the
+reinstall line, rather than as a usage screen you did not ask for.
+
+**The child inherits SolCut's environment**, so if you have `ANTHROPIC_API_KEY` or
+`OPENAI_API_KEY` set, these calls bill the way your own terminal would. That is deliberate:
+filtering it would make SolCut behave differently from the CLI you already tested.
 
 ### The API key, which is a different credential
 
@@ -204,10 +262,12 @@ is put back the flow below is reachable only from `openFilmWizard` in the store.
    offers to reveal it.
 
 Two transitions give a film of about 10 s at 5 s a leg — the model decides the exact
-length, and the timeline takes it from the file. There is **no local fallback**: with no
-Higgsfield CLI on the machine the panel refuses up front and sends nothing — a stored API
-key is not a substitute, because it is not what renders — and export refuses without
-ffmpeg on `PATH` rather than writing half a file.
+length, and the timeline takes it from the file. The film renders with **whatever the Model
+selector shows**, both legs alike, so it can be composited locally as readily as it can be
+generated. What it will not do is guess: a backend this machine cannot run makes the panel
+refuse up front and send nothing, naming the one that is missing — a stored API key is not
+a substitute, because it is not what renders — and export refuses without ffmpeg on `PATH`
+rather than writing half a file.
 
 ## Checks
 
@@ -215,8 +275,8 @@ ffmpeg on `PATH` rather than writing half a file.
 pnpm typecheck                                        # tsc --noEmit
 pnpm lint                                             # eslint
 pnpm test                                             # vitest — timeline logic + acceptance flow
-cargo test -p solcut-higgsfield -p solcut-render      # API client + ffmpeg export
-cargo clippy -p solcut-higgsfield -p solcut-render --all-targets -- -D warnings
+cargo test -p solcut-agent -p solcut-higgsfield -p solcut-render
+cargo clippy -p solcut-agent -p solcut-higgsfield -p solcut-render --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
@@ -226,6 +286,14 @@ plus a check that the default model `seedance_2_5` is in your account's catalog:
 
 ```bash
 cargo test -p solcut-higgsfield --test live -- --nocapture
+```
+
+The agent CLIs have their own live check, opt-in **twice over** — the CLI being installed is
+not taken as consent, because unlike the free model listing above this one spends real money
+(about two cents a run):
+
+```bash
+SOLCUT_LIVE_AGENT=1 cargo test -p solcut-agent --test live -- --nocapture
 ```
 
 The same opt-in file proves a **Cloud API key** against the real platform when one is in
@@ -253,12 +321,17 @@ src/                     React + TypeScript editor
   lib/project.ts         the saved project — what persists, and what a bad file may not do
   lib/backend.ts         the only place that talks to Tauri
   state/store.ts         zustand store
-  components/            title bar, media bin (+ the compose panel), preview, inspector,
-                         timeline, film wizard, dialogs
+  components/            title bar (+ the project menu), media bin (+ the compose panel),
+                         preview, inspector, timeline, film wizard, dialogs
 src-tauri/
-  src/                   Tauri commands, the generation job loop, settings and project storage
+  src/                   Tauri commands, the generation job loop, settings and project
+                         storage (`project.rs` has no Tauri dependency, so it is testable
+                         without the desktop shell)
+  crates/agent/          the Claude Code / Codex backends — the whole run, not just the CLI
+                         call, so a machine that cannot build the shell can still test it
   crates/higgsfield/     Higgsfield CLI wrapper — no Tauri or GUI dependencies
-  crates/render/         ffmpeg filter graphs and export — no Tauri or GUI dependencies
+  crates/render/         ffmpeg filter graphs, export, and the xfade compositor — no Tauri
+                         or GUI dependencies
 design/                  the approved concept and the hi-fi UX walkthrough
 .fredrin/memory/
   concepts/state-matrix.md   every UI state, its trigger, and its way out
@@ -296,7 +369,15 @@ GTK toolchain.
   but export needs the desktop app, which resolves real paths.
 - **The model decides the clip length.** The models publish fixed duration choices and
   the CLI defaults them, so the file's own length is what the timeline keeps, not
-  something the request asks for.
+  something the request asks for. Local motion is the same in spirit — the agent picks the
+  length — except that it is told how much track it is replacing, and the answer is clamped
+  to 1–8 seconds so one click can never trade two five-second photos for a blink.
+- **Local motion composites; it does not generate.** Sixteen `xfade` motions, chosen from
+  your words. It will not invent what lies between two photos the way a video model does —
+  it will move convincingly between them, for about two cents.
+- **Animate all is serial on a local backend.** The pipelining that starts the next cut the
+  moment the previous one is accepted keys off a job id, which a local render never has, so
+  the cuts run one at a time. Slower on a long reel, and cheaper.
 - **A film goes onto the track once.** It lands the moment its last transition is in, and
   is then an ordinary pair of clips: move, trim or delete them as you like. Retrying a leg
   afterwards updates the film's own record but never lays down a second copy.
@@ -310,8 +391,10 @@ GTK toolchain.
   persists like any other clip.
 - **A moved file is indistinguishable from a deleted one.** Nothing tracks media identity
   beyond the absolute path, so re-importing is the way back.
-- **One project.** There is no New, Open or Save As — the editor holds a single project
-  that saves itself.
+- **A project file is machine-local.** It stores the absolute paths of your media, and
+  generated clips live in SolCut's own data directory, so a `.solcut` opened on another
+  machine restores as a full timeline of missing media. Moving or renaming one *on the same
+  machine* is fine — the file is the project, and its name is the project's name.
 - **A generated photo needs a prompt.** Some image models will work from references
   alone, but SolCut asks for a prompt every time — one rule beats four per-model ones. The
   reference photos themselves must be jpg, png or webp: the bin accepts more formats than

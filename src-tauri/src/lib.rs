@@ -10,14 +10,15 @@ pub mod project;
 pub mod settings;
 
 use serde::{Deserialize, Serialize};
-use settings::{SettingsInput, SettingsView};
+use settings::{AgentStatus, SettingsInput, SettingsView};
+use solcut_agent::{Agent, AgentCli, AgentError, MotionRequest, TransitionJob};
 use solcut_higgsfield::{
     check_credential, Cli, GenerateRequest, HiggsfieldError, ImageRequest, JobState, API_BASE_URL,
     DEFAULT_IMAGE_MODEL, DEFAULT_MODEL,
 };
 use solcut_render::{ExportSpec, Progress, Renderer};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -88,6 +89,17 @@ impl From<&HiggsfieldError> for GenerationError {
     }
 }
 
+impl From<&AgentError> for GenerationError {
+    fn from(e: &AgentError) -> Self {
+        Self {
+            title: e.title(),
+            message: e.to_string(),
+            retryable: e.is_retryable(),
+            build: BUILD,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerationUpdate {
@@ -134,9 +146,43 @@ pub struct GenerateInput {
     pub end_frame: Option<String>,
     /// The CLI model id the frontend's per-render selector chose for THIS request.
     /// Absent or blank, the render falls back to the default model — the model choice
-    /// travels with the request, it is not a saved setting.
+    /// travels with the request, it is not a saved setting. Only Higgsfield reads it.
     #[serde(default)]
     pub model: Option<String>,
+    /// Which backend renders this one: absent or `higgsfield` for Higgsfield, or an
+    /// [`Agent`] id for a transition composited locally from a coding-agent CLI's answer.
+    ///
+    /// Absent meaning Higgsfield is what keeps an older frontend — or a replayed request —
+    /// working unchanged, and it is the same promise `model` already makes.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// How long the stretch of timeline this transition will occupy currently runs.
+    ///
+    /// Only the agent backends use it, and only to choose a length: a photo-to-photo
+    /// transition stands in the stills' place, so the length is how much of the film
+    /// survives, and a model told what it is replacing answers far better than one guessing.
+    #[serde(default)]
+    pub span_ms: Option<u32>,
+}
+
+/// Which backend a request named.
+enum Backend {
+    Higgsfield,
+    Agent(Agent),
+}
+
+impl Backend {
+    /// The backend an id names. An id that is neither is refused rather than defaulted:
+    /// silently falling back to Higgsfield would bill a paid render for a cut the user asked
+    /// a local backend to make.
+    fn parse(provider: Option<&str>) -> Result<Self, String> {
+        match provider.map(str::trim).filter(|p| !p.is_empty()) {
+            None | Some("higgsfield") => Ok(Self::Higgsfield),
+            Some(id) => Agent::from_id(id)
+                .map(Self::Agent)
+                .ok_or_else(|| format!("{id:?} is not a generation backend SolCut knows")),
+        }
+    }
 }
 
 /// One "make me a photo" request from the media bin's compose panel.
@@ -175,10 +221,31 @@ fn emit(app: &AppHandle, update: GenerationUpdate) {
 
 // ---------------------------------------------------------------- commands
 
+/// Which coding-agent CLIs are on this machine, looked up fresh each time.
+///
+/// Not cached: installing one is exactly the thing a user does *while* the app is open,
+/// having been told to by the dialog, and a cache would make them restart to be believed.
+fn agent_statuses() -> Vec<AgentStatus> {
+    Agent::ALL
+        .iter()
+        .map(|agent| AgentStatus {
+            id: agent.id().to_string(),
+            label: agent.label().to_string(),
+            path: AgentCli::find(*agent).map(|c| c.binary().display().to_string()),
+            install: agent.install().to_string(),
+            login: agent.login().to_string(),
+        })
+        .collect()
+}
+
 #[tauri::command]
 fn get_settings(state: State<'_, AppState>) -> SettingsView {
     let cli = Cli::find();
-    SettingsView::new(&state.settings(), cli.as_ref().map(|c| c.binary()))
+    SettingsView::new(
+        &state.settings(),
+        cli.as_ref().map(|c| c.binary()),
+        agent_statuses(),
+    )
 }
 
 #[tauri::command]
@@ -189,10 +256,11 @@ fn save_settings(input: SettingsInput, state: State<'_, AppState>) -> Result<Set
     Ok(SettingsView::new(
         &settings,
         cli.as_ref().map(|c| c.binary()),
+        agent_statuses(),
     ))
 }
 
-/// The project the editor was last holding, or `null` when there is none.
+/// The untitled scratch project, or `null` when there is none.
 ///
 /// The shape is the frontend's — see `src/lib/project.ts`. This side only moves bytes.
 #[tauri::command]
@@ -200,10 +268,39 @@ fn load_project(state: State<'_, AppState>) -> Option<serde_json::Value> {
     project::load(&state.config_dir)
 }
 
-/// Store the project. Called on a debounce as the timeline changes, never by a save button.
+/// The project at a path the user picked, or why it could not be read.
+///
+/// Deliberately not `Option` like `load_project`: an Open that answered "nothing here" for
+/// a file the user chose would open an empty editor still aimed at that file, and the next
+/// autosave would write the emptiness over it.
 #[tauri::command]
-fn save_project(project: serde_json::Value, state: State<'_, AppState>) -> Result<(), String> {
-    project::save(&state.config_dir, &project)
+fn read_project(path: String) -> Result<serde_json::Value, String> {
+    project::read(Path::new(&path))
+}
+
+/// Where the last write went, so the next launch opens the project the user was in.
+#[tauri::command]
+fn last_project_path(state: State<'_, AppState>) -> Option<String> {
+    project::remembered(&state.config_dir)
+}
+
+/// Store the project — at `path`, or in the scratch when there is none.
+///
+/// Called on a debounce as the timeline changes, and by the switch itself. Recording where
+/// the write went is best-effort on purpose: the project is already safely on disk by then,
+/// and failing the whole save over the pointer would report a data loss that did not happen.
+#[tauri::command]
+fn save_project(
+    project: serde_json::Value,
+    path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    match path.as_deref() {
+        Some(path) => project::save_to(Path::new(path), &project)?,
+        None => project::save(&state.config_dir, &project)?,
+    }
+    let _ = project::remember(&state.config_dir, path.as_deref());
+    Ok(())
 }
 
 /// The Settings dialog's connection check: one free, read-only CLI call
@@ -288,16 +385,29 @@ async fn generate_animation(
     input: GenerateInput,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let Some(cli) = Cli::find() else {
-        return Err(HiggsfieldError::NotInstalled.to_string());
-    };
+    let backend = Backend::parse(input.provider.as_deref())?;
     state.forget(&input.generation_id);
 
     let media_dir = state.media_dir.clone();
     let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        run_generation(handle, cli, media_dir, input).await;
-    });
+    match backend {
+        Backend::Higgsfield => {
+            let Some(cli) = Cli::find() else {
+                return Err(HiggsfieldError::NotInstalled.to_string());
+            };
+            tauri::async_runtime::spawn(async move {
+                run_generation(handle, cli, media_dir, input).await;
+            });
+        }
+        Backend::Agent(agent) => {
+            let Some(cli) = AgentCli::find(agent) else {
+                return Err(AgentError::NotInstalled(agent).to_string());
+            };
+            tauri::async_runtime::spawn(async move {
+                run_agent_generation(handle, cli, media_dir, input).await;
+            });
+        }
+    }
     Ok(())
 }
 
@@ -460,6 +570,110 @@ async fn run_generation(app: AppHandle, cli: Cli, media_dir: PathBuf, input: Gen
 
     emit(&app, update_for(&id, "queued", started.elapsed(), &job_id));
     watch_job(app, cli, media_dir, id, job_id, started, Landing::Video).await;
+}
+
+/// One transition composited locally from a coding-agent CLI's answer.
+///
+/// The whole sequence — ask, validate, composite — lives in `solcut-agent`, which has no
+/// Tauri dependency and is therefore covered by tests that run on any machine. What is left
+/// here is what only the shell can do: turn data URLs into files, translate the crate's
+/// steps into `generation:update` events, and clean up.
+///
+/// There is no job to poll and so no job id: the CLI answers in one call. The `queued` and
+/// `running` steps come from the crate, and this side adds the terminal one.
+async fn run_agent_generation(
+    app: AppHandle,
+    cli: AgentCli,
+    media_dir: PathBuf,
+    input: GenerateInput,
+) {
+    let started = Instant::now();
+    let id = input.generation_id.clone();
+
+    let Some(end_frame) = input.end_frame.as_deref() else {
+        // Every transition has two sides; a request with one is a bug on the calling side,
+        // and saying so beats compositing something against itself.
+        return fail_agent(
+            &app,
+            &id,
+            started,
+            &AgentError::Malformed(
+                "a composited transition needs a frame on both sides of the cut".into(),
+            ),
+        );
+    };
+
+    // The stills go to disk because ffmpeg reads files. Unlike the Higgsfield path — which
+    // can drop them the moment the upload is answered — these have to survive until the
+    // composite is done, so they are removed on every way out instead.
+    let frames_dir = media_dir.join("frames");
+    let frames = match (
+        solcut_higgsfield::write_frame(&frames_dir, &format!("{id}-start"), &input.start_frame),
+        solcut_higgsfield::write_frame(&frames_dir, &format!("{id}-end"), end_frame),
+    ) {
+        (Ok(start), Ok(end)) => (start, end),
+        (start, end) => {
+            for path in [start, end].into_iter().flatten() {
+                let _ = std::fs::remove_file(path);
+            }
+            return fail_agent(
+                &app,
+                &id,
+                started,
+                &AgentError::Io("a frame at this cut could not be written to disk".into()),
+            );
+        }
+    };
+
+    let job = TransitionJob {
+        request: MotionRequest {
+            prompt: input.prompt.clone(),
+            span_secs: input.span_ms.map(|ms| ms as f32 / 1000.0),
+        },
+        start_frame: frames.0.clone(),
+        end_frame: frames.1.clone(),
+        out: media_dir.join(format!("{id}.mp4")),
+    };
+
+    // No `queued` emitted here, unlike the Higgsfield path: `solcut_agent::transition` opens
+    // with that step itself, and its own test pins the sequence. Emitting one on both sides
+    // would send the card the same status twice for no reason.
+    let progress_app = app.clone();
+    let progress_id = id.clone();
+    let cancel_app = app.clone();
+    let cancel_id = id.clone();
+    let result = solcut_agent::transition(
+        &cli,
+        &Renderer::default(),
+        &ExportSpec::default(),
+        &job,
+        &move |step| {
+            let mut update = GenerationUpdate::new(&progress_id, step.status, started.elapsed());
+            update.progress = step.progress;
+            emit(&progress_app, update);
+        },
+        &move || cancelled(&cancel_app, &cancel_id),
+    )
+    .await;
+
+    let _ = std::fs::remove_file(&frames.0);
+    let _ = std::fs::remove_file(&frames.1);
+
+    match result {
+        Ok(_) => {
+            let mut update = GenerationUpdate::new(&id, "succeeded", started.elapsed());
+            update.progress = 1.0;
+            update.output_path = Some(job.out.display().to_string());
+            emit(&app, update);
+        }
+        Err(AgentError::Cancelled) => {
+            emit(
+                &app,
+                GenerationUpdate::new(&id, "cancelled", started.elapsed()),
+            );
+        }
+        Err(e) => fail_agent(&app, &id, started, &e),
+    }
 }
 
 /// One image generation: submit the prompt and any references, then watch the job.
@@ -666,6 +880,12 @@ fn fail(app: &AppHandle, id: &str, started: Instant, error: &HiggsfieldError) {
     emit(app, update);
 }
 
+fn fail_agent(app: &AppHandle, id: &str, started: Instant, error: &AgentError) {
+    let mut update = GenerationUpdate::new(id, "failed", started.elapsed());
+    update.error = Some(GenerationError::from(error));
+    emit(app, update);
+}
+
 // ---------------------------------------------------------------- entry point
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -692,6 +912,8 @@ pub fn run() {
             get_settings,
             save_settings,
             load_project,
+            read_project,
+            last_project_path,
             save_project,
             test_connection,
             test_api_key,
@@ -739,6 +961,59 @@ mod tests {
         )
         .expect("input with a model choice");
         assert_eq!(input.model.as_deref(), Some("seedance_2_5"));
+    }
+
+    #[test]
+    fn a_request_that_names_no_backend_is_still_higgsfield() {
+        // The field is new, and a request that predates it — an older frontend, a replayed
+        // payload — has to keep meaning what it meant. Absent is Higgsfield, exactly as
+        // absent is the default model.
+        let input: GenerateInput = serde_json::from_str(
+            r#"{"generationId":"gen_1","prompt":"drift","startFrame":"data:image/jpeg;base64,AA=="}"#,
+        )
+        .expect("a request from before providers existed");
+        assert!(input.provider.is_none());
+        assert!(input.span_ms.is_none());
+        assert!(matches!(
+            Backend::parse(input.provider.as_deref()),
+            Ok(Backend::Higgsfield)
+        ));
+    }
+
+    #[test]
+    fn an_unknown_backend_is_refused_rather_than_quietly_charged_to_higgsfield() {
+        // The whole point of refusing instead of defaulting: a stale or misspelled id
+        // falling back to Higgsfield would start a paid render for a cut the user asked a
+        // local backend to make, and the only sign would be the bill.
+        assert!(matches!(
+            Backend::parse(Some("claude-code")),
+            Ok(Backend::Agent(Agent::ClaudeCode))
+        ));
+        assert!(matches!(
+            Backend::parse(Some("codex")),
+            Ok(Backend::Agent(Agent::Codex))
+        ));
+        assert!(matches!(
+            Backend::parse(Some("  ")),
+            Ok(Backend::Higgsfield)
+        ));
+
+        let refused = Backend::parse(Some("claude")).expect_err("an id nothing knows");
+        assert!(refused.contains("claude"), "{refused}");
+    }
+
+    #[test]
+    fn an_agent_failure_reaches_the_card_in_the_same_shape_a_higgsfield_one_does() {
+        // The error card renders one shape. If an agent failure arrived as anything else the
+        // UI would need a second branch, and the one it has would be the tested one.
+        let error = GenerationError::from(&AgentError::NotInstalled(Agent::ClaudeCode));
+        let json = serde_json::to_value(&error).expect("serialize");
+        assert_eq!(json["build"], BUILD);
+        assert_eq!(json["retryable"], false);
+        assert!(json["message"]
+            .as_str()
+            .expect("a message")
+            .contains("npm install -g @anthropic-ai/claude-code"));
     }
 
     /// The compose panel's two shapes: a prompt on its own, and a prompt working on top
