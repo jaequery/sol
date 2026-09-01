@@ -80,6 +80,9 @@ const CONNECTED = {
   customModel: '',
   hasApiKey: false,
   apiKeyIdHint: '',
+  // A Higgsfield-only machine, which is what every expectation below assumes. The suites
+  // that exercise a local backend put one in themselves.
+  agents: [],
 };
 
 function photo(id: string): MediaAsset {
@@ -287,7 +290,13 @@ describe('a cross-asset generation', () => {
 
     expect(generateAnimation).not.toHaveBeenCalled();
     expect(useEditor.getState().film).toBeNull();
-    expect(useEditor.getState().toasts[0]).toMatchObject({ tone: 'error', title: 'Connect Higgsfield first' });
+    // The same sentence every other render surface uses. It stopped being film-specific
+    // when the film stopped being "nothing but Higgsfield transitions" — it renders with
+    // whatever the Model selector shows, so it is refused for whatever that backend needs.
+    expect(useEditor.getState().toasts[0]).toMatchObject({
+      tone: 'error',
+      title: 'Connect Higgsfield to generate',
+    });
   });
 
   it('refuses a film whose photos are not in the bin', async () => {

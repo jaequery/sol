@@ -10,12 +10,28 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { AUDIO_EXTS, type MediaKind } from '../types/project';
 
+/** One coding-agent CLI as this machine has it. */
+export interface AgentStatus {
+  /** The id that travels with a request — `claude-code`, `codex`. */
+  id: string;
+  label: string;
+  /** Where the binary was found; null when it was not. */
+  path: string | null;
+  /** Quoted verbatim when it is missing, so the fix can be pasted. */
+  install: string;
+  login: string;
+}
+
 export interface SettingsView {
   /**
-   * The Higgsfield CLI binary was found — generation can at least be attempted.
+   * The Higgsfield CLI binary was found — a *Higgsfield* generation can at least be
+   * attempted.
    *
    * Deliberately says nothing about the API key: renders go through the CLI, so a stored
-   * key must never make the app offer a generation it cannot run.
+   * key must never make the app offer a generation it cannot run. And deliberately nothing
+   * about `agents` either — a machine with a coding-agent CLI and no Higgsfield can still
+   * composite transitions, and reading this as "generation is possible" is what used to gate
+   * that off. Ask `renderReady` instead of this.
    */
   configured: boolean;
   /** Where it was found, for the dialog to show; null when it wasn't. */
@@ -26,6 +42,8 @@ export interface SettingsView {
   hasApiKey: boolean;
   /** e.g. `••••7fa2`, or blank. The key id itself never reaches this window, nor the secret. */
   apiKeyIdHint: string;
+  /** Which coding-agent CLIs the backend found. Absent from a build that predates them. */
+  agents: AgentStatus[];
 }
 
 export interface SettingsInput {
@@ -67,8 +85,18 @@ export interface GenerateInput {
   prompt: string;
   startFrame: string;
   endFrame?: string;
-  /** The CLI model id chosen for THIS render — the selector's pick, resolved. */
-  model: string;
+  /**
+   * The Higgsfield CLI model id chosen for THIS render — the selector's pick, resolved.
+   * Absent for the local backends, which have no job id to send.
+   */
+  model?: string;
+  /** Which backend renders it. See {@link providerOf}. */
+  provider: Provider;
+  /**
+   * How long the stretch of timeline this transition will occupy currently runs. Only the
+   * local backends use it, and only to choose a length.
+   */
+  spanMs?: number;
 }
 
 export interface GenerationUpdate {
@@ -146,12 +174,53 @@ export const DEFAULT_MODEL_ID = 'seedance-2.5';
 /** The selector entry that sends the model id typed into Settings instead of a known model. */
 export const CUSTOM_MODEL_ID = 'custom';
 
+/** Who renders a transition: Higgsfield, or one of the local agent-CLI backends. */
+export type Provider = 'higgsfield' | 'claude-code' | 'codex';
+
+/**
+ * One local backend the same selector offers, below the Higgsfield group.
+ *
+ * These are **composited, not generated**. Neither the Claude Code CLI nor the Codex CLI has
+ * an image or video model behind it; what they do is read the user's prose and choose the
+ * motion, and ffmpeg makes the frames. That is a real transition between the two stills and
+ * it costs about two cents instead of a plan credit — but it is a different thing from a
+ * diffusion render, and the group heading says so rather than letting the menu imply
+ * otherwise.
+ */
+export interface AgentBackend {
+  /** The selector's id, the store's value, and what travels as `provider`. */
+  id: Provider;
+  label: string;
+}
+
+export const AGENT_BACKENDS: AgentBackend[] = [
+  { id: 'claude-code', label: 'Claude Code CLI' },
+  { id: 'codex', label: 'Codex CLI' },
+];
+
+/** The heading the local backends sit under, which is also the honest description of them. */
+export const AGENT_GROUP_LABEL = 'Local motion — composited, not generated';
+
+/** Who would render this choice. Anything not a local backend is Higgsfield's. */
+export function providerOf(modelId: string): Provider {
+  return AGENT_BACKENDS.find((b) => b.id === modelId)?.id ?? 'higgsfield';
+}
+
 /**
  * The CLI job id a model choice resolves to at render time. `custom` reads the model id
  * Settings stores; an unknown id falls back to the default model rather than sending
  * nothing, so a stale stored choice can never produce a model-less request.
+ *
+ * A **local** backend's id throws instead of falling back, and that is the whole point of
+ * the guard. Every unknown id resolving to `seedance_2_5` is a good fail-safe while every
+ * id is Higgsfield's; the moment one is not, the same line silently starts a paid render for
+ * a cut the user asked to be composited locally, and the only evidence is the bill. Callers
+ * ask `providerOf` first; this throws so that a caller which forgot cannot fail quietly.
  */
 export function modelJob(modelId: string, customModel?: string): string {
+  if (providerOf(modelId) !== 'higgsfield') {
+    throw new Error(`${modelId} renders locally and has no Higgsfield job id`);
+  }
   if (modelId === CUSTOM_MODEL_ID) {
     const typed = customModel?.trim();
     if (typed) return typed;
@@ -164,7 +233,83 @@ export function modelJob(modelId: string, customModel?: string): string {
 /** The human name for a model choice, for cards that show what is rendering. */
 export function modelLabel(modelId: string): string {
   if (modelId === CUSTOM_MODEL_ID) return 'Custom model';
-  return RENDER_MODELS.find((m) => m.id === modelId)?.label ?? modelId;
+  return (
+    AGENT_BACKENDS.find((b) => b.id === modelId)?.label ??
+    RENDER_MODELS.find((m) => m.id === modelId)?.label ??
+    modelId
+  );
+}
+
+/** The backend's status as this machine has it, or null when the choice is Higgsfield's. */
+export function agentStatus(modelId: string, settings: SettingsView | null): AgentStatus | null {
+  const provider = providerOf(modelId);
+  if (provider === 'higgsfield') return null;
+  return settings?.agents?.find((a) => a.id === provider) ?? null;
+}
+
+/**
+ * Whether a render can be started at all with this choice.
+ *
+ * The question `settings.configured` used to be asked for, and the reason it could not stay:
+ * that flag means "a binary named `higgsfield` is on disk", so on a machine with the Claude
+ * Code CLI and no Higgsfield it gated off a backend that works perfectly.
+ *
+ * `ffmpegAvailable` is `null` until the probe lands and is treated as "not yet known", not
+ * as absent — refusing during the first moments after launch would flicker the button. Only
+ * a probe that came back `false` refuses, and it only refuses the local backends: ffmpeg is
+ * what composites them, while Higgsfield returns a finished MP4 and needs it for nothing
+ * unless a video is on one side of the cut.
+ */
+export function renderReady(
+  modelId: string,
+  settings: SettingsView | null,
+  ffmpegAvailable: boolean | null,
+): boolean {
+  if (providerOf(modelId) === 'higgsfield') return Boolean(settings?.configured);
+  if (ffmpegAvailable === false) return false;
+  return Boolean(agentStatus(modelId, settings)?.path);
+}
+
+/** What to tell someone whose choice cannot render yet, or null when it can. */
+export interface ReadinessHint {
+  title: string;
+  detail: string;
+  /** A command to paste, when there is one. */
+  command?: string;
+  /** Whether Settings is where this gets fixed — only Higgsfield has anything to set. */
+  opensSettings: boolean;
+}
+
+export function readinessHint(
+  modelId: string,
+  settings: SettingsView | null,
+  ffmpegAvailable: boolean | null,
+): ReadinessHint | null {
+  if (renderReady(modelId, settings, ffmpegAvailable)) return null;
+
+  if (providerOf(modelId) === 'higgsfield') {
+    return {
+      title: 'Connect Higgsfield to generate',
+      detail: 'The Higgsfield CLI was not found. Nothing has been sent.',
+      opensSettings: true,
+    };
+  }
+
+  const status = agentStatus(modelId, settings);
+  const label = status?.label ?? modelLabel(modelId);
+  if (ffmpegAvailable === false) {
+    return {
+      title: 'ffmpeg is needed to composite',
+      detail: `${label} chooses the motion, but ffmpeg makes the frames — install it and put it on your PATH.`,
+      opensSettings: false,
+    };
+  }
+  return {
+    title: `Install ${label} to composite`,
+    detail: 'It was not found on this machine. Nothing has been sent.',
+    command: status?.install,
+    opensSettings: false,
+  };
 }
 
 /** One model the compose panel offers, with the limits its own CLI schema publishes. */
@@ -299,7 +444,14 @@ export function assetSrc(path: string): string {
 
 export async function getSettings(): Promise<SettingsView> {
   if (!isDesktop()) {
-    return { configured: false, cliPath: null, customModel: '', hasApiKey: false, apiKeyIdHint: '' };
+    return {
+      configured: false,
+      cliPath: null,
+      customModel: '',
+      hasApiKey: false,
+      apiKeyIdHint: '',
+      agents: [],
+    };
   }
   return invoke<SettingsView>('get_settings');
 }

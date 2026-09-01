@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as backend from '../lib/backend';
 import { animatableCuts, useEditor } from '../state/store';
 import type { AudioTrack, Clip, ClipEdge, Generation, MediaAsset, Selection } from '../types/project';
 import {
@@ -89,6 +90,8 @@ export function Timeline() {
   const animateQueue = useEditor((s) => s.animateQueue);
   const animateRun = useEditor((s) => s.animateRun);
   const settings = useEditor((s) => s.settings);
+  const modelId = useEditor((s) => s.modelId);
+  const ffmpegAvailable = useEditor((s) => s.ffmpegAvailable);
   const draggingAssetId = useEditor((s) => s.draggingAssetId);
   const endAssetDrag = useEditor((s) => s.endAssetDrag);
   const placeAssetOnTimeline = useEditor((s) => s.placeAssetOnTimeline);
@@ -193,7 +196,10 @@ export function Timeline() {
     () => animatableCuts({ clips, assets, generations }),
     [clips, assets, generations],
   );
-  const configured = settings?.configured ?? false;
+  // The toolbar asks exactly what the store's own guard asks, so the button can never offer
+  // a run the action will refuse — and it now asks it of the chosen backend, not of
+  // Higgsfield, which a local-motion pick has nothing to do with.
+  const ready = backend.renderReady(modelId, settings, ffmpegAvailable);
   // Both toolbar buttons ask the same pure predicate the store's own guard asks, so the
   // button can never offer an edit the action will silently refuse.
   const splittable = canSplitAt(clips, playheadMs);
@@ -538,11 +544,12 @@ export function Timeline() {
             className="tool tool--wide tool--on"
             aria-label="Animate all cuts"
             title={
-              configured
-                ? 'Generate a Higgsfield transition for every photo-to-photo cut'
-                : 'Connect Higgsfield first'
+              ready
+                ? `Generate a ${backend.modelLabel(modelId)} transition for every photo-to-photo cut`
+                : (backend.readinessHint(modelId, settings, ffmpegAvailable)?.title ??
+                  'Not ready to generate')
             }
-            disabled={!configured}
+            disabled={!ready}
             onClick={animateAll}
           >
             ✦ Animate all · {animatable.length}

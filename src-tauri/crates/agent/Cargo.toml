@@ -1,0 +1,16 @@
+[package]
+name = "solcut-agent"
+description = "Transitions authored by a coding-agent CLI and composited locally with ffmpeg. No Tauri or GUI dependencies, so it builds and tests anywhere."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+solcut-render = { path = "../render" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

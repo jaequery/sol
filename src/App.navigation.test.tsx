@@ -32,6 +32,9 @@ const STORED_SETTINGS: backend.SettingsView = {
   customModel: '',
   hasApiKey: false,
   apiKeyIdHint: '',
+  // No coding-agent CLI on the imaginary machine these suites run on, so every existing
+  // expectation still describes a Higgsfield-only install. Tests that need one add it.
+  agents: [],
 };
 let storedSettings = { ...STORED_SETTINGS };
 /** Mutable so the browser-only branches are reachable, unlike the hard `true` next door. */

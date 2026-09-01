@@ -97,6 +97,28 @@ function ConnectionForm() {
             </p>
           )}
 
+          {/* Read-only, and no second Test button: these are picked per render in the Model
+              selector, not connected here. What this answers is the one question Settings is
+              the natural place for — what can this machine actually render with. */}
+          <p className="hint">
+            <b>Local motion.</b> A transition can also be composited here with ffmpeg, with a
+            coding-agent CLI choosing the motion. Pick one in <b>Model</b> on any cut.
+          </p>
+          {(settings?.agents ?? []).map((agent) => (
+            <p className="hint" key={agent.id}>
+              {agent.path ? (
+                <>
+                  {agent.label} found at <code>{agent.path}</code>.
+                </>
+              ) : (
+                <>
+                  No {agent.label} on this machine — <code>{agent.install}</code>, then{' '}
+                  <code>{agent.login}</code>.
+                </>
+              )}
+            </p>
+          ))}
+
           <div className="field">
             <label htmlFor="api-key-id">API key ID</label>
             <input
