@@ -6,6 +6,7 @@ import { Inspector } from './components/Inspector';
 import { MediaBin } from './components/MediaBin';
 import { Preview } from './components/Preview';
 import { SettingsDialog } from './components/SettingsDialog';
+import { SwitchProjectDialog } from './components/SwitchProjectDialog';
 import { Timeline } from './components/Timeline';
 import { Toasts } from './components/Toasts';
 import { TitleBar } from './components/TitleBar';
@@ -38,6 +39,7 @@ export function App() {
       <AudioMixer />
       <FilmWizard />
       <SettingsDialog />
+      <SwitchProjectDialog />
       <ExportDialog />
       <Toasts />
     </div>
@@ -83,13 +85,16 @@ const SAVE_MAX_WAIT_MS = 5000;
 /**
  * The saved project: put it back at launch, then keep it written as the timeline changes.
  *
- * There is no save action anywhere in the app — this hook is the whole feature. Two rules
- * carry it:
+ * Autosave is still the whole of how a project reaches disk — Save as… only decides *which*
+ * file that is. Two rules carry it:
  *
  * 1. **Restore answers before autosave starts.** Arming the subscription first would let
  *    an empty editor write over a good project before the read came back.
- * 2. **A `blocked` answer never writes.** If the stored project could not be read, or was
- *    written by a newer build, this session saves nothing rather than destroying it.
+ * 2. **The refusal lives in the store, not here.** A project that must not be overwritten
+ *    sets `saveBlocked`, and `persistProject` writes nothing while it is up. This hook used
+ *    to enforce that by never subscribing, which also meant a session could never be
+ *    un-blocked: opening another project or naming this one had no way to turn saving back
+ *    on. It subscribes unconditionally now, and the store decides each write.
  */
 function useProjectPersistence() {
   const restoreProject = useEditor((s) => s.restoreProject);
@@ -136,7 +141,7 @@ function useProjectPersistence() {
 
     const arm = (result: RestoreOutcome) => {
       outcome.current = result;
-      if (disposed || result === 'blocked') return;
+      if (disposed) return;
       unsubscribe = useEditor.subscribe((state, prev) => {
         // Only the document is worth writing. Reference equality is exact here — every
         // action replaces these immutably — and it is what keeps the playhead, which moves
@@ -209,8 +214,14 @@ function useKeyboardShortcuts() {
       // innermost — rather than every dialog at once. Escape is Cancel here: an unsaved
       // credential is discarded, the same as the dialog's own Cancel button does.
       if (e.key === 'Escape') {
-        if (store.exportState) useEditor.setState({ exportState: null });
+        // The switch question is asked over everything else and answered before anything
+        // else can be, so it is the innermost layer whenever it is up. Escape is its Cancel:
+        // the project on screen stays, exactly as the dialog's own Cancel does.
+        if (store.pendingSwitch) void store.resolveSwitch('cancel');
+        else if (store.exportState) useEditor.setState({ exportState: null });
         else if (store.settingsOpen) store.closeSettings();
+        // Above the film panel, which it is drawn over and which stays open behind it.
+        else if (store.projectMenuOpen) store.closeProjectMenu();
         else if (store.filmWizardOpen) store.closeFilmWizard();
         // The compose panel keeps its draft when it closes, so Escape here is a way out
         // rather than a way to lose a typed prompt.
@@ -221,7 +232,7 @@ function useKeyboardShortcuts() {
       // A scrim is over the app: the timeline underneath is not what the user is typing at.
       // The film panel is deliberately *not* in this list — it is non-modal by design, so
       // the editor stays usable while a film renders.
-      if (store.settingsOpen || store.exportState) return;
+      if (store.settingsOpen || store.exportState || store.pendingSwitch) return;
 
       if (target?.closest(INTERACTIVE)) return;
 

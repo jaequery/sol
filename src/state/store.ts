@@ -9,6 +9,7 @@
 import { create } from 'zustand';
 import * as backend from '../lib/backend';
 import { probeAudioDurationMs, probeVideoDurationMs, renderPhotoJpeg } from '../lib/frames';
+import { resetPreviewSync } from '../lib/preview-sync';
 import {
   AUDIO_EXTS,
   DEFAULT_AUDIO_DURATION_MS,
@@ -47,7 +48,13 @@ import {
   setFilmPrompt,
   type Film,
 } from '../lib/film';
-import { hydrate, markMissing, readProjectFile, toProjectFile } from '../lib/project';
+import {
+  hydrate,
+  markMissing,
+  readProjectFile,
+  toProjectFile,
+  type ProjectDocument,
+} from '../lib/project';
 import {
   anchorMs,
   audioTrack,
@@ -171,6 +178,18 @@ export interface ExportState {
 export type RestoreOutcome = 'restored' | 'nothing' | 'blocked';
 
 /**
+ * A switch the user has been asked about, because the project they are in is untitled and
+ * has work in it — the one case with nowhere to flush to.
+ *
+ * `saving` is up while the save panel is open, so the dialog's own buttons cannot be used
+ * to start a second one behind it.
+ */
+export interface PendingSwitch {
+  action: 'new' | 'open';
+  saving: boolean;
+}
+
+/**
  * One photo the film wizard is holding, before anything has been imported.
  *
  * Either half can be the real one: a desktop pick and an OS drop carry a `path` the Rust
@@ -275,6 +294,32 @@ export interface EditorState {
    */
   saveError: string | null;
 
+  /**
+   * Where the open project lives, or `null` while it is untitled.
+   *
+   * The whole of a project's identity: its file *is* the project, and its name is that
+   * file's name. Nothing is written inside the project about where it lives, so renaming
+   * it on disk is not something the app has to be told about.
+   */
+  projectPath: string | null;
+
+  /**
+   * Saving is off for the open project, and only an explicit Save as… or a switch turns it
+   * back on.
+   *
+   * A property of the document rather than the session: it is set when the thing on disk
+   * must not be replaced — a project from a newer build, one that could not be read at all
+   * — and cleared by installing a document that *was* read, so opening something else is a
+   * way out rather than a trap.
+   */
+  saveBlocked: boolean;
+
+  /** The switch waiting on an answer, or `null` when nothing was asked. */
+  pendingSwitch: PendingSwitch | null;
+
+  /** Whether the title bar's project menu is showing. */
+  projectMenuOpen: boolean;
+
   exportState: ExportState | null;
   /**
    * A render is in flight. Distinct from `exportState`, which is only what the dialog is
@@ -367,7 +412,15 @@ export interface EditorState {
 
   // ---- the saved project
   restoreProject: () => Promise<RestoreOutcome>;
-  persistProject: () => Promise<void>;
+  /** Write the project where it lives. `false` means a write was attempted and failed. */
+  persistProject: () => Promise<boolean>;
+  openProjectMenu: () => void;
+  closeProjectMenu: () => void;
+  requestNewProject: () => void;
+  requestOpenProject: () => void;
+  /** Give the project a file. `false` means it still has none. */
+  saveProjectAs: () => Promise<boolean>;
+  resolveSwitch: (choice: 'save' | 'discard' | 'cancel') => Promise<void>;
 
   // ---- settings, export, chrome
   loadSettings: () => Promise<void>;
@@ -411,6 +464,10 @@ export const useEditor = create<EditorState>((set, get) => ({
   connectionMessage: null,
 
   saveError: null,
+  projectPath: null,
+  saveBlocked: false,
+  pendingSwitch: null,
+  projectMenuOpen: false,
 
   exportState: null,
   exporting: false,
@@ -444,12 +501,15 @@ export const useEditor = create<EditorState>((set, get) => ({
       accepted.push(placed(asset, audioStartMs ?? get().playheadMs));
     }
 
-    commitImport(set, accepted, problems, index);
-    await probeDurations(set, accepted);
+    commitImport(set, documentEpoch, accepted, problems, index);
+    await probeDurations(set, documentEpoch, accepted);
   },
 
   async addPaths(paths, index, audioStartMs) {
     if (paths.length === 0) return;
+    // Captured before the stat, not after: which project this import belongs to is decided
+    // when it starts, not when it comes back.
+    const epoch = documentEpoch;
     set((s) => ({ importing: s.importing + paths.length }));
     try {
       const result = await backend.importPaths(paths);
@@ -464,8 +524,8 @@ export const useEditor = create<EditorState>((set, get) => ({
         };
         return placed(asset, audioStartMs ?? get().playheadMs);
       });
-      commitImport(set, accepted, result.rejected, index);
-      await probeDurations(set, accepted);
+      commitImport(set, epoch, accepted, result.rejected, index);
+      await probeDurations(set, epoch, accepted);
     } catch (error) {
       get().pushToast({ tone: 'error', title: 'Import failed', detail: message(error) });
     } finally {
@@ -584,6 +644,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!asset || asset.missing) return;
     commitImport(
       set,
+      documentEpoch,
       [placed(asset, audioStartMs ?? playheadMs, asset.durationMs)],
       [],
       index ?? insertIndexAtTime(clips, playheadMs),
@@ -1044,9 +1105,13 @@ export const useEditor = create<EditorState>((set, get) => ({
         // A film leg is parked, not placed. The film goes onto the track in one piece once
         // every leg is in, so a leg landing early cannot leave half a film in the project —
         // and it goes on by itself, the moment the last leg's file has been measured.
-        void probeFilmSegmentDuration(set, next.target.filmSegmentIndex, update.outputPath).then(
-          () => assembleFilmOnTimeline(set, get),
-        );
+        const epoch = documentEpoch;
+        void probeFilmSegmentDuration(
+          set,
+          epoch,
+          next.target.filmSegmentIndex,
+          update.outputPath,
+        ).then(() => stillCurrent(epoch) && assembleFilmOnTimeline(set, get));
       } else if (next.target.kind === 'image') {
         // A photo goes into the bin and nowhere else: the timeline is the user's, and a
         // generation finishing mid-edit must not move anything they were working on.
@@ -1204,6 +1269,7 @@ export const useEditor = create<EditorState>((set, get) => ({
    * throws — naming the files — if the backend would not take one.
    */
   async addFilmPhotos(sources) {
+    const epoch = documentEpoch;
     const paths = [...new Set(sources.flatMap((s) => (s.path ? [s.path] : [])))];
     const imported = new Map<string, backend.ImportedMedia>();
     if (paths.length > 0) {
@@ -1257,6 +1323,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       ids.push(asset.id);
     }
 
+    if (!stillCurrent(epoch)) return ids;
     set((s) => {
       const assets = { ...s.assets };
       for (const asset of added) assets[asset.id] = asset;
@@ -1365,20 +1432,45 @@ export const useEditor = create<EditorState>((set, get) => ({
   // ------------------------------------------------------------- the saved project
 
   async restoreProject() {
+    let path: string | null = null;
+    try {
+      path = await backend.lastProjectPath();
+    } catch {
+      // Only the pointer failed. The scratch is still readable, and opening that beats
+      // refusing to open anything at all.
+    }
+
     let raw: unknown;
     try {
-      raw = await backend.loadProject();
+      raw = path === null ? await backend.loadProject() : await backend.readProject(path);
     } catch (error) {
+      if (path !== null) return refuseRemembered(set, get, path, message(error));
       // Nothing is on screen and nothing is known about what is on disk. Saving stays off:
       // writing now would replace a project that may be perfectly good.
-      set({ saveError: message(error) });
+      set({ saveError: message(error), saveBlocked: true });
       return 'blocked';
     }
 
     const read = readProjectFile(raw);
+
+    // A remembered project is a file the user named, so every way of failing to read it is
+    // the same answer: leave it alone and keep pointing at it. The scratch below is the
+    // opposite case — this build owns that file, and replacing a bad one is the way out.
+    if (path !== null && read.kind !== 'project') {
+      return refuseRemembered(
+        set,
+        get,
+        path,
+        read.kind === 'newer'
+          ? 'It was saved by a newer SolCut.'
+          : 'It is not a project this build can read.',
+      );
+    }
+
     if (read.kind === 'empty') return 'nothing';
 
     if (read.kind === 'newer') {
+      set({ saveBlocked: true });
       get().pushToast({
         tone: 'error',
         title: 'This project was saved by a newer SolCut',
@@ -1403,6 +1495,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       // Something landed while the project was being read. That edit is the user's and it
       // wins — but it is not what is on disk, so nothing is written over the stored
       // project either. Restarting is what gets it back.
+      set({ saveBlocked: true });
       get().pushToast({
         tone: 'error',
         title: 'The saved project was not restored',
@@ -1411,24 +1504,111 @@ export const useEditor = create<EditorState>((set, get) => ({
       return 'blocked';
     }
 
-    // One `set`: no render ever sees clips whose assets are not in the bin yet.
-    set(hydrate(read.file, { resolveSrc: backend.assetSrc }));
-    void probeRestoredMedia(set, get);
+    installDocument(set, get, hydrate(read.file, { resolveSrc: backend.assetSrc }), path);
+    void probeRestoredMedia(set, get, documentEpoch);
     return 'restored';
   },
 
   async persistProject() {
-    try {
-      await backend.saveProject(toProjectFile(get()));
-      if (get().saveError) set({ saveError: null });
-    } catch (error) {
-      const text = message(error);
-      // Said once, when saving starts failing — not again on every debounce after that.
-      if (!get().saveError) {
-        get().pushToast({ tone: 'error', title: 'The project could not be saved', detail: text });
+    // Nothing failed — there was simply nothing this session is allowed to write. Callers
+    // read `false` as "the write was refused by the disk", which is a reason to stop.
+    if (get().saveBlocked) return true;
+
+    // Every writer queues here rather than only the autosave hook's, because the hook is no
+    // longer the only one: the switch flushes, Save as… writes, and the debounce still
+    // fires. Two of those aimed at one path would race over a single `.writing` temp file.
+    const run = writeQueue.then(async () => {
+      const path = get().projectPath;
+      try {
+        await backend.saveProject(toProjectFile(get()), path);
+        if (get().saveError) set({ saveError: null });
+        return true;
+      } catch (error) {
+        const text = message(error);
+        // Said once, when saving starts failing — not again on every debounce after that.
+        if (!get().saveError) {
+          get().pushToast({ tone: 'error', title: 'The project could not be saved', detail: text });
+        }
+        set({ saveError: text });
+        return false;
       }
-      set({ saveError: text });
+    });
+    writeQueue = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  },
+
+  openProjectMenu() {
+    set({ projectMenuOpen: true });
+  },
+
+  closeProjectMenu() {
+    set({ projectMenuOpen: false });
+  },
+
+  requestNewProject() {
+    beginSwitch(set, get, 'new');
+  },
+
+  requestOpenProject() {
+    beginSwitch(set, get, 'open');
+  },
+
+  async saveProjectAs() {
+    set({ projectMenuOpen: false });
+
+    let picked: string | null = null;
+    try {
+      picked = await backend.pickProjectSavePath(projectLabel(get().projectPath));
+    } catch (error) {
+      get().pushToast({
+        tone: 'error',
+        title: 'Could not open the save dialog',
+        detail: message(error),
+      });
+      return false;
     }
+    if (!picked) return false;
+
+    // A file the user has just named cannot be one this session was protecting, so saving
+    // comes back on: this is the way out of a blocked session.
+    const was = { projectPath: get().projectPath, saveBlocked: get().saveBlocked };
+    set({ projectPath: picked, saveBlocked: false });
+    if (await get().persistProject()) return true;
+
+    // The write was refused. Aiming autosave at a file the disk will not take would leave
+    // every later edit failing too, so the project goes back to living where it did.
+    set(was);
+    return false;
+  },
+
+  async resolveSwitch(choice) {
+    const pending = get().pendingSwitch;
+    if (!pending || pending.saving) return;
+
+    if (choice === 'cancel') {
+      set({ pendingSwitch: null });
+      return;
+    }
+
+    if (choice === 'save') {
+      set({ pendingSwitch: { ...pending, saving: true } });
+      const saved = await get().saveProjectAs();
+      if (!saved) {
+        // Backing out of the save panel backs out of nothing else: the dialog stays up, so
+        // the work it exists to protect is still one click from Discard or Cancel.
+        set({ pendingSwitch: { ...pending, saving: false } });
+        return;
+      }
+      set({ pendingSwitch: null });
+      await performSwitch(set, get, pending.action);
+      return;
+    }
+
+    set({ pendingSwitch: null });
+    await performSwitch(set, get, pending.action, { discard: true });
   },
 
   // ------------------------------------------------------------------ settings & export
@@ -1576,6 +1756,249 @@ export const useEditor = create<EditorState>((set, get) => ({
 
 type Setter = (partial: Partial<EditorState> | ((s: EditorState) => Partial<EditorState>)) => void;
 
+// ------------------------------------------------------------ which project is open
+
+/**
+ * Which document the store is holding.
+ *
+ * Bumped by every install. Async work that started against one project — an import being
+ * stat'ed, a duration being decoded, the restore probe walking the filesystem — captures
+ * this before its first await and drops its write if it comes back to a different one.
+ *
+ * Without it, every one of those re-reads `get()` after the await and writes into whatever
+ * project is open by then: a 300-photo import launched in one project would land, whole, in
+ * the project the user opened while it was still being stat'ed. It costs nothing while a
+ * document is never replaced, which is why it was not needed until there was a way to
+ * replace one.
+ */
+let documentEpoch = 0;
+
+/** The project the caller started against is still the one on screen. */
+function stillCurrent(epoch: number): boolean {
+  return epoch === documentEpoch;
+}
+
+/**
+ * Every write to disk, in order.
+ *
+ * `App.tsx` used to be the only writer and serialised itself. It is not any more — a switch
+ * flushes, Save as… writes, and the debounce still fires — and two writes aimed at one path
+ * would race over its single `.writing` temp file, or land the older timeline last.
+ */
+let writeQueue: Promise<void> = Promise.resolve();
+
+/** What to call the open project: its file's name, or that it does not have one yet. */
+export function projectLabel(path: string | null): string {
+  if (path === null) return 'Untitled project';
+  const base = path.split(/[\\/]/).pop() ?? path;
+  return base.replace(/\.solcut$/i, '') || base;
+}
+
+/** A project with nothing in it. */
+function emptyDocument(): ProjectDocument {
+  return { assets: {}, clips: [], audioTracks: [], cutPrompts: {}, cutModes: {} };
+}
+
+/**
+ * Everything a switch puts back to how it starts.
+ *
+ * Deliberately narrower than "not the document". `exportState`/`exporting` stay, because a
+ * render is a job on the machine rather than part of the project — and `exporting` is the
+ * one-render-at-a-time guard, so clearing it would let a second ffmpeg start over the
+ * first. `toasts` stay, or the toast announcing a switch would be destroyed by it. So do
+ * the view and connection preferences, which belong to the user rather than to a project.
+ */
+function freshSession(): Partial<EditorState> {
+  return {
+    selection: { kind: 'none' },
+    playheadMs: 0,
+    playing: false,
+    generations: {},
+    film: null,
+    filmWizardOpen: false,
+    imagePanel: emptyImagePanel(),
+    animateQueue: null,
+    animateSubmittingId: null,
+    animateRun: null,
+    importing: 0,
+    importProblems: [],
+    draggingAssetId: null,
+    saveError: null,
+    pendingSwitch: null,
+    projectMenuOpen: false,
+  };
+}
+
+/**
+ * Put a project on screen — the one operation that replaces a document.
+ *
+ * Everything that outlives a `set` has to be taken down by hand first: object URLs nothing
+ * will ever revoke again, renders whose clip is about to stop existing, and the media
+ * elements the playhead is steered by. Then one `set`, so no render ever sees clips whose
+ * assets are not in the bin yet.
+ */
+function installDocument(
+  set: Setter,
+  get: () => EditorState,
+  doc: ProjectDocument,
+  path: string | null,
+  opts: { blocked?: boolean } = {},
+): void {
+  const outgoing = get();
+  documentEpoch += 1;
+
+  // A browser drop's object URL lives as long as the process unless something revokes it,
+  // and `removeAsset` is the only thing that ever did.
+  for (const asset of Object.values(outgoing.assets)) {
+    if (asset.src.startsWith('blob:')) URL.revokeObjectURL(asset.src);
+  }
+
+  // A render lands on a clip. That clip is about to stop existing, so the job has nowhere
+  // to go — stopping the poller is honest, where letting it finish would pay for a result
+  // nothing can use and say nothing about it.
+  for (const generation of Object.values(outgoing.generations)) {
+    if (generation.status === 'queued' || generation.status === 'running') {
+      void backend.cancelGeneration(generation.id);
+    }
+  }
+
+  // The registry is keyed by clip id, and the outgoing project's elements would go on
+  // steering the playhead in the incoming one.
+  resetPreviewSync();
+
+  set({ ...doc, ...freshSession(), projectPath: path, saveBlocked: opts.blocked === true });
+}
+
+/** A remembered project this build must not replace: keep pointing at it, and write nothing. */
+function refuseRemembered(
+  set: Setter,
+  get: () => EditorState,
+  path: string,
+  why: string,
+): RestoreOutcome {
+  set({ projectPath: path, saveBlocked: true });
+  get().pushToast({
+    tone: 'error',
+    title: 'The last project could not be opened',
+    detail: `${why} It is left untouched and nothing is being saved — open a project, or start a new one.`,
+  });
+  return 'blocked';
+}
+
+/**
+ * Start a switch, asking first only when there is untitled work with nowhere to go.
+ *
+ * A project that has a file is flushed to it and swapped without a word; an empty editor
+ * has nothing to lose. It is the untitled project *with work in it* that has to be asked
+ * about, and the question it is asked is the same one the launch restore asks about the
+ * editor being in use — clips, or lanes, or anything sitting in the bin.
+ */
+function beginSwitch(set: Setter, get: () => EditorState, action: PendingSwitch['action']): void {
+  set({ projectMenuOpen: false });
+  const s = get();
+  if (s.projectPath === null && hasWork(s)) {
+    set({ pendingSwitch: { action, saving: false } });
+    return;
+  }
+  void performSwitch(set, get, action);
+}
+
+function hasWork(s: EditorState): boolean {
+  return s.clips.length > 0 || s.audioTracks.length > 0 || Object.keys(s.assets).length > 0;
+}
+
+/**
+ * Swap the open project for another one, or for an empty one.
+ *
+ * The order is the whole of the safety. For an Open, the picked file is read *first* and a
+ * bad read refuses the switch outright, so a file that cannot be opened costs the user
+ * nothing — the opposite of the launch restore, which may start empty and replace, because
+ * there the user has not pointed at anything. Only then is the outgoing project written,
+ * and only if that write lands does anything on screen change.
+ */
+async function performSwitch(
+  set: Setter,
+  get: () => EditorState,
+  action: PendingSwitch['action'],
+  opts: { discard?: boolean } = {},
+): Promise<void> {
+  let next: { doc: ProjectDocument; path: string | null };
+
+  if (action === 'open') {
+    let picked: string | null = null;
+    try {
+      picked = await backend.pickProjectFile();
+    } catch (error) {
+      get().pushToast({
+        tone: 'error',
+        title: 'Could not open the file picker',
+        detail: message(error),
+      });
+      return;
+    }
+    if (!picked) return;
+    // Already open. Reading it and then flushing over it would write the live timeline to
+    // the file and put the bytes read *before* that flush back on screen — the edits since
+    // the last autosave gone from both.
+    if (picked === get().projectPath) return;
+
+    let raw: unknown;
+    try {
+      raw = await backend.readProject(picked);
+    } catch (error) {
+      get().pushToast({
+        tone: 'error',
+        title: 'That project could not be opened',
+        detail: message(error),
+      });
+      return;
+    }
+
+    const read = readProjectFile(raw);
+    if (read.kind !== 'project') {
+      get().pushToast({
+        tone: 'error',
+        title:
+          read.kind === 'newer'
+            ? 'That project was saved by a newer SolCut'
+            : 'That file is not a SolCut project',
+        detail: 'It is left untouched, and the project you were in is still open.',
+      });
+      return;
+    }
+    next = { doc: hydrate(read.file, { resolveSrc: backend.assetSrc }), path: picked };
+  } else {
+    next = { doc: emptyDocument(), path: null };
+  }
+
+  if (opts.discard) {
+    // Discarded means discarded. The untitled project also has a copy in the scratch, and
+    // clearing only what is in memory would leave that copy on disk for a later New to
+    // destroy without ever asking — and would have made the word a lie in the meantime.
+    // A switch to another untitled project clears it by being saved over instead.
+    if (next.path !== null) {
+      try {
+        await backend.saveProject(toProjectFile(emptyDocument()), null);
+      } catch {
+        // The scratch is a convenience, not the user's file. Failing to clear it is not
+        // worth refusing the switch they asked for.
+      }
+    }
+  } else if (!(await get().persistProject())) {
+    // The outgoing project could not be written — an unplugged drive, a full disk. Wiping
+    // it off screen anyway would lose everything since the last autosave landed, so it
+    // stays, with the toast the failed write already raised.
+    return;
+  }
+
+  installDocument(set, get, next.doc, next.path);
+  const epoch = documentEpoch;
+  // One write straight away, so the pointer to the current project follows the switch even
+  // if the user quits without touching anything.
+  void get().persistProject();
+  if (next.path !== null) void probeRestoredMedia(set, get, epoch);
+}
+
 /** One accepted import: a clip bound for the visual track, or a sound bound for a lane. */
 type Imported = { asset: MediaAsset; clip?: Clip; track?: AudioTrack };
 
@@ -1599,8 +2022,19 @@ function placed(asset: MediaAsset, audioStartMs: number, sourceDurationMs?: numb
  * Clips appear at their default length straight away and correct themselves once the real
  * duration is known — an import that blocks on decoding feels broken.
  */
-function commitImport(set: Setter, accepted: Imported[], problems: ImportProblem[], index?: number) {
+function commitImport(
+  set: Setter,
+  epoch: number,
+  accepted: Imported[],
+  problems: ImportProblem[],
+  index?: number,
+) {
   if (accepted.length === 0 && problems.length === 0) return;
+  // The choke point every import lands through, which is why the epoch is checked here
+  // rather than at each caller: a rule kept in three places is one a fourth caller forgets.
+  // `import_media` stats every path on the main thread, so a large import is seconds long
+  // and a project switch inside that window is ordinary.
+  if (!stillCurrent(epoch)) return;
 
   set((s) => {
     const assets = { ...s.assets };
@@ -1631,7 +2065,7 @@ function commitImport(set: Setter, accepted: Imported[], problems: ImportProblem
   });
 }
 
-async function probeDurations(set: Setter, accepted: Imported[]) {
+async function probeDurations(set: Setter, epoch: number, accepted: Imported[]) {
   await Promise.all(
     accepted.map(async ({ asset, clip, track }) => {
       if (asset.kind === 'photo') return;
@@ -1639,6 +2073,7 @@ async function probeDurations(set: Setter, accepted: Imported[]) {
         asset.kind === 'video'
           ? await probeVideoDurationMs(asset.src, DEFAULT_VIDEO_DURATION_MS)
           : await probeAudioDurationMs(asset.src, DEFAULT_AUDIO_DURATION_MS);
+      if (!stillCurrent(epoch)) return;
       set((s) => ({
         // The asset keeps the source length for good: it is what bounds a later trim.
         assets: s.assets[asset.id]
@@ -1668,7 +2103,11 @@ async function probeDurations(set: Setter, accepted: Imported[]) {
  * shut while a sleeping drive or an unmounted share woke up. It imports nothing — the
  * command only reads — so this is a question, not an edit.
  */
-async function probeRestoredMedia(set: Setter, get: () => EditorState): Promise<void> {
+async function probeRestoredMedia(
+  set: Setter,
+  get: () => EditorState,
+  epoch: number,
+): Promise<void> {
   const paths = [
     ...new Set(
       Object.values(get().assets)
@@ -1688,6 +2127,10 @@ async function probeRestoredMedia(set: Setter, get: () => EditorState): Promise<
       // of it missing would make a working project look broken.
     }
   }
+
+  // The answer is about the project that asked. Folding it into a project opened since
+  // would clear `missing` from media this probe never looked at.
+  if (!stillCurrent(epoch)) return;
 
   const marked = markMissing(get().assets, gone);
   // `markMissing` hands back the same object when nothing changed, so a project whose
@@ -1934,6 +2377,7 @@ function assembleFilmOnTimeline(set: Setter, get: () => EditorState): boolean {
 /** A leg's real length, read off the file Higgsfield actually returned. */
 async function probeFilmSegmentDuration(
   set: Setter,
+  epoch: number,
   index: number,
   outputPath: string,
 ): Promise<void> {
@@ -1941,6 +2385,7 @@ async function probeFilmSegmentDuration(
     backend.assetSrc(outputPath),
     FILM_SEGMENT_DURATION_MS,
   );
+  if (!stillCurrent(epoch)) return;
   set((s) => {
     // Retried while the probe was in flight: that run's file owns the leg's length now.
     if (!s.film || s.film.segments.find((x) => x.index === index)?.outputPath !== outputPath) {
@@ -2224,7 +2669,9 @@ function landCutResult(
   // loads, rippling what follows along with it. A trim the user landed first wins, exactly
   // as with imports.
   const clipId: string = landedClipId;
+  const epoch = documentEpoch;
   void probeVideoDurationMs(asset.src, DEFAULT_TRANSITION_DURATION_MS).then((durationMs) => {
+    if (!stillCurrent(epoch)) return;
     set((s) => {
       const clip = s.clips.find((c) => c.id === clipId);
       const untouched =

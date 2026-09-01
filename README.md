@@ -72,11 +72,18 @@ real video, the footage stays.
   [the flow](#three-photos-to-an-mp4) below.
 - **MP4 export** of the whole timeline via ffmpeg, audio lanes included.
 - **Your work is still there tomorrow.** The project saves itself as you edit — no save
-  button, no dialog, nothing on screen while it works — and comes back when the app
-  reopens: the same clips, trims, audio lanes and media bin. It lives in one
-  `project.json` beside the settings, and holds paths rather than copies, so a file that
-  moved away since last time comes back visibly **missing** (dimmed in the bin, MEDIA
-  OFFLINE in the preview, and refused by name at export) instead of failing mid-render.
+  button to remember, nothing on screen while it works — and comes back when the app
+  reopens: the same clips, trims, audio lanes and media bin. It holds paths rather than
+  copies, so a file that moved away since last time comes back visibly **missing** (dimmed
+  in the bin, MEDIA OFFLINE in the preview, and refused by name at export) instead of
+  failing mid-render.
+- **More than one project.** The title bar's project name is also the menu that changes
+  which project it is: **New project**, **Open project…**, **Save as…**. A project you have
+  named is an ordinary `.solcut` file wherever you put it, and autosave follows it there; an
+  unnamed one lives in a `project.json` beside the settings until you give it a home. There
+  is no plain Save, because there is nothing for it to do — the only save that means
+  anything is the one that decides *where*. Switching projects writes the one you are
+  leaving first, and the app reopens whichever one you were last in.
 
 ## Running it
 
@@ -253,10 +260,12 @@ src/                     React + TypeScript editor
   lib/project.ts         the saved project — what persists, and what a bad file may not do
   lib/backend.ts         the only place that talks to Tauri
   state/store.ts         zustand store
-  components/            title bar, media bin (+ the compose panel), preview, inspector,
-                         timeline, film wizard, dialogs
+  components/            title bar (+ the project menu), media bin (+ the compose panel),
+                         preview, inspector, timeline, film wizard, dialogs
 src-tauri/
-  src/                   Tauri commands, the generation job loop, settings and project storage
+  src/                   Tauri commands, the generation job loop, settings and project
+                         storage (`project.rs` has no Tauri dependency, so it is testable
+                         without the desktop shell)
   crates/higgsfield/     Higgsfield CLI wrapper — no Tauri or GUI dependencies
   crates/render/         ffmpeg filter graphs and export — no Tauri or GUI dependencies
 design/                  the approved concept and the hi-fi UX walkthrough
@@ -310,8 +319,10 @@ GTK toolchain.
   persists like any other clip.
 - **A moved file is indistinguishable from a deleted one.** Nothing tracks media identity
   beyond the absolute path, so re-importing is the way back.
-- **One project.** There is no New, Open or Save As — the editor holds a single project
-  that saves itself.
+- **A project file is machine-local.** It stores the absolute paths of your media, and
+  generated clips live in SolCut's own data directory, so a `.solcut` opened on another
+  machine restores as a full timeline of missing media. Moving or renaming one *on the same
+  machine* is fine — the file is the project, and its name is the project's name.
 - **A generated photo needs a prompt.** Some image models will work from references
   alone, but SolCut asks for a prompt every time — one rule beats four per-model ones. The
   reference photos themselves must be jpg, png or webp: the bin accepts more formats than
