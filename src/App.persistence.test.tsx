@@ -542,7 +542,7 @@ describe('a render interrupted by the restart', () => {
     expect(await screen.findByText('Interrupted')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry generating a cliff at dusk' })).toBeInTheDocument();
     // The cut's card is behind its own chip, which says so on the timeline.
-    expect(screen.getByText('✕ FAILED')).toBeInTheDocument();
+    expect(screen.getByText('FAILED')).toBeInTheDocument();
 
     const restored = useEditor.getState().generations;
     expect(restored.gen_cut.status).toBe('failed');

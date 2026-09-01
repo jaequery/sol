@@ -1,65 +1,114 @@
 /*
  * SolCut design system — "Midnight Studio" (Concept 1, approved).
- * Every colour, radius, and type step in the app comes from here.
+ * Every colour, radius, type step, spacing step and control height in the app comes from
+ * here. A component that needs a value not on one of these scales is asking for a new
+ * token, not a literal.
  */
 :root {
   /* surfaces, back to front */
   --bg: #0b0c10;
   --panel: #131520;
   --panel-2: #1a1d2b;
+  --panel-3: #222639;
   --sunken: #0e1018;
   --chrome: #0f1119;
   --line: #262a3d;
   --line-soft: #1d2130;
+  --line-strong: #343954;
 
-  /* text */
+  /* text — every step clears 4.5:1 on every surface above (--ink-3 is 4.5:1 on --panel-2,
+     the tightest pairing; the old #646b8a sat at 3.2:1 and carried every hint and label). */
   --ink: #eef0f8;
-  --ink-2: #9aa1bd;
-  --ink-3: #646b8a;
+  --ink-2: #a3a9c4;
+  --ink-3: #7e85a3;
 
   /* accent + status */
   --accent: #7c5cff;
   --accent-2: #a78bfa;
+  --accent-3: #dcd3ff;
   --accent-dim: #241d4d;
   --accent-line: #4c3ba8;
   --accent-wash: #1a1533;
+  --accent-border: #8b6bff;
+  --accent-solid: #6a4ae0;
   --ok: #34d399;
+  --ok-line: #14503c;
+  --ok-wash: #08211a;
+  --ok-ink: #a7f3d6;
   --warn: #fbbf24;
+  --warn-line: #5a4212;
+  --warn-wash: #241c06;
+  --warn-ink: #ffe0a3;
   --err: #fb7185;
+  --err-line: #5c2036;
   --err-wash: #2a1220;
+  --err-ink: #ffc2cf;
+  --audio: #5eca9a;
+  --audio-ink: #bfe8d4;
+  --audio-wash: rgba(46, 92, 71, 0.45);
+  --audio-line: rgba(94, 202, 154, 0.35);
   --playhead: #ff4d6d;
 
   /* geometry */
+  --r-xs: 4px;
   --r-sm: 6px;
   --r: 8px;
   --r-md: 10px;
   --r-lg: 14px;
 
-  /* type */
+  /* type. The floor is 10px, and it is reserved for badges and timecodes that sit next to
+     something bigger; the smallest size that ever identifies a thing on its own is 11px. */
   --font: 'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
-  --fs-xs: 10px;
-  --fs-sm: 11px;
-  --fs: 12px;
-  --fs-md: 13px;
-  --fs-lg: 15px;
+  --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, monospace;
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
 
-  /* spacing */
+  /* spacing — a 4px grid, with one half step for hairlines inside badges */
+  --sp-05: 2px;
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
   --sp-4: 16px;
   --sp-5: 24px;
+  --sp-6: 32px;
+
+  /* control heights. Everything clickable is at least the 24px WCAG target; the toolbar
+     and panel-head buttons share one height, dialog buttons and inputs another, and the
+     one primary action on a card is the tallest thing on it. */
+  --h-control-xs: 24px;
+  --h-control-sm: 28px;
+  --h-control-md: 32px;
+  --h-control-lg: 36px;
 
   /* chrome metrics — shared by the app shell and the mockups */
   --h-titlebar: 38px;
-  --h-panelhead: 36px;
-  --h-transport: 44px;
-  --h-toolbar: 34px;
-  --h-ruler: 22px;
-  --w-bin: 224px;
-  --w-inspector: 292px;
+  --h-panelhead: 40px;
+  --h-dialoghead: 44px;
+  --h-transport: 48px;
+  --h-toolbar: 40px;
+  --h-ruler: 24px;
+  --h-track: 72px;
+  --w-bin: 280px;
+  --w-inspector: 300px;
 
+  /* focus, selection, elevation */
+  --focus-ring: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent-2);
+  --shadow-selected: 0 0 0 1px var(--accent-2), 0 6px 22px rgba(124, 92, 255, 0.35);
   --shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
   --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.6);
+  --shadow-lift: 0 10px 28px rgba(0, 0, 0, 0.6);
+
+  /* motion — one duration, one curve; reduced-motion zeroes the duration */
+  --dur: 120ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur: 0ms;
+  }
 }

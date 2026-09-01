@@ -314,6 +314,22 @@ HF_KEY=key_id:key_secret cargo test -p solcut-higgsfield --test live -- --nocapt
 With no CLI installed (or one that is not signed in) it says so and passes, so it is safe
 in a plain `cargo test` run.
 
+## Keyboard
+
+| Key | Does |
+|---|---|
+| `Space` | Play / pause |
+| `Home` / `End` | Cue the start / the end of the timeline |
+| `←` / `→` | Step the playhead 100 ms; with `Shift`, 1 s |
+| `S` | Split the clip under the playhead |
+| `⌫` / `Delete` | Delete the selected clip or sound |
+| `Esc` | Close the innermost dialog or panel |
+| `Tab` onto a clip, then `←` / `→` | Nudge the clip (its edge handles trim it the same way) |
+| `Tab` onto the ruler, then `←` / `→` / `Home` / `End` | Scrub without a mouse |
+
+Every button in the app is reachable by `Tab` and answers to `Space` and `Enter`; the
+dialogs keep focus inside themselves while they are open. The toolbar shows the main keys.
+
 ## Layout
 
 ```

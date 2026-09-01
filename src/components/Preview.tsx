@@ -9,6 +9,7 @@ import {
   videoPoolAt,
 } from '../lib/preview-sync';
 import type { Clip } from '../types/project';
+import { Icon } from './Icon';
 
 /**
  * The preview.
@@ -35,12 +36,10 @@ export function Preview() {
     return (
       <div className="stage">
         <div className="stage__empty">
-          <div className="icon" aria-hidden="true">
-            🎞
-          </div>
-          <b>Nothing on the timeline</b>
-          Drop a photo or a video below to start. Photos side by side can be bridged with
-          AI transitions.
+          <Icon name="film" size={36} />
+          <b>Nothing to preview yet</b>
+          Add media from the bin on the left, or drop files on the timeline below. Photos
+          side by side can be bridged with AI transitions.
         </div>
       </div>
     );
@@ -79,14 +78,18 @@ export function Preview() {
           <div className="canvas__offline">
             MEDIA OFFLINE
             <br />
-            <span style={{ opacity: 0.7 }}>{clip.name} is no longer available</span>
+            <span>{clip.name} is no longer available</span>
           </div>
         )}
 
         <div className="canvas__hud">
-          <span aria-hidden="true">◆</span> {formatTimecode(playheadMs)}
+          <Icon name="diamond" size={9} /> {formatTimecode(playheadMs)}
         </div>
-        {clip?.ai && <div className="canvas__ai">✦ AI GENERATED</div>}
+        {clip?.ai && (
+          <div className="canvas__ai">
+            <Icon name="sparkle" size={11} /> AI GENERATED
+          </div>
+        )}
       </div>
     </div>
   );

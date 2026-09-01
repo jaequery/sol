@@ -30,6 +30,7 @@ import {
   type ImportProblem,
 } from '../state/store';
 import { ModelSelect } from './ModelSelect';
+import { Icon } from './Icon';
 
 /** A photo the wizard is holding: chosen, ordered, but not imported until Generate. */
 interface Pick extends FilmPhotoSource {
@@ -187,9 +188,10 @@ export function FilmWizard() {
     // Not `aria-modal`: the editor behind this stays live, and that is the point.
     <div className="filmwiz" role="dialog" aria-label="New film from 3 photos">
       <div className="filmwiz__head">
-        <span>✦ {film ? 'Your film' : 'New film from 3 photos'}</span>
+        <Icon name="sparkle" size={15} />
+        <span>{film ? 'Your film' : 'New film from 3 photos'}</span>
         <button type="button" className="filmwiz__close" aria-label="Close the film panel" onClick={close}>
-          ✕
+          <Icon name="x" size={15} />
         </button>
       </div>
 
@@ -306,7 +308,7 @@ export function FilmWizard() {
                       disabled={i === 0}
                       onClick={() => move(i, i - 1)}
                     >
-                      ↑
+                      <Icon name="arrow-up" size={12} />
                     </button>
                     <button
                       type="button"
@@ -314,14 +316,14 @@ export function FilmWizard() {
                       disabled={i === picks.length - 1}
                       onClick={() => move(i, i + 1)}
                     >
-                      ↓
+                      <Icon name="arrow-down" size={12} />
                     </button>
                     <button
                       type="button"
                       aria-label={`Remove ${pick.name}`}
                       onClick={() => forget(i)}
                     >
-                      ✕
+                      <Icon name="x" size={12} />
                     </button>
                   </li>
                 );

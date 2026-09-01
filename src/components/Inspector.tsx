@@ -7,6 +7,7 @@ import {
   type AudioTrack,
   type Clip,
   type Generation,
+  type MediaAsset,
 } from '../types/project';
 import {
   bridgeableCuts,
@@ -19,6 +20,7 @@ import {
 } from '../lib/timeline';
 import { modelLabel, readinessHint, type ReadinessHint } from '../lib/backend';
 import { ModelSelect } from './ModelSelect';
+import { Icon } from './Icon';
 
 /**
  * Why the chosen backend cannot render, and what to do about it.
@@ -76,11 +78,11 @@ export function Inspector() {
           <CutCard a={cutPair.a} b={cutPair.b} />
         ) : !clip ? (
           <div className="empty-note">
-            <div className="icon" aria-hidden="true">
-              ◇
-            </div>
+            <Icon name="diamond" size={22} />
             <b>Nothing selected</b>
-            Select a clip on the timeline to edit it, or drop media to begin.
+            {clips.length === 0 && audioTracks.length === 0
+              ? 'Select a clip once something is on the timeline.'
+              : 'Select a clip, a sound, or the ✦ on a cut to edit it here.'}
           </div>
         ) : (
           <InspectorBody key={clip.id} clip={clip} />
@@ -216,7 +218,7 @@ function DurationRow({ id, field }: { id: string; field: DurationField }) {
 function DurationNote({ id, field, limit }: { id: string; field: DurationField; limit: string }) {
   if (field.rejectedText !== null) {
     return (
-      <p className="hint" id={noteId(id)} role="status">
+      <p className="hint" id={noteId(id)} role="alert">
         {field.rejectedText === ''
           ? 'Type a length in seconds, like 4.5.'
           : `“${field.rejectedText}” is not a length — type seconds, like 4.5.`}
@@ -269,7 +271,8 @@ function AudioCard({ track }: { track: AudioTrack }) {
   return (
     <div className="card">
       <div className="card__head">
-        <span aria-hidden="true">♪</span> {track.name}
+        <Icon name="music" size={15} />
+        <span className="card__title">{track.name}</span>
       </div>
       <div className="card__body">
         <div className="kv">
@@ -291,7 +294,8 @@ function AudioCard({ track }: { track: AudioTrack }) {
           onChange={(volume) => setAudioVolume(track.id, volume)}
         />
         <button type="button" className="block-btn" onClick={() => toggleAudioMute(track.id)}>
-          {track.muted ? '🔊 Unmute track' : '🔇 Mute track'}
+          <Icon name={track.muted ? 'volume' : 'volume-off'} size={14} />
+          {track.muted ? 'Unmute track' : 'Mute track'}
         </button>
         <DurationNote
           id="audio-duration"
@@ -311,14 +315,29 @@ function InspectorBody({ clip }: { clip: Clip }) {
   const assets = useEditor((s) => s.assets);
   const setClipDuration = useEditor((s) => s.setClipDuration);
   const duration = useDurationField(clip.durationMs, (ms) => setClipDuration(clip.id, ms));
+  const asset = assets[clip.assetId];
+  const offline = !asset || asset.missing === true || !asset.src;
 
   return (
     <>
       <div className="card">
         <div className="card__head">
-          <span aria-hidden="true">{clip.kind === 'photo' ? '▣' : '▶'}</span> {clip.name}
+          {offline ? (
+            <Icon name="alert" size={15} />
+          ) : (
+            <Thumb asset={asset} />
+          )}
+          <span className="card__title">{clip.name}</span>
         </div>
         <div className="card__body">
+          {/* The preview and the track both say it; the panel opened to learn more must too. */}
+          {offline && (
+            <div className="callout callout--lead" role="status">
+              <b>Media offline</b>
+              {clip.name} is no longer at its saved path. It keeps its place on the timeline,
+              but export will refuse it by name until the file is back or re-imported.
+            </div>
+          )}
           <div className="kv">
             <span>Starts at</span>
             <b>{formatTimecode(clip.startMs)}</b>
@@ -355,6 +374,20 @@ function InspectorBody({ clip }: { clip: Clip }) {
   );
 }
 
+/** A frame of the thing the card is about — the same picture the bin and the track show. */
+function Thumb({ asset }: { asset: MediaAsset | undefined }) {
+  if (!asset || asset.missing || !asset.src) return null;
+  return (
+    <span className="card__thumb" aria-hidden="true">
+      {asset.kind === 'video' ? (
+        <video src={asset.src} muted preload="metadata" />
+      ) : asset.kind === 'photo' ? (
+        <img src={asset.src} alt="" draggable={false} />
+      ) : null}
+    </span>
+  );
+}
+
 function Slider({
   label,
   min,
@@ -382,6 +415,7 @@ function Slider({
         max={max}
         step={step}
         value={value}
+        aria-valuetext={format(value)}
         onChange={(e) => onChange(Number(e.target.value))}
       />
       <span className="value">{format(value)}</span>
@@ -396,7 +430,10 @@ function RunningCard({ generation, heading }: { generation: Generation; heading:
   return (
     <div className="card card--ai">
       <div className="card__head">
-        ✨ {running ? 'Rendering' : 'Queued'} · {heading}
+        <Icon name="spinner" size={15} className="icon--spin" />
+        <span className="card__title">
+          {running ? 'Rendering' : 'Queued'} · {heading}
+        </span>
       </div>
       <div className="card__body">
         <div className="kv">
@@ -447,7 +484,10 @@ function FailedCard({ generation, heading }: { generation: Generation; heading: 
 
   return (
     <div className="card card--error" role="alert">
-      <div className="card__head">✕ Generation failed · {heading}</div>
+      <div className="card__head">
+        <Icon name="x" size={15} />
+        <span className="card__title">Generation failed · {heading}</span>
+      </div>
       <div className="card__body">
         <div className="errbox">
           <b>{error?.title ?? 'Generation failed'}</b>
@@ -532,9 +572,17 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
 
   return (
     <div className="card card--ai">
-      <div className="card__head">✦ Transition · {heading}</div>
+      <div className="card__head">
+        <Icon name="sparkle" size={15} />
+        <span className="card__title">Transition · {heading}</span>
+      </div>
       <div className="card__body">
-        <p className="hint" style={{ marginTop: 0 }}>
+        <div className="card__pair" aria-hidden="true">
+          <Thumb asset={assetA} />
+          <Icon name="arrow-right" size={12} />
+          <Thumb asset={assetB} />
+        </div>
+        <p className="hint">
           {modelLabel(modelId)} animates from the last frame of <b>{a.name}</b> to the first
           frame of <b>{b.name}</b>.{' '}
           {mode === 'replace' ? (
@@ -589,7 +637,7 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
               disabled={offline}
               onClick={() => startCutGeneration(a.id, b.id)}
             >
-              ✦ Generate transition
+              <Icon name="sparkle" size={14} /> Generate transition
             </button>
             {offersReplace && (
               <button
@@ -657,16 +705,13 @@ function TransitionCard({ clip }: { clip: Clip }) {
 
   return (
     <div className="card card--ai">
-      <div className="card__head">✦ AI transition</div>
+      <div className="card__head">
+        <Thumb asset={assets[clip.assetId]} />
+        <span className="card__title">AI transition</span>
+      </div>
       <div className="card__body">
-        <div className="kv">
-          <span>From</span>
-          <b>{fromName}</b>
-        </div>
-        <div className="kv">
-          <span>To</span>
-          <b>{toName}</b>
-        </div>
+        <SourceRow label="From" name={fromName} clipId={transition.from.clipId} />
+        <SourceRow label="To" name={toName} clipId={transition.to.clipId} />
         <label className="visually-hidden" htmlFor="transition-prompt">
           Describe this transition
         </label>
@@ -706,7 +751,7 @@ function TransitionCard({ clip }: { clip: Clip }) {
               disabled={staleness === 'orphaned'}
               onClick={() => regenerateTransition(clip.id)}
             >
-              ⟳ Regenerate transition
+              <Icon name="refresh" size={14} /> Regenerate transition
             </button>
             <p className="hint">
               {replaced
@@ -716,6 +761,33 @@ function TransitionCard({ clip }: { clip: Clip }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * One side of a transition. While the source clip is still on the track the name is a
+ * button that selects it; a source that was consumed by a replace landing is just named.
+ */
+function SourceRow({ label, name, clipId }: { label: string; name: string; clipId: string }) {
+  const clips = useEditor((s) => s.clips);
+  const select = useEditor((s) => s.select);
+  const onTrack = clips.some((c) => c.id === clipId);
+  return (
+    <div className="kv">
+      <span>{label}</span>
+      {onTrack ? (
+        <button
+          type="button"
+          className="kv__link"
+          title="Select this clip on the timeline"
+          onClick={() => select({ kind: 'clip', clipId })}
+        >
+          {name}
+        </button>
+      ) : (
+        <b>{name}</b>
+      )}
     </div>
   );
 }

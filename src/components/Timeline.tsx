@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as backend from '../lib/backend';
+import { Icon } from './Icon';
 import { animatableCuts, useEditor } from '../state/store';
 import {
   DEFAULT_PX_PER_SECOND,
@@ -47,6 +48,8 @@ const NUDGE_MS = 100;
 const COARSE_NUDGE_MS = 1000;
 /** How near an edge has to be before the snapping aid pulls a drag onto it. */
 const SNAP_PX = 8;
+/** Below this many pixels of clip on either side, a cut's chip shrinks to a dot. */
+const COMPACT_CUT_PX = 44;
 
 /** A drag in progress: either the whole clip along the track, or one of its edges. */
 type ClipDrag = {
@@ -214,6 +217,7 @@ export function Timeline() {
   // button can never offer an edit the action will silently refuse.
   const splittable = canSplitAt(clips, playheadMs);
   const deletable = canDeleteSelection(selection);
+  const zoomPercent = Math.round((pxPerSecond / DEFAULT_PX_PER_SECOND) * 100);
 
   // Both are callbacks rather than plain functions so the bin-drag effect below can reuse
   // them without reinstalling its window listeners on every render.
@@ -543,14 +547,25 @@ export function Timeline() {
           aria-label="Split at playhead"
           title={
             splittable
-              ? 'Cut the clip under the playhead in two'
+              ? 'Split the clip under the playhead in two (S)'
               : 'Put the playhead inside a clip to split it'
           }
           onClick={splitAtPlayhead}
           disabled={!splittable}
         >
-          ✂
+          <Icon name="scissors" size={14} />
         </button>
+        <button
+          type="button"
+          className="tool"
+          aria-label="Delete selection"
+          title={deletable ? 'Delete the selected clip or sound (⌫)' : 'Select a clip or a sound to delete'}
+          onClick={deleteSelection}
+          disabled={!deletable}
+        >
+          <Icon name="trash" size={14} />
+        </button>
+        <span className="sep" aria-hidden="true" />
         <button
           type="button"
           className="tool tool--wide"
@@ -558,12 +573,14 @@ export function Timeline() {
           title="Add a sound file on its own track, starting at the playhead"
           onClick={() => void addAudioViaDialog()}
         >
-          ♪ Add audio
+          <Icon name="music" size={14} /> Add audio
         </button>
         {animatable.length > 0 && animateQueue === null && animateRun === null && (
+          // Lit only when it can run: a disabled button dressed as the active one invites
+          // the click that does nothing.
           <button
             type="button"
-            className="tool tool--wide tool--on"
+            className={`tool tool--wide${ready ? ' tool--on' : ''}`}
             aria-label="Animate all cuts"
             title={
               ready
@@ -574,22 +591,13 @@ export function Timeline() {
             disabled={!ready}
             onClick={animateAll}
           >
-            ✦ Animate all · {animatable.length}
+            <Icon name="sparkle" size={14} /> Animate all · {animatable.length}
           </button>
         )}
+        <span className="sep" aria-hidden="true" />
         <button
           type="button"
-          className="tool"
-          aria-label="Delete selection"
-          title={deletable ? 'Delete the selected clip or sound' : 'Select a clip or a sound to delete'}
-          onClick={deleteSelection}
-          disabled={!deletable}
-        >
-          🗑
-        </button>
-        <button
-          type="button"
-          className={`tool tool--wide ${snapping ? 'tool--on' : ''}`}
+          className={`tool tool--wide${snapping ? ' tool--on' : ''}`}
           aria-label="Snap to edges"
           aria-pressed={snapping}
           title={
@@ -599,10 +607,14 @@ export function Timeline() {
           }
           onClick={toggleSnapping}
         >
-          ⇥ Snap
+          <Icon name="magnet" size={14} /> Snap
         </button>
+        <span className="timeline__legend" aria-hidden="true">
+          <kbd>Space</kbd> play · <kbd>S</kbd> split · <kbd>⌫</kbd> delete · <kbd>←</kbd>
+          <kbd>→</kbd> step
+        </span>
 
-        <label className="timeline__zoom">
+        <div className="timeline__zoom">
           ZOOM
           <input
             type="range"
@@ -610,15 +622,30 @@ export function Timeline() {
             max={MAX_PX_PER_SECOND}
             value={pxPerSecond}
             aria-label="Timeline zoom"
+            aria-valuetext={`${zoomPercent}%`}
             onChange={(e) => useEditor.setState({ pxPerSecond: Number(e.target.value) })}
           />
-          {Math.round((pxPerSecond / DEFAULT_PX_PER_SECOND) * 100)}%
-        </label>
+          <button
+            type="button"
+            className="tool"
+            aria-label="Reset zoom to 100%"
+            title="Reset zoom to 100%"
+            onClick={() => useEditor.setState({ pxPerSecond: DEFAULT_PX_PER_SECOND })}
+          >
+            {zoomPercent}%
+          </button>
+        </div>
       </div>
 
       <div className="timeline__scroll">
         <div className="timeline__inner" style={{ width }}>
-          <Ruler total={total} pxPerSecond={pxPerSecond} width={width} onSeek={setPlayhead} />
+          <Ruler
+            total={total}
+            pxPerSecond={pxPerSecond}
+            width={width}
+            playheadMs={playheadMs}
+            onSeek={setPlayhead}
+          />
 
           <div
             className={`track ${incoming ? 'track--drop-target' : ''} ${drag?.moved ? 'track--dragging' : ''}`}
@@ -700,6 +727,7 @@ export function Timeline() {
                         selection.beforeClipId === cut.beforeClipId
                       }
                       offline={Boolean(!assetA || !assetB || assetA.missing || assetB.missing)}
+                      compact={Math.min(toPx(a.durationMs), toPx(b.durationMs)) < COMPACT_CUT_PX}
                       toPx={toPx}
                       onSelect={() =>
                         select({
@@ -712,7 +740,6 @@ export function Timeline() {
                   );
                 })}
 
-                <div className="playhead" style={{ left: toPx(playheadMs) }} />
               </div>
             )}
 
@@ -767,8 +794,17 @@ export function Timeline() {
                   onToggleMute={toggleAudioMute}
                 />
               ))}
-              <div className="playhead playhead--lanes" style={{ left: toPx(playheadMs) }} />
             </div>
+          )}
+
+          {/* One line through ruler, track and lanes, its head in the ruler where the time
+              it points at is written. The strip's time origin is the track's side padding. */}
+          {(clips.length > 0 || previewAudio.length > 0) && (
+            <div
+              className="playhead"
+              data-testid="playhead"
+              style={{ left: `calc(var(--sp-3) + ${toPx(playheadMs)}px)` }}
+            />
           )}
         </div>
       </div>
@@ -815,7 +851,7 @@ function AudioLane({
   };
   const width = Math.max(toPx(track.durationMs), MIN_CLIP_PX);
   const selected = selection.kind === 'audio' && selection.trackId === track.id;
-  const offline = !asset;
+  const offline = !asset || asset.missing === true;
   const moving = drag !== null && drag.kind === 'move' && drag.moved;
   const roomy = width > 70;
 
@@ -833,6 +869,7 @@ function AudioLane({
     <div
       className="audio-lane"
       ref={laneRef}
+      onContextMenu={(e) => e.preventDefault()}
       onClick={(e) => {
         if (e.target === e.currentTarget) onSeek(msAt(e.clientX));
       }}
@@ -847,9 +884,9 @@ function AudioLane({
           className="audio-clip__body"
           style={{ cursor: moving ? 'grabbing' : 'grab' }}
         >
-          <span aria-hidden="true">{track.muted ? '♪̸' : '♪'}</span>
+          <Icon name={track.muted ? 'volume-off' : 'music'} size={12} />
           {offline ? (
-            <span className="audio-clip__name">⚠ MEDIA OFFLINE</span>
+            <span className="audio-clip__name">MEDIA OFFLINE</span>
           ) : (
             <span className="audio-clip__name">{truncateName(track.name, 24)}</span>
           )}
@@ -868,7 +905,7 @@ function AudioLane({
             onToggleMute(track.id);
           }}
         >
-          {track.muted ? '🔇' : '🔊'}
+          <Icon name={track.muted ? 'volume-off' : 'volume'} size={13} />
         </button>
         )}
 
@@ -894,11 +931,13 @@ function Ruler({
   total,
   pxPerSecond,
   width,
+  playheadMs,
   onSeek,
 }: {
   total: number;
   pxPerSecond: number;
   width: number;
+  playheadMs: number;
   /** Cue the playhead: a press seeks, and holding the button down scrubs. */
   onSeek: (ms: number) => void;
 }) {
@@ -933,10 +972,33 @@ function Ruler({
   const step = [1, 2, 5, 10, 15, 30, 60].find((s) => s * pxPerSecond >= 70) ?? 60;
   const ticks = Math.floor(Math.max(total / 1000, width / pxPerSecond) / step) + 1;
 
+  // The ruler is the keyboard's scrub surface too: arrows step, Home and End cue the
+  // ends. The keys stop here so the window shortcut does not step the playhead twice.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    let next: number | null = null;
+    const step = e.shiftKey ? COARSE_NUDGE_MS : NUDGE_MS;
+    if (e.key === 'ArrowLeft') next = Math.max(0, playheadMs - step);
+    else if (e.key === 'ArrowRight') next = playheadMs + step;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = total;
+    if (next === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onSeek(next);
+  };
+
   return (
     <div
       className="ruler"
       data-testid="timeline-ruler"
+      role="slider"
+      tabIndex={0}
+      aria-label="Playhead"
+      aria-valuemin={0}
+      aria-valuemax={Math.round(total)}
+      aria-valuenow={Math.round(Math.min(playheadMs, total))}
+      aria-valuetext={formatTimecode(playheadMs)}
+      onKeyDown={onKeyDown}
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         seekAt(e.clientX);
@@ -954,6 +1016,10 @@ function Ruler({
             </span>
           );
         })}
+        {/* A half-step mark between labels, so a scrub has something to read against. */}
+        {Array.from({ length: ticks }, (_, i) => (
+          <i key={`m${i}`} className="ruler__minor" style={{ left: (i + 0.5) * step * pxPerSecond }} />
+        ))}
       </div>
     </div>
   );
@@ -993,7 +1059,9 @@ function TimelineClip({
 }) {
   const width = Math.max(toPx(clip.durationMs), MIN_CLIP_PX);
   const selected = selection.kind === 'clip' && selection.clipId === clip.id;
-  const offline = !asset;
+  // A restored asset whose file has gone is still in the bin, flagged; it has nothing to
+  // draw either, so the clip wears the offline face rather than a broken thumbnail.
+  const offline = !asset || asset.missing === true || !asset.src;
   const roomy = width > 70;
   const resizable = width >= MIN_HANDLE_CLIP_PX;
   const moving = drag !== null && drag.kind === 'move' && drag.moved;
@@ -1015,25 +1083,23 @@ function TimelineClip({
       className={classes}
       style={{ left: toPx(startMs), width }}
       data-testid={`clip-${clip.id}`}
+      // The webview's own menu has nothing for a clip; it only interrupts a drag.
+      onContextMenu={(e) => e.preventDefault()}
     >
       <button
         type="button"
+        className="clip__face"
         aria-label={`${clip.name} ${clip.kind} clip`}
         title="Click to cue playback here · drag anywhere along the track · arrow keys nudge"
         onPointerDown={(e) => onDragStart(e, 'move', clip, 'start')}
         onClick={(e) => onSelectClip(clip.id, e)}
         onKeyDown={(e) => onMoveKey(e, clip)}
-        style={{
-          position: 'absolute',
-          inset: 0,
-          background: 'none',
-          border: 0,
-          padding: 0,
-          cursor: moving ? 'grabbing' : 'grab',
-        }}
+        style={{ cursor: moving ? 'grabbing' : 'grab' }}
       >
         {offline ? (
-          <span className="clip__offline-tag">⚠ MEDIA OFFLINE</span>
+          <span className="clip__offline-tag">
+            <Icon name="alert" size={11} /> MEDIA OFFLINE
+          </span>
         ) : clip.kind === 'photo' ? (
           <img src={asset.src} alt="" draggable={false} />
         ) : fromAsset && toAsset ? (
@@ -1043,17 +1109,24 @@ function TimelineClip({
           <span className="clip__pair" data-testid={`clip-pair-${clip.id}`} aria-hidden="true">
             <SourceFace asset={fromAsset} />
             <SourceFace asset={toAsset} />
-            <i className="clip__pair-arrow">→</i>
+            <i className="clip__pair-arrow">
+              <Icon name="arrow-right" size={12} />
+            </i>
           </span>
         ) : (
           <video src={asset.src} muted preload="metadata" />
         )}
         {roomy && <span className="clip__name">{truncateName(clip.name, 24)}</span>}
         {roomy && !clip.ai && <span className="clip__dur">{formatDuration(clip.durationMs)}</span>}
-        {roomy && clip.ai && <span className="clip__ai-tag">✦ AI</span>}
+        {roomy && clip.ai && (
+          <span className="clip__ai-tag">
+            <Icon name="sparkle" size={9} /> AI
+          </span>
+        )}
         {roomy && staleness && staleness !== 'fresh' && (
           <span className="clip__stale-tag">
-            ⟳ {staleness === 'stale' ? 'SOURCES CHANGED' : 'SOURCE MISSING'}
+            <Icon name="refresh" size={9} />{' '}
+            {staleness === 'stale' ? 'SOURCES CHANGED' : 'SOURCE MISSING'}
           </span>
         )}
       </button>
@@ -1096,6 +1169,7 @@ function CutChip({
   generation,
   selected,
   offline,
+  compact,
   toPx,
   onSelect,
 }: {
@@ -1106,6 +1180,8 @@ function CutChip({
   generation?: Generation;
   selected: boolean;
   offline: boolean;
+  /** The clips beside it are too narrow for a button: draw a dot and let zoom bring it back. */
+  compact: boolean;
   toPx: (ms: number) => number;
   onSelect: () => void;
 }) {
@@ -1118,20 +1194,34 @@ function CutChip({
     busy && 'cutchip--run',
     busy && generation?.slow && 'cutchip--slow',
     failed && 'cutchip--fail',
+    compact && !busy && !failed && 'cutchip--compact',
   ]
     .filter(Boolean)
     .join(' ');
 
-  let label = '✦';
+  let status = '';
+  let content: ReactNode = <Icon name="sparkle" size={13} />;
   if (busy && generation) {
-    label =
+    status =
       generation.status === 'queued'
-        ? '◐ QUEUED'
+        ? 'QUEUED'
         : generation.progress > 0
-          ? `◐ ${Math.round(generation.progress * 100)}%`
-          : `◐ ${Math.round(generation.elapsedSecs)}s`;
+          ? `${Math.round(generation.progress * 100)}%`
+          : `${Math.round(generation.elapsedSecs)}s`;
+    content = (
+      <>
+        <Icon name="spinner" size={11} />
+        <span className="cutchip__label">{status}</span>
+      </>
+    );
   } else if (failed) {
-    label = '✕ FAILED';
+    status = 'FAILED';
+    content = (
+      <>
+        <Icon name="x" size={11} />
+        <span className="cutchip__label">{status}</span>
+      </>
+    );
   }
 
   return (
@@ -1139,7 +1229,7 @@ function CutChip({
       type="button"
       className={classes}
       style={{ left: toPx(cut.timeMs) }}
-      aria-label={`Select the cut between ${nameA} and ${nameB}`}
+      aria-label={`Select the cut between ${nameA} and ${nameB}${busy ? ` — rendering, ${status}` : failed ? ' — the render failed' : ''}`}
       // Mode-neutral: the chip cannot see the cut's pick, so it promises the bridge, not
       // where the finished clip lands.
       title={
@@ -1154,7 +1244,7 @@ function CutChip({
         onSelect();
       }}
     >
-      {label}
+      {content}
     </button>
   );
 }

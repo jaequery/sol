@@ -1,8 +1,10 @@
 import { referenceEligible, useEditor } from '../state/store';
 import { truncateName } from '../lib/timeline';
 import { ImageCompose } from './ImageCompose';
+import { Icon } from './Icon';
 
-const KIND_GLYPH = { photo: '▣', video: '▶', audio: '♪' } as const;
+/** How much of a filename the caption under a tile has room for at the bin's width. */
+const TILE_NAME_CHARS = 18;
 
 /** The imported media, its loading skeletons, and anything that failed to import. */
 export function MediaBin() {
@@ -19,6 +21,7 @@ export function MediaBin() {
   const placeAssetOnTimeline = useEditor((s) => s.placeAssetOnTimeline);
   const panel = useEditor((s) => s.imagePanel);
   const openImagePanel = useEditor((s) => s.openImagePanel);
+  const closeImagePanel = useEditor((s) => s.closeImagePanel);
   const toggleImageReference = useEditor((s) => s.toggleImageReference);
   const generations = useEditor((s) => s.generations);
   const cancelGeneration = useEditor((s) => s.cancelGeneration);
@@ -32,32 +35,47 @@ export function MediaBin() {
   const running = photoJobs.filter((g) => g.status === 'queued' || g.status === 'running');
   const failed = photoJobs.filter((g) => g.status === 'failed');
   const empty = list.length === 0 && importing === 0 && running.length === 0;
+  // While the compose panel is open the bin is a reference picker, so a tile stops being
+  // a drag source: adding to the timeline is not this screen's task, and two meanings for
+  // one press is how a control becomes unpredictable.
+  const composing = panel.open;
 
   return (
     <div className="col">
       <div className="panel-head">
-        Media <span className="right">{list.length || ''}</span>
-        {/* Importing is not a first-run-only affordance: it stays here however full the bin is. */}
-        <button
-          type="button"
-          className="panel-head__action"
-          aria-label="Import media"
-          onClick={() => void importViaDialog()}
-        >
-          + Import
-        </button>
-        {/* The other way media gets here. Its panel opens below, inside the bin, because
-            the bin's own photos are what a generation works on top of. */}
-        <button
-          type="button"
-          className="panel-head__action"
-          aria-label="Generate an image"
-          onClick={openImagePanel}
-        >
-          ✦ Generate
-        </button>
+        <span className="panel-head__title">Media</span>
+        {list.length > 0 && (
+          <span className="panel-head__count" aria-label={`${list.length} items`}>
+            {list.length}
+          </span>
+        )}
+        <div className="panel-head__actions">
+          {/* Importing is not a first-run-only affordance: it stays here however full the bin is. */}
+          <button
+            type="button"
+            className="panel-head__action"
+            aria-label="Import media"
+            title="Import photos, videos and sounds from disk"
+            onClick={() => void importViaDialog()}
+          >
+            <Icon name="import" size={13} /> Import
+          </button>
+          {/* The other way media gets here. Its panel opens below, inside the bin, because
+              the bin's own photos are what a generation works on top of. Pressed while
+              the panel is open, it closes it again. */}
+          <button
+            type="button"
+            className={`panel-head__action${composing ? ' panel-head__action--on' : ''}`}
+            aria-label="Generate an image"
+            aria-pressed={composing}
+            title="Ask Higgsfield for a new photo"
+            onClick={composing ? closeImagePanel : openImagePanel}
+          >
+            <Icon name="sparkle" size={13} /> Generate
+          </button>
+        </div>
       </div>
-      <div className="bin">
+      <div className="bin" data-composing={composing ? 'true' : undefined}>
         <ImageCompose />
 
         {problems.length > 0 && (
@@ -105,11 +123,7 @@ export function MediaBin() {
           <div className="bin__empty">
             <b>No media yet</b>
             Drop photos, videos and audio on the timeline, or{' '}
-            <button
-              type="button"
-              onClick={importViaDialog}
-              style={{ background: 'none', border: 0, padding: 0, textDecoration: 'underline', color: 'inherit' }}
-            >
+            <button type="button" className="linklike" onClick={importViaDialog}>
               import
             </button>
             .
@@ -120,10 +134,6 @@ export function MediaBin() {
           const onTimeline =
             clips.filter((c) => c.assetId === asset.id).length +
             audioTracks.filter((t) => t.assetId === asset.id).length;
-          // While the compose panel is open the bin is a reference picker, so the tile
-          // stops being a drag source: adding to the timeline is not this screen's task,
-          // and two meanings for one press is how a control becomes unpredictable.
-          const composing = panel.open;
           const pickable = composing && referenceEligible(asset);
           const at = panel.referenceAssetIds.indexOf(asset.id);
           const draggable = !composing && !asset.missing;
@@ -141,9 +151,9 @@ export function MediaBin() {
               }
               // A tile whose file is gone is not a source: a clip on it could only render as
               // "media offline" and would block the export. It keeps its ✕ and nothing else.
-              // Focusable, but deliberately not `role="button"` — the role is in App's
-              // INTERACTIVE list, which would take Delete and Backspace away from the
-              // selection for as long as a tile held focus.
+              // Focusable, but deliberately not `role="button"`: Space is the transport key
+              // everywhere in this app, and a button that swallowed it would take play
+              // away from the user for as long as a tile held focus.
               tabIndex={draggable ? 0 : undefined}
               aria-label={draggable ? `Add ${asset.name} to the timeline` : undefined}
               onPointerDown={(e) => {
@@ -161,59 +171,65 @@ export function MediaBin() {
                 placeAssetOnTimeline(asset.id);
               }}
             >
-              {asset.kind === 'photo' ? (
-                <img src={asset.src} alt="" draggable={false} />
-              ) : asset.kind === 'video' ? (
-                // `draggable={false}` for the same reason the photo above carries it: a
-                // native drag started here would strand the tile drag with no pointerup.
-                <video src={asset.src} muted preload="metadata" draggable={false} />
-              ) : (
-                <div className="bin__audio" aria-hidden="true">
-                  ♪
-                </div>
-              )}
-              <span className="kind" aria-hidden="true">
-                {KIND_GLYPH[asset.kind]}
-              </span>
+              <div className="bin__thumb">
+                {asset.missing ? null : asset.kind === 'photo' ? (
+                  <img src={asset.src} alt="" draggable={false} />
+                ) : asset.kind === 'video' ? (
+                  // `draggable={false}` for the same reason the photo above carries it: a
+                  // native drag started here would strand the tile drag with no pointerup.
+                  <video src={asset.src} muted preload="metadata" draggable={false} />
+                ) : (
+                  <div className="bin__audio" aria-hidden="true">
+                    <Icon name="music" size={22} />
+                  </div>
+                )}
+                {/* A photo is what a bin is for; only a sound and a video need saying. */}
+                {asset.kind !== 'photo' && !asset.missing && (
+                  <span className="kind" aria-hidden="true">
+                    <Icon name={asset.kind === 'video' ? 'play' : 'music'} size={10} />
+                    {asset.kind === 'video' ? 'VIDEO' : 'AUDIO'}
+                  </span>
+                )}
 
-              {/* The whole tile, as one real button — which is what makes `aria-pressed`
-                  mean something, and keeps the tile itself the plain focusable div the
-                  timeline drag needs it to be. */}
-              {pickable && (
-                <button
-                  type="button"
-                  className="bin__pick"
-                  aria-pressed={at >= 0}
-                  aria-label={`Use ${asset.name} as a reference`}
-                  onClick={() => toggleImageReference(asset.id)}
-                >
-                  {at >= 0 && (
-                    <span className="bin__pick-n" aria-hidden="true">
-                      {at + 1}
-                    </span>
-                  )}
-                </button>
-              )}
+                {/* The whole tile, as one real button — which is what makes `aria-pressed`
+                    mean something, and keeps the tile itself the plain focusable div the
+                    timeline drag needs it to be. */}
+                {pickable && (
+                  <button
+                    type="button"
+                    className="bin__pick"
+                    aria-pressed={at >= 0}
+                    aria-label={`Use ${asset.name} as a reference`}
+                    onClick={() => toggleImageReference(asset.id)}
+                  >
+                    {at >= 0 && (
+                      <span className="bin__pick-n" aria-hidden="true">
+                        {at + 1}
+                      </span>
+                    )}
+                  </button>
+                )}
 
-              {/* Removing is not the composing screen's task, and the ✕ would sit under
-                  the pick button anyway. */}
-              {!composing && (
-                <button
-                  type="button"
-                  className="bin__remove"
-                  aria-label={`Remove ${asset.name}`}
-                  title={
-                    onTimeline > 0
-                      ? `Remove ${asset.name} and its ${onTimeline} ${onTimeline === 1 ? 'clip' : 'clips'} on the timeline`
-                      : `Remove ${asset.name}`
-                  }
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={() => removeAsset(asset.id)}
-                >
-                  ✕
-                </button>
-              )}
-              <span className="label">{truncateName(asset.name, 22)}</span>
+                {/* Removing is not the composing screen's task, and the ✕ would sit under
+                    the pick button anyway. */}
+                {!composing && (
+                  <button
+                    type="button"
+                    className="bin__remove"
+                    aria-label={`Remove ${asset.name}`}
+                    title={
+                      onTimeline > 0
+                        ? `Remove ${asset.name} and its ${onTimeline} ${onTimeline === 1 ? 'clip' : 'clips'} on the timeline`
+                        : `Remove ${asset.name}`
+                    }
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={() => removeAsset(asset.id)}
+                  >
+                    <Icon name="x" size={13} />
+                  </button>
+                )}
+              </div>
+              <span className="bin__name">{truncateName(asset.name, TILE_NAME_CHARS)}</span>
             </div>
           );
         })}
@@ -222,7 +238,7 @@ export function MediaBin() {
         {running.map((generation) => (
           <div key={generation.id} className="bin__skeleton bin__skeleton--gen">
             <span className="bin__gen-mark" aria-label={`Generating ${generation.prompt}`}>
-              ✦
+              <Icon name="sparkle" size={14} />
             </span>
             <button
               type="button"
@@ -230,7 +246,7 @@ export function MediaBin() {
               aria-label={`Stop generating ${generation.prompt}`}
               onClick={() => void cancelGeneration(generation.id)}
             >
-              ✕
+              <Icon name="x" size={13} />
             </button>
           </div>
         ))}

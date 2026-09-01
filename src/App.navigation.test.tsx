@@ -1328,7 +1328,7 @@ describe('export dialog', () => {
     await user.click(screen.getByRole('button', { name: 'Export MP4' }));
     const dialog = await screen.findByRole('dialog', { name: 'Export' });
     // Nothing rendered, so it must not claim a render failed.
-    expect(within(dialog).getByText('✕ Export blocked')).toBeInTheDocument();
+    expect(within(dialog).getByText('Export blocked')).toBeInTheDocument();
     expect(within(dialog).queryByText(/render did not finish/i)).not.toBeInTheDocument();
     expect(within(dialog).getByText(/has no file on disk/)).toBeInTheDocument();
     // Try again would re-run the same pre-check and re-render the same message.

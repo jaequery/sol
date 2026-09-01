@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { useModalFocus } from './useModalFocus';
 import { CLI_INSTALL, CLI_LOGIN, CLI_WORKSPACE } from '../lib/backend';
 import { useEditor } from '../state/store';
 
@@ -48,6 +49,8 @@ function ConnectionForm() {
   // The check is a network round trip with a 30 s budget, so the button has to say it is
   // working — otherwise a slow answer is indistinguishable from a dead control.
   const [checking, setChecking] = useState(false);
+  const modal = useRef<HTMLDivElement>(null);
+  useModalFocus(modal);
 
   const stored = settings?.hasApiKey ?? false;
   const input = { apiKeyId, apiKeySecret, forgetApiKey, customModel };
@@ -71,19 +74,19 @@ function ConnectionForm() {
 
   return (
     <div className="scrim" role="dialog" aria-modal="true" aria-label="Settings">
-      <div className="modal">
+      <div className="modal" ref={modal}>
         <div className="modal__head">Settings</div>
         {/* The body's own hints name the CLI and the key, so the head stays a plain
             "Settings" with no second, redundant heading. */}
         <div className="modal__body">
           {settings?.configured ? (
-            <p className="hint" style={{ marginTop: 0 }}>
+            <p className="hint">
               Higgsfield CLI found at <code>{settings.cliPath}</code>. Renders run through it
               and bill your higgsfield.ai subscription — <b>Test connection</b> proves the
               sign-in and workspace without generating anything.
             </p>
           ) : (
-            <p className="hint" style={{ marginTop: 0 }}>
+            <p className="hint">
               Renders run through the official Higgsfield CLI, billed to your higgsfield.ai
               subscription — no CLI was found on this machine. In a terminal:
               <br />
@@ -145,7 +148,7 @@ function ConnectionForm() {
               }
               onChange={(e) => typeKeySecret(e.target.value)}
             />
-            <p className="hint" style={{ marginBottom: 0 }}>
+            <p className="hint">
               {forgetApiKey ? (
                 <>The stored key is removed on <b>Save</b>. Type a new one to keep a key.</>
               ) : (
@@ -159,7 +162,7 @@ function ConnectionForm() {
                 </>
               )}
             </p>
-            <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginTop: 7 }}>
+            <div className="field__actions">
               {stored && !forgetApiKey && (
                 <button
                   type="button"
@@ -193,7 +196,7 @@ function ConnectionForm() {
               placeholder="a model id from `higgsfield model list --video`"
               onChange={(e) => setCustomModel(e.target.value)}
             />
-            <p className="hint" style={{ marginBottom: 0 }}>
+            <p className="hint">
               Optional. Appears as the Model picker's <b>Custom</b> entry, so any model the
               CLI's catalog offers can be rendered with — without a new build. Blank hides
               the entry.

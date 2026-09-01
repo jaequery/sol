@@ -159,8 +159,12 @@ exist. The offline branches in the timeline, inspector and cut chip are dead cod
 
 **R10 — No modal has a focus trap or focus restoration.** Tab walks out of a dialog into the
 app behind the scrim. Autofocus was added here (B5); trapping is a separate a11y ticket.
+*(Resolved 2026-09-01 in the UX audit pass: `useModalFocus` traps Tab inside the settings and
+export dialogs and puts focus back on the opener when they close.)*
 
 **R11 — Toasts never auto-expire** and stack unbounded over the bottom-right of the timeline.
+*(Resolved 2026-09-01: an `ok` toast leaves after 6 s, errors wait to be dismissed, the stack
+scrolls inside the window and offers Clear all once there is more than one.)*
 
 **R12 — A destructive action has no confirmation anywhere**, by consistent design — including
 "Start over", which discards a successfully rendered (and paid-for) film leg.

@@ -1,4 +1,5 @@
 import { projectLabel, useEditor } from '../state/store';
+import { Icon } from './Icon';
 import { ProjectMenu } from './ProjectMenu';
 
 export function TitleBar() {
@@ -24,7 +25,7 @@ export function TitleBar() {
 
   return (
     <div className="titlebar" data-tauri-drag-region>
-      <span className="doc">
+      <span className="doc" data-tauri-drag-region>
         SolCut —{' '}
         {/*
           The project's name and the way to change which project it is, in one control. It
@@ -57,11 +58,11 @@ export function TitleBar() {
           </span>
         )}
       </span>
-      <span className="spacer" />
+      <span className="spacer" data-tauri-drag-region />
       <div className="actions">
         {rendering > 0 && (
           <span className="chip-run" role="status">
-            ◐ {rendering} rendering
+            <Icon name="spinner" size={12} /> {rendering} rendering
           </span>
         )}
         {/*
@@ -79,7 +80,13 @@ export function TitleBar() {
           // One render at a time, and say so: the progress dialog can be dismissed while
           // ffmpeg is still going, so the button is the only place left to show it.
           disabled={clips.length === 0 || exporting}
-          title={exporting ? 'A render is already running' : undefined}
+          title={
+            exporting
+              ? 'A render is already running'
+              : clips.length === 0
+                ? 'Put something on the timeline to export'
+                : 'Render the timeline to an MP4 file'
+          }
         >
           {exporting ? 'Exporting…' : 'Export MP4'}
         </button>

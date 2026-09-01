@@ -11,9 +11,19 @@ import { Timeline } from './components/Timeline';
 import { Toasts } from './components/Toasts';
 import { TitleBar } from './components/TitleBar';
 import { Transport } from './components/Transport';
-import { onExportProgress, onGenerationUpdate, onWindowClose } from './lib/backend';
+import { isDesktop, onExportProgress, onGenerationUpdate, onWindowClose } from './lib/backend';
 import { nextPlayheadMs } from './lib/preview-sync';
+import { canSplitAt, timelineEndMs } from './lib/timeline';
 import { liveGenerationKey, unsavedChanges, useEditor, type RestoreOutcome } from './state/store';
+
+/**
+ * Which window chrome this build is drawn under. On macOS the desktop app hides the
+ * native title bar and lets the traffic lights float over ours (tauri.conf.json), so the
+ * title bar has to leave them room; nowhere else does.
+ */
+function platform(): 'mac' | 'other' {
+  return isDesktop() && /Mac/.test(navigator.platform) ? 'mac' : 'other';
+}
 
 export function App() {
   useBackendEvents();
@@ -22,13 +32,14 @@ export function App() {
   useKeyboardShortcuts();
 
   return (
-    <div className="app">
+    <div className="app" data-platform={platform()}>
       <TitleBar />
       <div className="body">
         <MediaBin />
         <div className="col">
           <div className="panel-head">
-            Preview <span className="right">1920 × 1080 · 30 fps</span>
+            <span className="panel-head__title">Preview</span>
+            <span className="right">1920 × 1080 · 30 fps</span>
           </div>
           <Preview />
           <Transport />
@@ -287,7 +298,25 @@ function usePlaybackClock() {
 
 /** Anything that consumes a keypress itself — a shortcut must not talk over it. */
 const INTERACTIVE = 'button, a[href], input, select, textarea, [role="button"], [contenteditable]';
+/** Where a keypress is text. Delete here is a backspace, never a timeline edit. */
+const TEXT_ENTRY = 'input, textarea, select, [contenteditable]';
 
+/** The playhead's step under ← →, and with Shift held. Matches the clips' own nudge. */
+const STEP_MS = 100;
+const COARSE_STEP_MS = 1000;
+
+/**
+ * The editor's keys, all of them:
+ *
+ * - Space plays and pauses; Home and End cue the two ends; ← → step the playhead
+ *   (Shift for a second at a time); S splits at the playhead.
+ * - Delete and Backspace remove the selection — from anywhere that is not a text field,
+ *   so a clip reached by Tab can be deleted without first clicking away from it.
+ * - Escape closes the innermost layer.
+ *
+ * Space and the arrows stand back from any control that answers to them itself: a
+ * focused button is activated by Space, and a focused clip nudges itself with the arrows.
+ */
 function useKeyboardShortcuts() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -318,15 +347,36 @@ function useKeyboardShortcuts() {
       // The film panel is deliberately *not* in this list — it is non-modal by design, so
       // the editor stays usable while a film renders.
       if (store.settingsOpen || store.exportState || store.pendingSwitch) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
 
-      if (target?.closest(INTERACTIVE)) return;
+      const onControl = Boolean(target?.closest(INTERACTIVE));
+      const typing = Boolean(target?.closest(TEXT_ENTRY));
 
       if (e.code === 'Space') {
+        if (onControl) return;
         e.preventDefault();
         store.togglePlay();
-      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        return;
+      }
+      if (typing) return;
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
         e.preventDefault();
         store.deleteSelection();
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        store.setPlayhead(0);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        store.setPlayhead(timelineEndMs(store.clips, store.audioTracks));
+      } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !onControl) {
+        e.preventDefault();
+        const step = e.shiftKey ? COARSE_STEP_MS : STEP_MS;
+        store.setPlayhead(Math.max(0, store.playheadMs + (e.key === 'ArrowLeft' ? -step : step)));
+      } else if ((e.key === 's' || e.key === 'S') && !onControl) {
+        if (!canSplitAt(store.clips, store.playheadMs)) return;
+        e.preventDefault();
+        store.splitAtPlayhead();
       }
     };
     window.addEventListener('keydown', onKeyDown);

@@ -11,6 +11,7 @@
 import { useState } from 'react';
 import * as backend from '../lib/backend';
 import { useEditor } from '../state/store';
+import { Icon } from './Icon';
 
 export function ImageCompose() {
   const panel = useEditor((s) => s.imagePanel);
@@ -51,14 +52,27 @@ export function ImageCompose() {
           : `${attached} of ${limit} references — click a photo to add or remove it.`}
       </p>
 
-      <button
-        type="button"
-        className="linklike"
-        aria-expanded={showOptions}
-        onClick={() => setShowOptions(!showOptions)}
-      >
-        {showOptions ? 'Hide options' : 'Options'}
-      </button>
+      <div className="compose__row">
+        <button
+          type="button"
+          className="linklike"
+          aria-expanded={showOptions}
+          onClick={() => setShowOptions(!showOptions)}
+        >
+          <Icon name={showOptions ? 'chevron-down' : 'chevron-right'} size={12} />
+          {showOptions ? 'Hide options' : 'Options'}
+        </button>
+        {/* Named for what it closes: a bare "Cancel" would answer to the same query as the
+            settings dialog's, and the two mean different things. */}
+        <button
+          type="button"
+          className="linklike"
+          aria-label="Close the generate panel"
+          onClick={closeImagePanel}
+        >
+          Cancel
+        </button>
+      </div>
 
       {showOptions && (
         <>
@@ -113,17 +127,7 @@ export function ImageCompose() {
         disabled={!connected || panel.prompt.trim() === ''}
         onClick={() => startImageGeneration()}
       >
-        ✦ Generate image
-      </button>
-      {/* Named for what it closes: a bare "Cancel" would answer to the same query as the
-          settings dialog's, and the two mean different things. */}
-      <button
-        type="button"
-        className="linklike"
-        aria-label="Close the generate panel"
-        onClick={closeImagePanel}
-      >
-        Cancel
+        <Icon name="sparkle" size={14} /> Generate image
       </button>
     </div>
   );

@@ -217,7 +217,7 @@ describe('AI transitions between photos', () => {
     await act(async () => {
       emitGenerationUpdate({ generationId: id, status: 'running', progress: 0.46, elapsedSecs: 12, slow: false });
     });
-    expect(await screen.findByText('◐ 46%')).toBeInTheDocument();
+    expect(await screen.findByText('46%', { selector: '.cutchip__label' })).toBeInTheDocument();
   });
 
   it('3 — success stands the transition in the photos’ place as an editable AI video clip', async () => {
@@ -227,7 +227,7 @@ describe('AI transitions between photos', () => {
     await succeed(id, '/home/u/.cache/solcut/generated/out.mp4');
 
     const generated = await screen.findByRole('button', { name: /ai-.*\.mp4 video clip/i });
-    expect(within(generated).getByText('✦ AI')).toBeInTheDocument();
+    expect(within(generated).getByText('AI')).toBeInTheDocument();
 
     // Both stills left the track: the reel is exactly the animation's own length, with
     // no still padding on either side of it.
@@ -311,7 +311,7 @@ describe('AI transitions between photos', () => {
       });
     });
 
-    expect(await screen.findByText('✕ FAILED')).toBeInTheDocument();
+    expect(await screen.findByText('FAILED')).toBeInTheDocument();
     const alert = await screen.findByRole('alert');
     expect(within(alert).getByText('Rate limited')).toBeInTheDocument();
     // The report names the backend build that produced it — a failure from a stale
@@ -538,7 +538,7 @@ describe('AI transitions between photos', () => {
         clips: s.clips.map((c) => (c.id === b.id ? { ...c, id: 'clip_replacement' } : c)),
       });
     });
-    expect(await screen.findByText('⟳ SOURCES CHANGED')).toBeInTheDocument();
+    expect(await screen.findByText('SOURCES CHANGED')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /ai-.*\.mp4 video clip/i }));
     generateAnimation.mockClear();
@@ -556,7 +556,7 @@ describe('AI transitions between photos', () => {
 
     // Swapped in place: same shape, and the staleness tag is gone.
     expect(useEditor.getState().clips.map((c) => c.kind)).toEqual(['photo', 'video', 'photo']);
-    expect(screen.queryByText('⟳ SOURCES CHANGED')).not.toBeInTheDocument();
+    expect(screen.queryByText('SOURCES CHANGED')).not.toBeInTheDocument();
   });
 
   it('a long-running generation says so instead of leaving the user guessing', async () => {
@@ -853,7 +853,7 @@ describe('the default landing — the clip stands in the photos’ place', () =>
 
     // Its timeline face: the two source stills side by side, the ✦ AI tag, no video frame.
     const generated = await screen.findByRole('button', { name: /ai-.*\.mp4 video clip/i });
-    expect(within(generated).getByText('✦ AI')).toBeInTheDocument();
+    expect(within(generated).getByText('AI')).toBeInTheDocument();
     const face = screen.getByTestId(`clip-pair-${clips[0].id}`);
     const stills = face.querySelectorAll('img');
     const srcOf = (name: string) =>
@@ -1796,7 +1796,7 @@ describe('the 3-photo film wizard', () => {
     // Two AI video clips on the one track, no manual placement asked of anyone.
     const onTrack = screen.getAllByRole('button', { name: /video clip/i });
     expect(onTrack).toHaveLength(2);
-    expect(onTrack.every((clip) => within(clip).queryByText('✦ AI'))).toBe(true);
+    expect(onTrack.every((clip) => within(clip).queryByText('AI'))).toBe(true);
 
     const clips = useEditor.getState().clips;
     expect(clips.every((c) => c.kind === 'video' && c.ai)).toBe(true);
