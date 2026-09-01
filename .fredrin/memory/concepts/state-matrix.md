@@ -84,7 +84,7 @@ other clip along instead of stacking on it.
 | 36 | **Resizing** | Drag either edge handle | The clip's new length is previewed live. A tail growing into the next clip pushes it along; a shrinking tail leaves a gap rather than dragging anything back. A video's `trimStartMs` walks with its head, and the head moves the clip's own start so its tail stays on the frame it was on | Release |
 | 37 | **Resize refused at a limit** | Dragging past a bound | The edge simply stops: a video cannot pass the first or last frame of its source (nor grow at all before its length is probed), a clip cannot go under 100 ms, a photo cannot pass 10 minutes, and a head cannot be pulled back past 0:00 or past the clip in front of it | Drag the other way |
 | 38 | **Moving or trimming without a mouse** | Clip or handle focused, ← / → | The same edit at 100 ms a press, or 1 s with Shift — the body slides the clip, a handle moves that edge | Tab away |
-| 38a | **Typing a length** | Type seconds into the inspector's **Duration** box and press Enter, or leave the box | The tail edit of state 36 without the gesture, and bounded by exactly the same walls (37): growing pushes what is behind it, shrinking leaves a gap. It is the one control in the app that does not commit as you type — `""`, `"."` and `"1"` are all on the way to `"12"` — and a value that is not a length at all (empty, `abc`, `-3`) is refused rather than guessed at. A length the track will not give comes back clamped, with one line naming the wall it hit | Escape puts the box back; Enter or leaving it commits |
+| 38a | **Typing a length** | Type seconds into the inspector's **Duration** box and press Enter, or leave the box | The tail edit of state 36 without the gesture, and bounded by exactly the same walls (37): growing pushes what is behind it, shrinking leaves a gap. It is the one control in the app that does not commit as you type — `""`, `"."` and `"1"` are all on the way to `"12"` — and a value that is not a length at all (empty, `abc`, `-3`) is refused rather than guessed at, saying so instead of putting the old number back in silence. A length the track will not give comes back clamped, with one line naming the wall it hit. **Every one of those notes belongs to the length it was produced at** and retires the moment the element leaves it: a wall explained by a typed entry must not still be on screen after the user has answered it by dragging the handle somewhere else | Escape puts the box back; Enter or leaving it commits |
 
 ## 7. Audio lanes
 
@@ -98,7 +98,7 @@ Each lane holds one sound.
 | 40 | **Unsupported audio file** | A file no lane can play (e.g. `.aiff`) | The same inline error row as state 5, naming the file and the accepted formats; nothing is added | Dismiss, or re-import |
 | 41 | **Moving a sound** | Press its body and travel ≥ 4 px | The sound rides with the cursor along its lane — position previews live; it cannot start before 0:00. Arrow keys nudge it without a mouse | Release |
 | 42 | **Trimming a sound** | Drag either edge | Like a video: the head walks the in-point so the sound stays on the samples it was on, the tail cannot pass the end of the source, and nothing grows before the length is probed | Release |
-| 42a | **Typing a sound's length** | The inspector's **Duration** box on a selected lane | State 38a, on a lane: the tail edit only, so the sound stays where it was put, clamped to the file behind it. No lane pushes another — they float free and may overlap | Escape puts the box back; Enter or leaving it commits |
+| 42a | **Typing a sound's length** | The inspector's **Duration** box on a selected lane | State 38a in full, on a lane — the box, the walls and the notes' lifetime are one behaviour shared by every element with edge handles, never a per-type reimplementation. What differs is only what a lane is: the tail edit only, so the sound stays where it was put, clamped to the file behind it, and no lane pushes another — they float free and may overlap | Escape puts the box back; Enter or leaving it commits |
 | 43 | **Muted lane** | 🔇 on the lane or the inspector | The lane dims and struck through; it is silent in preview and left out of the export entirely | Unmute |
 | 44 | **Sound outlasts the visuals** | A lane's end passes the last clip | The ruler and playback extend to the end of the sound, so it is still heard; the *export* is the film's length, and the sound is cut there | Trim, or move it |
 | 45 | **Audio media offline** | Source file gone since import | The lane block turns red with "media offline"; export is blocked with a pointer to the file | Re-import, or remove |
@@ -196,11 +196,10 @@ own states; what the film underneath is doing is rows 61–67c.
 
 ## 11. The saved project
 
-The editor autosaves one project and puts it back at launch. There is no save action, so
-the whole feature is states rather than controls — and a working autosave is deliberately
-*not* one of them: it shows nothing at all, because the work simply being there at the next
-launch is the confirmation. Every row below is therefore a way it can go wrong, plus the
-one way it goes right.
+The editor autosaves the open project and puts it back at launch. A working autosave is
+deliberately invisible: it shows nothing at all, because the work simply being there at the
+next launch is the confirmation. Most rows below are therefore a way it can go wrong, plus
+the one way it goes right. Which project is open, and how that changes, is section 13.
 
 What is saved is the **document**: the media bin's paths, the clips, the audio lanes, and
 prompts typed at a cut. What is not is the **session**: an in-flight generation (its job
@@ -213,11 +212,13 @@ comes back with everything else.
 | 84 | **Restored** | App opened with a project stored | The last session's timeline, lanes and media bin, exactly as they were left. Nothing announces it — the title bar reads "n clips" as it always would, and the playhead starts at 0:00 | Keep editing |
 | 85 | **Nothing stored** | First ever launch, or the last session ended empty | Row 1, unchanged: the empty drop zone. No message, because nothing was lost | Drop a file |
 | 86 | **Media gone since last time** | A restored file is no longer at its path | The project still restores whole. One toast names up to three files and counts the rest; each tile in the bin dims and its tooltip gives the path; the preview over that clip reads **MEDIA OFFLINE** (row 5) and export refuses by name rather than dying inside ffmpeg | Re-import the file and put it back on the track |
-| 87 | **Saving failed** | The write was refused — disk full, permissions | One toast with the reason, then a persistent **Not saved** in the title bar beside the project name, in `--err`, whose tooltip repeats the reason. It is the only thing autosave ever puts on screen. It clears itself the moment a write succeeds | Fix the disk; the next edit retries |
+| 87 | **Saving failed** | The write was refused — disk full, permissions | One toast with the reason, then a persistent **Not saved** in the title bar beside the project name, in `--err`, whose tooltip repeats the reason. It clears itself the moment a write succeeds | Fix the disk; the next edit retries |
+| 87a | **Not saving at all** | The open project is one this build must not overwrite (rows 89, 90, 92) | The same **Not saved** chip, with a tooltip saying the project is left untouched. A session that is writing nothing has to say so, and this is the only place it can | Save as… or open another project — either one turns saving back on |
 | 88 | **Project unreadable** | The stored file is not a project this build knows | A toast — "The saved project could not be read. Starting empty. Anything you do now replaces it." The editor opens empty and saving stays **on**: this build owns that file, and being able to replace it is the only way out of a bad one | Keep working; the next edit overwrites it |
 | 89 | **Project from a newer SolCut** | The stored file's version is ahead of this build's | A toast saying so, an empty editor, and saving stays **off for the session** — overwriting it would destroy work a later build can still open | Update SolCut |
 | 90 | **The project could not be read at all** | The read itself failed | Same refusal as row 89: nothing is written this session, because what is on disk may be perfectly good and unreadable only right now | Restart, or fix the permissions |
 | 91 | **Edited before the restore landed** | A file dropped in the moment between launch and the read returning | The user's edit wins and stays on screen, but nothing is written over the stored project, and a toast says both | Restart SolCut to get the saved project back |
+| 92 | **Last project would not open** | The remembered project is gone, unreadable, or from a newer build | An empty editor that *still names that project* in the title bar, with **Not saved** beside it and a toast saying so. It does **not** fall back to the untitled scratch: that would clear the only pointer to a file which may be sitting on an unplugged drive, and overwrite whatever untitled work the scratch holds | Plug the drive back in and relaunch, or open another project |
 
 ## 12. Generating a photo (the compose panel)
 
@@ -245,3 +246,29 @@ else: the timeline is never edited on the user's behalf.
 | 101 | **Cancelled** | ✕ on a generating tile | The tile goes. Uploading a dozen references takes minutes, so the cancel is honoured the moment the submission is answered rather than a poll later; the job runs out on Higgsfield's side and its result is dropped | — |
 | 102 | **Failed** | The CLI or the job refused | An error row in the bin in the CLI's own words, with **Retry** (only when retrying could help) and **Dismiss**. The prompt and references are on the generation's record, so a retry re-sends exactly what the first attempt did — and a reference removed from the bin meanwhile is simply left out | Retry, or dismiss |
 | 103 | **Landed** | The job completed and the file downloaded | A new photo tile in the bin, named after the file itself, and one **Photo ready** toast. **Nothing on the timeline moves** — drag it on when you want it, exactly like an import. It is an ordinary photo asset with a real path, so it persists like any other (section 11) | Drag it to the track |
+
+## 13. Which project is open
+
+The title bar's project name is the control: clicking it opens a menu of **New project**,
+**Open project…** and **Save as…**. There is no plain Save, because autosave has already
+done it — the only save that means anything is the one that decides *where*, so that is the
+only one offered.
+
+A project that has a file is an ordinary `.solcut` anywhere on disk, and its **name is its
+filename**; one that does not is *untitled* and lives in the `project.json` scratch beside
+the settings until it is given a home. Switching writes the project being left before
+anything on screen changes, and the app reopens whichever project was last written.
+
+| # | State | Trigger | What is shown | Way out |
+|---|---|---|---|---|
+| 100 | **Untitled** | First run, or New project | The bar reads **Untitled project ▾**. Autosave goes to the scratch, exactly as it always did | Save as… |
+| 101 | **Named** | Save as…, or opening a project | The bar reads the file's name without its extension. Autosave follows the file, and Save as… again moves it somewhere new rather than leaving a copy behind | New, Open, Save as… |
+| 102 | **Switching, silently** | New or Open while the project has a file, or while the editor is empty | The project being left is written first, then the timeline, bin, lanes and playhead are replaced in one step. Nothing is announced — there was nothing to lose | — |
+| 103 | **Switching, asked** | New or Open while the project is *untitled and has work* — clips, lanes, or anything in the bin | A modal: **Save this project first?** with Cancel · Discard · **Save as…**. The one case with nowhere to flush to | Any of the three; Escape is Cancel |
+| 103a | **Discarded** | Discard at row 103 | The work goes, *and so does the copy autosave left in the scratch* — otherwise a later New would destroy it silently, and the word would have been a lie | — |
+| 103b | **Save panel dismissed** | Cancel in the native save panel, opened from row 103 | The modal stays exactly where it was and nothing switches, so a mis-click cannot take the work the modal exists to protect | Discard, Cancel, or Save as… again |
+| 104 | **Opened file will not read** | Open project… on a file that is not a project, or is from a newer build | A toast naming which, and **nothing changes** — the project you were in is still open and the file is untouched. Unlike the scratch (row 88), a file the user pointed at is never replaced | Pick another file |
+| 105 | **Already open** | Open project… on the project already open | Nothing at all — no read, no write, no swap. Reading it and then flushing over it would lose every edit since the last autosave, from both the screen and the file | — |
+| 106 | **The flush is refused** | The project being left cannot be written — full disk, unplugged drive | The switch is abandoned and the project stays on screen, with the failed write's own toast. Everything since the last autosave landed would have gone with it | Fix the disk and switch again |
+| 107 | **A render was in flight** | Any switch with a generation queued or running | It is cancelled. The clip it would land on is about to stop existing, so the job has nowhere to go, and paying for a result nothing can use is worse than stopping it | Regenerate in the project it belongs to |
+| 108 | **An import was in flight** | A switch while files are still being stat'ed | The import lands in the project it was started in, or nowhere. It never lands in the project that happens to be open when it returns | Re-import |

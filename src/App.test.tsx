@@ -66,7 +66,11 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   importPaths: vi.fn(async () => ({ imported: [], rejected: [] })),
   // Persistence is desktop-only and every suite starts from a fresh, empty project.
   loadProject: vi.fn(async () => null),
+  readProject: vi.fn(async () => null),
+  lastProjectPath: vi.fn(async () => null),
   saveProject: vi.fn(async () => {}),
+  pickProjectSavePath: vi.fn(async () => null),
+  pickProjectFile: vi.fn(async () => null),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
   generateImage: (input: backend.GenerateImageInput) => generateImage(input),
   cancelGeneration: vi.fn(async () => {}),
@@ -139,6 +143,10 @@ beforeEach(() => {
     settingsOpen: false,
     snapping: true,
     saveError: null,
+    projectPath: null,
+    saveBlocked: false,
+    pendingSwitch: null,
+    projectMenuOpen: false,
     // 100 px per second makes every drag below exactly 10 ms to the pixel.
     pxPerSecond: 100,
   });

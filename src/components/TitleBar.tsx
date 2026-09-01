@@ -1,4 +1,5 @@
-import { useEditor } from '../state/store';
+import { projectLabel, useEditor } from '../state/store';
+import { ProjectMenu } from './ProjectMenu';
 
 export function TitleBar() {
   const clips = useEditor((s) => s.clips);
@@ -7,6 +8,11 @@ export function TitleBar() {
   const runExport = useEditor((s) => s.runExport);
   const exporting = useEditor((s) => s.exporting);
   const saveError = useEditor((s) => s.saveError);
+  const saveBlocked = useEditor((s) => s.saveBlocked);
+  const projectPath = useEditor((s) => s.projectPath);
+  const menuOpen = useEditor((s) => s.projectMenuOpen);
+  const openProjectMenu = useEditor((s) => s.openProjectMenu);
+  const closeProjectMenu = useEditor((s) => s.closeProjectMenu);
 
   const rendering = Object.values(generations).filter(
     (g) => g.status === 'queued' || g.status === 'running',
@@ -15,15 +21,38 @@ export function TitleBar() {
   return (
     <div className="titlebar" data-tauri-drag-region>
       <span className="doc">
-        SolCut — <b>{clips.length === 0 ? 'Untitled project' : `${clips.length} clips`}</b>
+        SolCut —{' '}
+        {/*
+          The project's name and the way to change which project it is, in one control. It
+          used to be a clip count, which said nothing the timeline was not already showing
+          and had nowhere to go once the bar had a real name to carry.
+        */}
+        <span className="doc__project">
+          <button
+            type="button"
+            className="doc__name"
+            aria-expanded={menuOpen}
+            onClick={() => (menuOpen ? closeProjectMenu() : openProjectMenu())}
+          >
+            {projectLabel(projectPath)}
+          </button>
+          {menuOpen && <ProjectMenu />}
+        </span>
         {/*
           The whole visible surface of autosave. A working one shows nothing — the work
-          being there at the next launch is the confirmation — but a broken one has to say
-          so, or the session is lost without the user ever being told. The reason arrives
-          as a toast; this is what is still standing after the toast is dismissed.
+          being there at the next launch is the confirmation — but a session that is not
+          writing has to say so, or it is lost without the user ever being told. Two ways in:
+          a write that failed, and a project this build must not overwrite.
         */}
-        {saveError && (
-          <span className="doc__unsaved" role="status" title={saveError}>
+        {(saveError || saveBlocked) && (
+          <span
+            className="doc__unsaved"
+            role="status"
+            title={
+              saveError ??
+              'This project is left untouched — open another, or start a new one, to save again.'
+            }
+          >
             Not saved
           </span>
         )}

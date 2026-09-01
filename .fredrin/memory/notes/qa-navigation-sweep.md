@@ -17,6 +17,13 @@ closed by every exit they offer.
 > is the living inventory, and a surface added since carries its own coverage in the same
 > file, under the same console-error gate:
 >
+> - **The project menu and its switch confirmation** (SOL-KJAM4B) — the title bar's project
+>   name is now a button, and opens New project / Open project… / Save as…. Covered by
+>   `describe('the project menu')` and `describe('the switch confirmation')`: the menu opens
+>   and every item is live, Escape and an outside click each close it, the confirmation's
+>   three buttons all work, Escape is its Cancel, and the timeline behind it does not hear
+>   the keyboard. The bar's "no Import up here" test is re-run with the menu **open**, since
+>   the menu renders inside `.titlebar` and that assertion is scoped to it.
 > - **The compose panel** (SOL-UY06FH) — the media bin's `✦ Generate`. Covered by
 >   `describe('the compose panel')`: both bin-head actions open what they name, Cancel and
 >   Escape both close it without costing the draft, Escape closes the innermost layer
@@ -24,6 +31,12 @@ closed by every exit they offer.
 >   transition picker's `Model` label, `✦ Generate image` offers nothing it would refuse
 >   (empty prompt, no CLI), and a bin tile becomes a reference toggle whose remove button
 >   stands down — which is what keeps a `<button>` out of a `<button>`.
+> - **The Duration box** (SOL-VEKYO9) — the inspector's numeric length. Covered by
+>   `describe('a typed length')`, which is driven by a `RESIZABLE` table rather than one
+>   sampled clip: every case runs once per element type that wears edge handles, and a
+>   sibling test reads back every resize handle the app renders and fails if a resizable
+>   element type is missing from that table. That is what makes "any element type, not a
+>   subset" falsifiable instead of a sentence in a ticket.
 
 **Result: 19 defects found and fixed, 14 more found and documented below.**
 

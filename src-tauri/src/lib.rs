@@ -18,7 +18,7 @@ use solcut_higgsfield::{
 };
 use solcut_render::{ExportSpec, Progress, Renderer};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -260,7 +260,7 @@ fn save_settings(input: SettingsInput, state: State<'_, AppState>) -> Result<Set
     ))
 }
 
-/// The project the editor was last holding, or `null` when there is none.
+/// The untitled scratch project, or `null` when there is none.
 ///
 /// The shape is the frontend's — see `src/lib/project.ts`. This side only moves bytes.
 #[tauri::command]
@@ -268,10 +268,39 @@ fn load_project(state: State<'_, AppState>) -> Option<serde_json::Value> {
     project::load(&state.config_dir)
 }
 
-/// Store the project. Called on a debounce as the timeline changes, never by a save button.
+/// The project at a path the user picked, or why it could not be read.
+///
+/// Deliberately not `Option` like `load_project`: an Open that answered "nothing here" for
+/// a file the user chose would open an empty editor still aimed at that file, and the next
+/// autosave would write the emptiness over it.
 #[tauri::command]
-fn save_project(project: serde_json::Value, state: State<'_, AppState>) -> Result<(), String> {
-    project::save(&state.config_dir, &project)
+fn read_project(path: String) -> Result<serde_json::Value, String> {
+    project::read(Path::new(&path))
+}
+
+/// Where the last write went, so the next launch opens the project the user was in.
+#[tauri::command]
+fn last_project_path(state: State<'_, AppState>) -> Option<String> {
+    project::remembered(&state.config_dir)
+}
+
+/// Store the project — at `path`, or in the scratch when there is none.
+///
+/// Called on a debounce as the timeline changes, and by the switch itself. Recording where
+/// the write went is best-effort on purpose: the project is already safely on disk by then,
+/// and failing the whole save over the pointer would report a data loss that did not happen.
+#[tauri::command]
+fn save_project(
+    project: serde_json::Value,
+    path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    match path.as_deref() {
+        Some(path) => project::save_to(Path::new(path), &project)?,
+        None => project::save(&state.config_dir, &project)?,
+    }
+    let _ = project::remember(&state.config_dir, path.as_deref());
+    Ok(())
 }
 
 /// The Settings dialog's connection check: one free, read-only CLI call
@@ -883,6 +912,8 @@ pub fn run() {
             get_settings,
             save_settings,
             load_project,
+            read_project,
+            last_project_path,
             save_project,
             test_connection,
             test_api_key,

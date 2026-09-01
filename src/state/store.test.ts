@@ -23,7 +23,12 @@ import {
   type GenerateInput,
   type GenerationUpdate,
 } from '../lib/backend';
-import { MIN_CLIP_DURATION_MS, type Clip, type MediaAsset } from '../types/project';
+import {
+  MAX_PHOTO_DURATION_MS,
+  MIN_CLIP_DURATION_MS,
+  type Clip,
+  type MediaAsset,
+} from '../types/project';
 
 const generateAnimation = vi.fn(async (_input: GenerateInput) => {});
 const generateImage = vi.fn(async (_input: GenerateImageInput) => {});
@@ -48,7 +53,11 @@ vi.mock('../lib/backend', async (importOriginal) => ({
   importPaths: vi.fn(async () => ({ imported: [], rejected: [] })),
   // Persistence is desktop-only and every suite starts from a fresh, empty project.
   loadProject: vi.fn(async () => null),
+  readProject: vi.fn(async () => null),
+  lastProjectPath: vi.fn(async () => null),
   saveProject: vi.fn(async () => {}),
+  pickProjectSavePath: vi.fn(async () => null),
+  pickProjectFile: vi.fn(async () => null),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
   generateImage: (input: GenerateImageInput) => generateImage(input),
   cancelGeneration: (id: string) => cancelGeneration(id),
@@ -118,6 +127,10 @@ beforeEach(() => {
     settings: CONNECTED,
     settingsOpen: false,
     saveError: null,
+    projectPath: null,
+    saveBlocked: false,
+    pendingSwitch: null,
+    projectMenuOpen: false,
   });
 });
 
@@ -242,9 +255,24 @@ describe('a typed length', () => {
   it('is a no-op on an item that is no longer there', () => {
     pairOnTrack();
     const before = useEditor.getState().clips;
-    useEditor.getState().setClipDuration('clip_gone', 9000);
-    useEditor.getState().setAudioDuration('audio_gone', 9000);
+    expect(useEditor.getState().setClipDuration('clip_gone', 9000)).toBeNull();
+    expect(useEditor.getState().setAudioDuration('audio_gone', 9000)).toBeNull();
     expect(useEditor.getState().clips).toBe(before);
+  });
+
+  it('answers with the length it gave, which is how the box tells a clamp from a drag', () => {
+    const [a] = pairOnTrack();
+    // Given what was asked for.
+    expect(useEditor.getState().setClipDuration(a.id, 12_000)).toBe(12_000);
+    // And, at a wall, the length it settled on instead — a photo's 10-minute cap here.
+    expect(useEditor.getState().setClipDuration(a.id, 30 * 60_000)).toBe(MAX_PHOTO_DURATION_MS);
+
+    const track = audioTrack({ id: 'asset_m', name: 'theme.mp3' }, 0, 5000);
+    useEditor.setState({ audioTracks: [track] });
+    // Unprobed, so the only frames known to exist are the ones it already plays: the ask is
+    // refused and the answer is the length that stands, not the one that was wanted.
+    expect(useEditor.getState().setAudioDuration(track.id, 9000)).toBe(5000);
+    expect(useEditor.getState().setAudioDuration(track.id, 2000)).toBe(2000);
   });
 });
 

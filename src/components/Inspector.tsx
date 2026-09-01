@@ -90,6 +90,13 @@ export function Inspector() {
   );
 }
 
+/** What a commit left behind: the entry the box did not get its way with. */
+type DurationOutcome =
+  /** Not a length at all. `text` is what was typed, trimmed; `''` for an empty box. */
+  | { kind: 'rejected'; text: string; atMs: number }
+  /** A length, but not one the timeline would give. `askedMs` is what was wanted. */
+  | { kind: 'clamped'; askedMs: number; atMs: number };
+
 /**
  * The Duration box's state and behaviour, shared by the clip card and the audio card.
  *
@@ -99,31 +106,46 @@ export function Inspector() {
  * halfway through, and write the project file. So it commits on Enter and on leaving the
  * box, and Escape puts it back.
  *
- * `draft` is the whole of its state. While it is null the box shows the item's real length,
- * so a render landing or an edit made elsewhere shows through a box nobody is typing in —
- * no effect to keep the two in step. `asked` remembers what the last commit wanted, which
- * is how the card can tell that the timeline handed back something else.
+ * `draft` is the whole of what the box holds. While it is null the box shows the item's real
+ * length, so a render landing or an edit made elsewhere shows through a box nobody is typing
+ * in — no effect to keep the two in step.
+ *
+ * `outcome` is the one thing a commit leaves behind: what the entry did not get, and the
+ * length the item stood at while that was true. Every note is tied to that length, so it
+ * retires the moment the item moves off it — a clamp explained by "a photo is held for at
+ * most 10 minutes" must not still be on screen once the user has dragged the clip somewhere
+ * else entirely.
  */
-function useDurationField(valueMs: number, commit: (durationMs: number) => void) {
+function useDurationField(valueMs: number, commit: (durationMs: number) => number | null) {
   const [draft, setDraft] = useState<string | null>(null);
-  const [asked, setAsked] = useState<number | null>(null);
+  const [outcome, setOutcome] = useState<DurationOutcome | null>(null);
 
   const commitDraft = () => {
     if (draft === null) return;
+    const typed = draft.trim();
     const wanted = parseDurationInput(draft);
     // Whatever happens the box goes back to showing the item: a refused entry leaves the
     // length alone, and an accepted one is re-read from the timeline, clamps included.
     setDraft(null);
-    if (wanted === null) return;
-    setAsked(wanted);
-    commit(wanted);
+    if (wanted === null) {
+      setOutcome({ kind: 'rejected', text: typed, atMs: valueMs });
+      return;
+    }
+    const gotMs = commit(wanted);
+    setOutcome(
+      gotMs === null || gotMs === wanted ? null : { kind: 'clamped', askedMs: wanted, atMs: gotMs },
+    );
   };
+
+  // A note only speaks for the length it was produced at. Anything that has moved the item
+  // since — an edge drag, a regenerated transition landing — has answered the user already.
+  const standing = outcome !== null && outcome.atMs === valueMs ? outcome : null;
 
   return {
     value: draft ?? durationInputValue(valueMs),
     onChange: (e: ChangeEvent<HTMLInputElement>) => {
       setDraft(e.target.value);
-      setAsked(null);
+      setOutcome(null);
     },
     onBlur: commitDraft,
     onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => {
@@ -135,17 +157,26 @@ function useDurationField(valueMs: number, commit: (durationMs: number) => void)
         // without this it would clear the box and close the film panel behind it.
         e.stopPropagation();
         setDraft(null);
+        setOutcome(null);
       }
     },
     /** The length that was asked for and not given — `null` while the box got its way. */
-    refusedMs: asked !== null && asked !== valueMs ? asked : null,
+    refusedMs: standing?.kind === 'clamped' ? standing.askedMs : null,
+    /** What was typed that was not a length at all — `null` when the entry parsed. */
+    rejectedText: standing?.kind === 'rejected' ? standing.text : null,
   };
 }
 
 type DurationField = ReturnType<typeof useDurationField>;
 
+/** Where a card's note about the Duration box lives, so the box can point a reader at it. */
+function noteId(id: string): string {
+  return `${id}-note`;
+}
+
 /** The Duration row: the same `.kv` shape as the rows around it, with the value typed. */
 function DurationRow({ id, field }: { id: string; field: DurationField }) {
+  const described = field.refusedMs !== null || field.rejectedText !== null;
   return (
     <div className="kv">
       {/* The unit is on screen as the `s` beside the box; this is the same fact for a
@@ -163,11 +194,43 @@ function DurationRow({ id, field }: { id: string; field: DurationField }) {
           onChange={field.onChange}
           onBlur={field.onBlur}
           onKeyDown={field.onKeyDown}
+          // Points at the note below only while there is one, so the box is never described
+          // by an element that is not on the page.
+          aria-describedby={described ? noteId(id) : undefined}
         />
         <span aria-hidden="true">s</span>
       </span>
     </div>
   );
+}
+
+/**
+ * What the box has to say about the last thing typed into it, and nothing when it has
+ * nothing to say. `limit` is the card's own sentence for a wall — the walls differ by what
+ * kind of thing is selected — while a value that is not a length at all reads the same
+ * everywhere, because it is about the typing rather than the item.
+ *
+ * `role="status"` because a rejected entry is otherwise invisible: the box quietly puts the
+ * old number back, which a screen reader has no way to notice.
+ */
+function DurationNote({ id, field, limit }: { id: string; field: DurationField; limit: string }) {
+  if (field.rejectedText !== null) {
+    return (
+      <p className="hint" id={noteId(id)} role="status">
+        {field.rejectedText === ''
+          ? 'Type a length in seconds, like 4.5.'
+          : `“${field.rejectedText}” is not a length — type seconds, like 4.5.`}
+      </p>
+    );
+  }
+  if (field.refusedMs !== null) {
+    return (
+      <p className="hint" id={noteId(id)} role="status">
+        {limit}
+      </p>
+    );
+  }
+  return null;
 }
 
 /** Why the timeline would not run this clip for as long as was asked. */
@@ -230,9 +293,11 @@ function AudioCard({ track }: { track: AudioTrack }) {
         <button type="button" className="block-btn" onClick={() => toggleAudioMute(track.id)}>
           {track.muted ? '🔊 Unmute track' : '🔇 Mute track'}
         </button>
-        {duration.refusedMs !== null && (
-          <p className="hint">{audioLimitNote(track, assets[track.assetId]?.durationMs)}</p>
-        )}
+        <DurationNote
+          id="audio-duration"
+          field={duration}
+          limit={audioLimitNote(track, assets[track.assetId]?.durationMs)}
+        />
         <p className="hint">
           Type a length above, or drag the sound along its lane to move it and its edges to
           trim it. Muted tracks are left out of the export.
@@ -270,9 +335,12 @@ function InspectorBody({ clip }: { clip: Clip }) {
             </div>
           )}
 
-          {duration.refusedMs !== null && (
-            <p className="hint">{clipLimitNote(clip, assets[clip.assetId]?.durationMs)}</p>
-          )}
+          <DurationNote
+            id="clip-duration"
+            field={duration}
+            limit={clipLimitNote(clip, assets[clip.assetId]?.durationMs)}
+          />
+
           {!clip.transition && (
             <p className="hint">
               Put another clip beside this one and tap the ✦ on their cut to bridge them with
