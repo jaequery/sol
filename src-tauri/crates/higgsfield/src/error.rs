@@ -30,6 +30,12 @@ pub enum HiggsfieldError {
     #[error("unexpected CLI output: {0}")]
     Malformed(String),
 
+    /// A reference photo an image generation names cannot be sent: no file on disk, or
+    /// not a format Higgsfield takes as an image reference. Caught before anything is
+    /// submitted, so the card can name the photo rather than quote a CLI refusal.
+    #[error("{0}")]
+    BadReference(String),
+
     #[error("job failed: {0}")]
     JobFailed(String),
 
@@ -61,6 +67,7 @@ impl HiggsfieldError {
             Self::Http { .. } => "Could not download the result",
             Self::Transport(_) => "Network error",
             Self::Malformed(_) => "Unexpected CLI output",
+            Self::BadReference(_) => "Reference photo unavailable",
             Self::JobFailed(_) => "Generation failed",
             Self::Io(_) => "Could not save the result",
         }
@@ -140,7 +147,7 @@ pub type Result<T> = std::result::Result<T, HiggsfieldError>;
 pub enum JobState {
     Queued,
     Running { progress: f32 },
-    Succeeded { video_url: String },
+    Succeeded { result_url: String },
     Failed { message: String },
     Cancelled,
 }

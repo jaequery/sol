@@ -12,7 +12,8 @@ pub mod settings;
 use serde::{Deserialize, Serialize};
 use settings::{SettingsInput, SettingsView};
 use solcut_higgsfield::{
-    check_credential, Cli, GenerateRequest, HiggsfieldError, JobState, API_BASE_URL, DEFAULT_MODEL,
+    check_credential, Cli, GenerateRequest, HiggsfieldError, ImageRequest, JobState, API_BASE_URL,
+    DEFAULT_IMAGE_MODEL, DEFAULT_MODEL,
 };
 use solcut_render::{ExportSpec, Progress, Renderer};
 use std::collections::HashSet;
@@ -98,7 +99,8 @@ pub struct GenerationUpdate {
     pub job_id: Option<String>,
     pub elapsed_secs: u64,
     pub slow: bool,
-    /// Absolute path of the downloaded MP4, once there is one.
+    /// Absolute path of the downloaded result — an MP4 for a transition, a photo for an
+    /// image generation — once there is one.
     pub output_path: Option<String>,
     pub error: Option<GenerationError>,
 }
@@ -135,6 +137,29 @@ pub struct GenerateInput {
     /// travels with the request, it is not a saved setting.
     #[serde(default)]
     pub model: Option<String>,
+}
+
+/// One "make me a photo" request from the media bin's compose panel.
+///
+/// Unlike [`GenerateInput`] nothing here is a data URL: the references are the media
+/// bin's own files, and the CLI uploads a local path itself.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageGenerateInput {
+    /// Chosen by the frontend so it can match events to the generation that asked.
+    pub generation_id: String,
+    pub prompt: String,
+    /// Absolute paths of the bin photos to work from. Empty is a plain text-to-image
+    /// generation; anything else generates *on top of* those photos.
+    #[serde(default)]
+    pub references: Vec<String>,
+    /// The image job type the panel's selector chose for THIS request. Absent or blank,
+    /// it falls back to the default image model — the choice travels with the request.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// e.g. `16:9`. Absent or blank takes the model's own default.
+    #[serde(default)]
+    pub aspect_ratio: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -276,6 +301,33 @@ async fn generate_animation(
     Ok(())
 }
 
+/// Start an image generation. Like [`generate_animation`] it returns as soon as the job
+/// is handed to the CLI; everything after that arrives on `generation:update`.
+///
+/// The references are checked **before** anything is sent, so a photo that has moved —
+/// or one that never had a file, which a browser drop does not — is named here instead
+/// of failing anonymously inside the CLI's uploader.
+#[tauri::command]
+async fn generate_image(
+    app: AppHandle,
+    input: ImageGenerateInput,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let Some(cli) = Cli::find() else {
+        return Err(HiggsfieldError::NotInstalled.to_string());
+    };
+    let references =
+        solcut_higgsfield::validate_references(&input.references).map_err(|e| e.to_string())?;
+    state.forget(&input.generation_id);
+
+    let media_dir = state.media_dir.clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        run_image_generation(handle, cli, media_dir, input, references).await;
+    });
+    Ok(())
+}
+
 #[tauri::command]
 fn cancel_generation(id: String, state: State<'_, AppState>) {
     if let Ok(mut set) = state.cancelled.lock() {
@@ -395,8 +447,120 @@ async fn run_generation(app: AppHandle, cli: Cli, media_dir: PathBuf, input: Gen
         Err(e) => return fail(&app, &id, started, &e),
     };
 
-    emit(&app, update_for(&id, "queued", started.elapsed(), &job_id));
+    // Uploading the stills can take minutes, and the cancelled set is only consulted
+    // inside the poll loop below — so a cancellation during the upload is honoured the
+    // moment the submission is answered, rather than after a poll's worth of seconds.
+    if cancelled(&app, &id) {
+        emit(
+            &app,
+            update_for(&id, "cancelled", started.elapsed(), &job_id),
+        );
+        return;
+    }
 
+    emit(&app, update_for(&id, "queued", started.elapsed(), &job_id));
+    watch_job(app, cli, media_dir, id, job_id, started, Landing::Video).await;
+}
+
+/// One image generation: submit the prompt and any references, then watch the job.
+///
+/// Unlike the video path there are no temporary frames to write — the references are the
+/// user's own files, and the CLI uploads a local path itself.
+async fn run_image_generation(
+    app: AppHandle,
+    cli: Cli,
+    media_dir: PathBuf,
+    input: ImageGenerateInput,
+    references: Vec<PathBuf>,
+) {
+    let started = Instant::now();
+    let id = input.generation_id.clone();
+
+    let model = input
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or(DEFAULT_IMAGE_MODEL)
+        .to_string();
+    let request = ImageRequest {
+        model,
+        prompt: input.prompt.clone(),
+        references,
+        aspect_ratio: input
+            .aspect_ratio
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(str::to_string),
+    };
+
+    emit(
+        &app,
+        GenerationUpdate::new(&id, "queued", started.elapsed()),
+    );
+
+    // `create` uploads every reference before it answers, so this is the slow part.
+    let job_id = match cli.create_image(&request).await {
+        Ok(job_id) => job_id,
+        Err(e) => return fail(&app, &id, started, &e),
+    };
+
+    // Fourteen references is a long upload to cancel into: honour it here rather than
+    // starting to watch a job the user has already given up on.
+    if cancelled(&app, &id) {
+        emit(
+            &app,
+            update_for(&id, "cancelled", started.elapsed(), &job_id),
+        );
+        return;
+    }
+
+    emit(&app, update_for(&id, "queued", started.elapsed(), &job_id));
+    watch_job(app, cli, media_dir, id, job_id, started, Landing::Photo).await;
+}
+
+/// What a finished job's result URL turns into on disk — the one thing a video job and a
+/// photo job still do differently once both are queued.
+#[derive(Debug, Clone, Copy)]
+enum Landing {
+    /// An MP4 at `{media_dir}/{id}.mp4`.
+    Video,
+    /// A photo at `{media_dir}/{id}.{ext}`, the extension named by what the server
+    /// actually served — the media bin classifies by extension and nothing else.
+    Photo,
+}
+
+impl Landing {
+    async fn fetch(
+        self,
+        cli: &Cli,
+        media_dir: &std::path::Path,
+        id: &str,
+        url: &str,
+    ) -> Result<PathBuf, HiggsfieldError> {
+        match self {
+            Self::Video => {
+                let dest = media_dir.join(format!("{id}.mp4"));
+                cli.download(url, &dest).await?;
+                Ok(dest)
+            }
+            Self::Photo => cli.download_image(url, media_dir, id).await,
+        }
+    }
+}
+
+/// Watch an accepted job to a terminal state, reporting every step on
+/// `generation:update` — shared verbatim by both kinds of generation.
+async fn watch_job(
+    app: AppHandle,
+    cli: Cli,
+    media_dir: PathBuf,
+    id: String,
+    job_id: String,
+    started: Instant,
+    landing: Landing,
+) {
     let mut interval = POLL_INTERVAL_START;
     loop {
         if wait_unless_cancelled(&app, &id, interval).await {
@@ -440,10 +604,9 @@ async fn run_generation(app: AppHandle, cli: Cli, media_dir: PathBuf, input: Gen
             Ok(JobState::Failed { message }) => {
                 return fail(&app, &id, started, &HiggsfieldError::JobFailed(message));
             }
-            Ok(JobState::Succeeded { video_url }) => {
-                let dest = media_dir.join(format!("{id}.mp4"));
-                match cli.download(&video_url, &dest).await {
-                    Ok(_) => {
+            Ok(JobState::Succeeded { result_url }) => {
+                match landing.fetch(&cli, &media_dir, &id, &result_url).await {
+                    Ok(dest) => {
                         let mut u = update_for(&id, "succeeded", started.elapsed(), &job_id);
                         u.progress = 1.0;
                         u.output_path = Some(dest.display().to_string());
@@ -535,6 +698,7 @@ pub fn run() {
             import_media,
             supported_extensions,
             generate_animation,
+            generate_image,
             cancel_generation,
             ffmpeg_available,
             capture_video_frame,
@@ -575,5 +739,26 @@ mod tests {
         )
         .expect("input with a model choice");
         assert_eq!(input.model.as_deref(), Some("seedance_2_5"));
+    }
+
+    /// The compose panel's two shapes: a prompt on its own, and a prompt working on top
+    /// of the user's own photos. Every optional field has to survive being left out, or
+    /// the plainest possible generation fails to deserialize.
+    #[test]
+    fn an_image_input_carries_a_prompt_alone_or_a_prompt_and_references() {
+        let bare: ImageGenerateInput =
+            serde_json::from_str(r#"{"generationId":"gen_1","prompt":"a quiet beach"}"#)
+                .expect("a prompt on its own");
+        assert!(bare.references.is_empty());
+        assert!(bare.model.is_none());
+        assert!(bare.aspect_ratio.is_none());
+
+        let full: ImageGenerateInput = serde_json::from_str(
+            r#"{"generationId":"gen_2","prompt":"on top of these","references":["/p/a.png","/p/b.jpg"],"model":"nano_banana_2","aspectRatio":"16:9"}"#,
+        )
+        .expect("a prompt with references");
+        assert_eq!(full.references, vec!["/p/a.png", "/p/b.jpg"]);
+        assert_eq!(full.model.as_deref(), Some("nano_banana_2"));
+        assert_eq!(full.aspect_ratio.as_deref(), Some("16:9"));
     }
 }

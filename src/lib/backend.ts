@@ -83,6 +83,23 @@ export interface GenerationUpdate {
   error?: { title: string; message: string; retryable: boolean; build?: string };
 }
 
+/**
+ * One "make me a photo" request from the media bin's compose panel.
+ *
+ * Nothing here is a data URL: the references are the bin's own files, and the CLI
+ * uploads a local path itself.
+ */
+export interface GenerateImageInput {
+  generationId: string;
+  prompt: string;
+  /** Absolute paths of the bin photos to work from. Empty is plain text-to-image. */
+  references: string[];
+  /** The CLI image job type chosen for THIS request. */
+  model: string;
+  /** e.g. `16:9`. */
+  aspectRatio: string;
+}
+
 export interface ExportProgress {
   stage: string;
   fraction: number;
@@ -148,6 +165,118 @@ export function modelJob(modelId: string, customModel?: string): string {
 export function modelLabel(modelId: string): string {
   if (modelId === CUSTOM_MODEL_ID) return 'Custom model';
   return RENDER_MODELS.find((m) => m.id === modelId)?.label ?? modelId;
+}
+
+/** One model the compose panel offers, with the limits its own CLI schema publishes. */
+export interface ImageModel {
+  /** Stable id — what the store holds and a generation records. */
+  id: string;
+  label: string;
+  /** The CLI job type, e.g. `nano_banana_2`. */
+  job: string;
+  /**
+   * The aspect ratios this model accepts. Per model rather than one shared list,
+   * because the sets genuinely differ and sending a value a model does not publish
+   * fails the whole generation.
+   */
+  aspects: string[];
+  /** How many of the user's own photos it takes as references. */
+  maxReferences: number;
+}
+
+/**
+ * The image models the compose panel offers, in menu order.
+ *
+ * Every entry's contract is the same: a prompt, and any number of the user's own photos
+ * to work on top of — so the panel means the same thing whichever is chosen. The flags,
+ * the reference caps and the aspect sets are the CLI's own, from its `MODELS.md`; the
+ * CLI checks each id against the live catalog, so a model a plan does not carry fails by
+ * name rather than silently.
+ */
+export const IMAGE_MODELS: ImageModel[] = [
+  {
+    id: 'nano-banana-pro',
+    label: 'Nano Banana Pro',
+    job: 'nano_banana_2',
+    aspects: ['1:1', '3:2', '2:3', '4:3', '3:4', '4:5', '5:4', '9:16', '16:9', '21:9'],
+    maxReferences: 14,
+  },
+  {
+    id: 'seedream-4.5',
+    label: 'Seedream 4.5',
+    job: 'seedream_v4_5',
+    aspects: ['1:1', '4:3', '16:9', '3:2', '21:9', '3:4', '9:16', '2:3'],
+    maxReferences: 14,
+  },
+  {
+    id: 'flux-2',
+    label: 'FLUX.2',
+    job: 'flux_2',
+    aspects: ['1:1', '4:3', '3:4', '16:9', '9:16'],
+    maxReferences: 14,
+  },
+  {
+    id: 'gpt-image-2',
+    label: 'GPT Image 2',
+    job: 'gpt_image_2',
+    aspects: ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3'],
+    maxReferences: 14,
+  },
+];
+
+/** What a photo is generated with when the panel's selector is never touched. */
+export const DEFAULT_IMAGE_MODEL_ID = 'nano-banana-pro';
+
+/**
+ * The frame the editor exports at, so a generated photo drops onto the timeline without
+ * bars down the sides. Every offered model accepts it.
+ */
+export const DEFAULT_IMAGE_ASPECT = '16:9';
+
+/** The order ratios are offered in, so the menu reads the same whichever model is on. */
+const ASPECT_ORDER = ['16:9', '1:1', '9:16', '4:3', '3:4', '3:2', '2:3', '4:5', '5:4', '21:9'];
+
+function imageModel(modelId: string): ImageModel {
+  return IMAGE_MODELS.find((m) => m.id === modelId) ?? IMAGE_MODELS[0];
+}
+
+/** The CLI job id an image model choice resolves to at generation time. */
+export function imageModelJob(modelId: string): string {
+  return imageModel(modelId).job;
+}
+
+/**
+ * A known image model id, falling back to the default — so a choice recorded by an older
+ * build can never make a request carry a model the CLI has never heard of.
+ */
+export function imageModelId(modelId: string): string {
+  return imageModel(modelId).id;
+}
+
+/** The human name for an image model choice. */
+export function imageModelLabel(modelId: string): string {
+  return imageModel(modelId).label;
+}
+
+/** How many references the chosen model will take. */
+export function imageReferenceLimit(modelId: string): number {
+  return imageModel(modelId).maxReferences;
+}
+
+/** The ratios the chosen model accepts, in the menu's own order. */
+export function imageAspects(modelId: string): string[] {
+  const accepted = imageModel(modelId).aspects;
+  return ASPECT_ORDER.filter((a) => accepted.includes(a));
+}
+
+/**
+ * The aspect a request actually carries: the pick when the chosen model accepts it, and
+ * otherwise the default — so switching models can never send a ratio the new one refuses.
+ */
+export function imageAspectFor(modelId: string, aspect: string): string {
+  const accepted = imageAspects(modelId);
+  if (accepted.includes(aspect)) return aspect;
+  return accepted.includes(DEFAULT_IMAGE_ASPECT) ? DEFAULT_IMAGE_ASPECT : accepted[0];
 }
 
 export function isDesktop(): boolean {
@@ -227,6 +356,15 @@ export async function importPaths(paths: string[]): Promise<ImportResult> {
 export async function generateAnimation(input: GenerateInput): Promise<void> {
   requireDesktop();
   await invoke('generate_animation', { input });
+}
+
+/**
+ * Start one image generation. Answers as soon as the CLI has the job; everything after
+ * that arrives on the same `generation:update` events a transition uses.
+ */
+export async function generateImage(input: GenerateImageInput): Promise<void> {
+  requireDesktop();
+  await invoke('generate_image', { input });
 }
 
 /**

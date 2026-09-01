@@ -9,74 +9,12 @@
 #![cfg(unix)]
 
 mod mock_server;
+mod stub_cli;
 
 use mock_server::{MockServer, Response};
 use solcut_higgsfield::{Cli, GenerateRequest, HiggsfieldError, JobState};
 use std::path::{Path, PathBuf};
-
-/// A scratch directory holding the stub binary, its canned answers, and its argv log.
-struct StubCli {
-    dir: PathBuf,
-}
-
-impl StubCli {
-    fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("solcut-stub-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("stub dir");
-
-        // The stub answers each subcommand from a canned file, `get` from a numbered
-        // sequence, and appends every argv to a log for the assertions below.
-        let script = r#"#!/bin/sh
-dir="$(dirname "$0")"
-printf '%s\n' "$*" >> "$dir/argv.log"
-case "$1 $2" in
-  "generate create")
-    [ -f "$dir/create.err" ] && { cat "$dir/create.err" >&2; exit 1; }
-    cat "$dir/create.out"
-    ;;
-  "generate get")
-    n=$(cat "$dir/gets" 2>/dev/null || echo 0); n=$((n+1)); printf '%s' "$n" > "$dir/gets"
-    f="$dir/get.$n"; [ -f "$f" ] || f="$dir/get.last"
-    cat "$f"
-    ;;
-  "model list")
-    [ -f "$dir/models.err" ] && { cat "$dir/models.err" >&2; exit 1; }
-    cat "$dir/models.out"
-    ;;
-  *)
-    echo "unexpected: $*" >&2; exit 2
-    ;;
-esac
-"#;
-        let binary = dir.join("higgsfield");
-        std::fs::write(&binary, script).expect("stub script");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        Self { dir }
-    }
-
-    fn cli(&self) -> Cli {
-        Cli::new(self.dir.join("higgsfield"))
-    }
-
-    fn put(&self, name: &str, content: &str) {
-        std::fs::write(self.dir.join(name), content).expect("stub answer");
-    }
-
-    fn argv_log(&self) -> String {
-        std::fs::read_to_string(self.dir.join("argv.log")).unwrap_or_default()
-    }
-}
-
-impl Drop for StubCli {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
+use stub_cli::StubCli;
 
 fn request(dir: &Path) -> GenerateRequest {
     GenerateRequest {
@@ -113,7 +51,7 @@ async fn a_job_is_created_polled_and_its_result_downloaded() {
         cli.job_state(&job_id).await.unwrap(),
         JobState::Running { progress: 0.0 }
     );
-    let JobState::Succeeded { video_url: url } = cli.job_state(&job_id).await.unwrap() else {
+    let JobState::Succeeded { result_url: url } = cli.job_state(&job_id).await.unwrap() else {
         panic!("expected completion");
     };
     assert_eq!(url, video_url);

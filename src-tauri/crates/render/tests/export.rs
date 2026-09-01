@@ -525,7 +525,11 @@ async fn grabs_one_anchor_still_out_of_a_video() {
 
     // A real JPEG: SOI marker, and enough bytes to be a picture rather than a header.
     assert_eq!(&jpeg[..2], &[0xff, 0xd8], "not a JPEG");
-    assert!(jpeg.len() > 2000, "suspiciously small: {} bytes", jpeg.len());
+    assert!(
+        jpeg.len() > 2000,
+        "suspiciously small: {} bytes",
+        jpeg.len()
+    );
 
     // Cover-cropped to the anchor size, so it arrives at Higgsfield shaped like a photo
     // still — the 640x480 source is scaled up and cropped, never letterboxed.

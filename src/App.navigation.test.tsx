@@ -21,9 +21,12 @@ import * as backend from './lib/backend';
 import type { GenerateInput, GenerationUpdate } from './lib/backend';
 
 const generateAnimation = vi.fn(async (_input: GenerateInput) => {});
+const generateImage = vi.fn(async (_input: backend.GenerateImageInput) => {});
 let emitGenerationUpdate: (u: GenerationUpdate) => void = () => {};
 
-const STORED_SETTINGS = {
+// Typed, so a test can reach the states the shape allows — `cliPath: null` on a machine
+// with no CLI — rather than only the ones this literal happens to inhabit.
+const STORED_SETTINGS: backend.SettingsView = {
   configured: true,
   cliPath: '/usr/local/bin/higgsfield',
   customModel: '',
@@ -50,6 +53,7 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   loadProject: vi.fn(async () => null),
   saveProject: vi.fn(async () => {}),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
+  generateImage: (input: backend.GenerateImageInput) => generateImage(input),
   cancelGeneration: vi.fn(async () => {}),
   ffmpegAvailable: () => ffmpegProbe(),
   exportTimeline: vi.fn(),
@@ -330,6 +334,144 @@ describe('media bin', () => {
     await user.click(screen.getByRole('button', { name: 'Remove a.jpg' }));
     expect(useEditor.getState().clips).toHaveLength(0);
     expect(screen.getByText('No media yet')).toBeInTheDocument();
+  });
+});
+
+// ------------------------------------------------------------------------ compose panel
+
+describe('the compose panel', () => {
+  const PROMPT = 'Describe the image to generate';
+
+  async function open(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole('button', { name: 'Generate an image' }));
+    return screen.getByLabelText(PROMPT);
+  }
+
+  it('the bin head carries both ways media gets in, and each opens what it names', async () => {
+    const user = userEvent.setup();
+    await mount();
+
+    vi.mocked(backend.pickMediaFiles).mockResolvedValue([]);
+    await user.click(screen.getByRole('button', { name: 'Import media' }));
+    expect(backend.pickMediaFiles).toHaveBeenCalledTimes(1);
+
+    await open(user);
+    expect(screen.getByRole('group', { name: 'Generate an image' })).toBeInTheDocument();
+  });
+
+  it('Cancel and Escape both close it, and neither costs the draft', async () => {
+    const user = userEvent.setup();
+    await mount();
+
+    const prompt = await open(user);
+    await user.type(prompt, 'a lighthouse');
+    await user.click(screen.getByRole('button', { name: 'Close the generate panel' }));
+    expect(screen.queryByLabelText(PROMPT)).not.toBeInTheDocument();
+
+    await open(user);
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(screen.queryByLabelText(PROMPT)).not.toBeInTheDocument();
+
+    await open(user);
+    expect(screen.getByLabelText(PROMPT)).toHaveValue('a lighthouse');
+  });
+
+  it('Escape closes the innermost layer first, so the panel outlives a dialog', async () => {
+    const user = userEvent.setup();
+    await mount();
+
+    await open(user);
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText(PROMPT)).toBeInTheDocument();
+  });
+
+  it('Options discloses two controls and hides them again', async () => {
+    const user = userEvent.setup();
+    await mount();
+    await open(user);
+
+    const toggle = () => screen.getByRole('button', { name: /options/i });
+    expect(toggle()).toHaveAttribute('aria-expanded', 'false');
+    await user.click(toggle());
+    expect(toggle()).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByLabelText('Image model')).toBeInTheDocument();
+    expect(screen.getByLabelText('Aspect ratio')).toBeInTheDocument();
+
+    await user.click(toggle());
+    expect(screen.queryByLabelText('Image model')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The image picker is labelled "Image model" precisely so it can share the screen with
+   * the transition picker, which is queried as "Model" by four tests in the flow suite.
+   */
+  it('its model picker does not answer to the transition picker’s name', async () => {
+    const user = userEvent.setup();
+    await mount();
+    await dropPhotoPair();
+    await user.click(
+      screen.getByRole('button', { name: 'Select the cut between sunset.jpg and cliff.png' }),
+    );
+    await open(user);
+    await user.click(screen.getByRole('button', { name: /options/i }));
+
+    // Both on screen at once, and each still reachable by its own label.
+    expect(screen.getByLabelText('Model')).toBeInTheDocument();
+    expect(screen.getByLabelText('Image model')).toBeInTheDocument();
+  });
+
+  it('Generate offers nothing it would refuse: empty prompt, or no CLI', async () => {
+    const user = userEvent.setup();
+    await mount();
+
+    const prompt = await open(user);
+    expect(screen.getByRole('button', { name: /generate image/i })).toBeDisabled();
+    await user.type(prompt, 'a lighthouse');
+    expect(screen.getByRole('button', { name: /generate image/i })).toBeEnabled();
+
+    // The same control, on a machine with no CLI, offers nothing.
+    await user.click(screen.getByRole('button', { name: 'Close the generate panel' }));
+    storedSettings = { ...STORED_SETTINGS, configured: false, cliPath: null };
+    await act(async () => {
+      await useEditor.getState().loadSettings();
+    });
+    await open(user);
+    expect(screen.getByRole('button', { name: /generate image/i })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Open settings →' }));
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+  });
+
+  /**
+   * While the panel is open a photo tile is a toggle, so its remove button has to go:
+   * a `<button>` inside a `<button>` is invalid DOM, and the console gate above is what
+   * makes that falsifiable rather than a matter of opinion.
+   */
+  it('a tile is a reference toggle while composing, and its remove button stands down', async () => {
+    const user = userEvent.setup();
+    await mount();
+    mockPick('/photos/a.jpg', 'a.jpg', 'photo');
+    await user.click(screen.getByRole('button', { name: 'Import media' }));
+    await screen.findByRole('button', { name: 'Remove a.jpg' });
+
+    await open(user);
+    expect(screen.queryByRole('button', { name: 'Remove a.jpg' })).not.toBeInTheDocument();
+    const tile = screen.getByRole('button', { name: 'Use a.jpg as a reference' });
+    expect(tile).toHaveAttribute('aria-pressed', 'false');
+    await user.click(tile);
+    expect(screen.getByRole('button', { name: 'Use a.jpg as a reference' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    // Closing hands the tile back its remove button.
+    await user.click(screen.getByRole('button', { name: 'Close the generate panel' }));
+    expect(screen.getByRole('button', { name: 'Remove a.jpg' })).toBeInTheDocument();
   });
 });
 

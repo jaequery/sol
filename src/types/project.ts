@@ -98,10 +98,11 @@ export type TransitionMode = 'insert' | 'replace';
 export const DEFAULT_TRANSITION_MODE: TransitionMode = 'replace';
 
 /**
- * What a generation is for: the cut between two adjacent photos, or one leg of a
- * three-photo film. Success routes on this — a cut result is inserted at the cut (or
- * swapped over `replacesClipId` when it is a regeneration of an existing transition clip),
- * and a film leg's result is parked in film state until every leg is in.
+ * What a generation is for: the cut between two adjacent photos, one leg of a
+ * three-photo film, or a photo asked for in the media bin. Success routes on this — a cut
+ * result is inserted at the cut (or swapped over `replacesClipId` when it is a
+ * regeneration of an existing transition clip), a film leg's result is parked in film
+ * state until every leg is in, and an image lands in the bin and nowhere else.
  */
 export type GenerationTarget =
   | {
@@ -119,6 +120,17 @@ export type GenerationTarget =
       endAssetId: string;
       /** 0 for photo 1 -> 2, 1 for photo 2 -> 3. Results are keyed by this, never by arrival. */
       filmSegmentIndex: number;
+    }
+  | {
+      kind: 'image';
+      /**
+       * The bin photos this one was generated on top of, in the order they were sent.
+       * Empty is a plain text-to-image generation. Kept so a retry can re-send exactly
+       * what the first attempt did, and dangling ids are simply skipped.
+       */
+      referenceAssetIds: string[];
+      /** The aspect ratio the request carried. */
+      aspect: string;
     };
 
 export interface Generation {
@@ -152,6 +164,15 @@ export type CutGeneration = GenerationOf<'cut'>;
  * half-edits the project.
  */
 export type FilmGeneration = GenerationOf<'film'>;
+
+/**
+ * A photo asked for in the media bin.
+ *
+ * Its result lands in the bin as an ordinary photo asset and nowhere else — the timeline
+ * is never edited on the user's behalf, so a generation finishing mid-edit changes
+ * nothing they were working on.
+ */
+export type ImageGeneration = GenerationOf<'image'>;
 
 export interface Clip {
   id: string;

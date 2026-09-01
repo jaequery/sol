@@ -8,7 +8,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useEditor } from './store';
+import { emptyImagePanel, useEditor } from './store';
 import {
   audioTrack,
   bridgeableCuts,
@@ -17,10 +17,16 @@ import {
   videoClip,
 } from '../lib/timeline';
 import { assembleFilm, defaultFilmPrompt, FILM_SEGMENT_DURATION_MS } from '../lib/film';
-import { DEFAULT_MODEL_ID, type GenerateInput, type GenerationUpdate } from '../lib/backend';
+import {
+  DEFAULT_MODEL_ID,
+  type GenerateImageInput,
+  type GenerateInput,
+  type GenerationUpdate,
+} from '../lib/backend';
 import { MIN_CLIP_DURATION_MS, type Clip, type MediaAsset } from '../types/project';
 
 const generateAnimation = vi.fn(async (_input: GenerateInput) => {});
+const generateImage = vi.fn(async (_input: GenerateImageInput) => {});
 const cancelGeneration = vi.fn(async (_id: string) => {});
 
 // The real module's pure exports (the model registry above all) come through untouched;
@@ -44,6 +50,7 @@ vi.mock('../lib/backend', async (importOriginal) => ({
   loadProject: vi.fn(async () => null),
   saveProject: vi.fn(async () => {}),
   generateAnimation: (input: GenerateInput) => generateAnimation(input),
+  generateImage: (input: GenerateImageInput) => generateImage(input),
   cancelGeneration: (id: string) => cancelGeneration(id),
   ffmpegAvailable: async () => true,
   // A video's anchor frame comes off ffmpeg on the Rust side; the stub keeps both the file
@@ -83,6 +90,7 @@ const PHOTO_IDS = ['asset_a', 'asset_b', 'asset_c'];
 
 beforeEach(() => {
   generateAnimation.mockClear();
+  generateImage.mockClear();
   cancelGeneration.mockClear();
   useEditor.setState({
     assets: Object.fromEntries(PHOTO_IDS.map((id) => [id, photo(id)])),
@@ -93,6 +101,7 @@ beforeEach(() => {
     generations: {},
     modelId: DEFAULT_MODEL_ID,
     film: null,
+    imagePanel: emptyImagePanel(),
     cutPrompts: {},
     cutModes: {},
     animateQueue: null,

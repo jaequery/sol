@@ -15,6 +15,7 @@ hi-fi walkthrough artifact.
 | 5 | **Unsupported / unreadable file** | Probe failed or MIME not in the allowlist | Inline error row in the bin naming the file and the reason; other files in the same drop still import | Dismiss, or re-import |
 | 6 | **Media offline** | Source file moved/deleted after import | Clip renders hatched with a "media offline" badge; preview shows the reason; export is blocked with a pointer to the clip | Remove the clip and re-import (there is no relink) |
 | 6a | **Bin has media** | One or more imports succeeded | The bin head keeps a **+ Import** button whatever the bin holds, so a second import never depends on the empty state's CTA | Click + Import |
+| 6d | **Two ways media gets in** | Any state | Beside + Import the bin head carries **✦ Generate**, which opens the compose panel (section 12). Importing is untouched by it: the two are separate actions on the same panel, and neither is behind the other. While the panel is open a tile is a reference picker rather than a drag source (row 6c stands down) | Click either |
 | 6c | **Tile dragged out of the bin** | Press a bin tile and carry it over the track (or Enter on a focused tile) | The track lights in accent and the insertion marker shows where it will land, exactly as an OS file drag does. Releasing over the track adds the asset there — a photo or video at the boundary nearest the pointer, a sound on a new lane at the exact release point — as a **fresh copy**, so an asset can appear on the track as often as it is dragged. Enter adds it at the playhead. Released anywhere else, or taken back off the track, nothing is added. A tile whose file has gone (state 6) is not a source at all — it keeps its ✕ and nothing else | Drag it again, or delete the clip |
 | 6b | **Media removed** | ✕ on a bin tile | The tile goes, and so do that asset's clips on the timeline — a clip with no media could only ever render as "media offline". Any in-flight generation on those clips is cancelled, the selection falls back to nothing, and the playhead clamps to the shorter timeline. Emptying the bin returns it to state 1 | Re-import |
 
@@ -216,3 +217,30 @@ comes back with everything else.
 | 89 | **Project from a newer SolCut** | The stored file's version is ahead of this build's | A toast saying so, an empty editor, and saving stays **off for the session** — overwriting it would destroy work a later build can still open | Update SolCut |
 | 90 | **The project could not be read at all** | The read itself failed | Same refusal as row 89: nothing is written this session, because what is on disk may be perfectly good and unreadable only right now | Restart, or fix the permissions |
 | 91 | **Edited before the restore landed** | A file dropped in the moment between launch and the read returning | The user's edit wins and stays on screen, but nothing is written over the stored project, and a toast says both | Restart SolCut to get the saved project back |
+
+## 12. Generating a photo (the compose panel)
+
+The media bin's other way in: describe a photo and Higgsfield makes it — from the prompt
+alone, or **on top of** photos already in the bin, attached as references. It runs through
+the same CLI, the same job loop and the same `generation:update` events as a transition,
+so every generation state in section 3 applies here too; the rows below are only what is
+particular to a photo.
+
+The panel lives *inside* the bin rather than over it, because the bin is the reference
+picker — covering the tiles would defeat the flow. The result lands in the bin and nowhere
+else: the timeline is never edited on the user's behalf.
+
+| # | State | Trigger | What is shown | Way out |
+|---|---|---|---|---|
+| 92 | **Closed** | Default | Nothing but the **✦ Generate** button in the bin head | Click ✦ Generate |
+| 93 | **Composing** | ✦ Generate clicked | A prompt box (focused) spanning the bin's columns, one line of guidance, an **Options** disclosure and a full-width **✦ Generate image**. Model and aspect ratio are behind Options, closed — the default path is type, then Generate | Generate, Cancel, or Escape |
+| 94 | **Draft kept** | Cancel or Escape while composing | The panel closes and the prompt, the references and the picks are still there when it reopens. Only a generation that actually went clears them | Reopen |
+| 95 | **Picking references** | Panel open | Every usable bin photo becomes a toggle: an accent border and a number in click order. Its ✕ stands down while composing — removing is not this screen's task. Videos, audio, offline photos, and photos with no file on disk (a browser drop) are not offered at all, because they cannot be uploaded | Click a picked photo to take it off |
+| 96 | **Reference limit** | The chosen model's cap is reached | Further photos simply do not attach; the hint reads "n of 14 references". Switching to a model with a smaller cap trims the picks to fit | Take one off |
+| 97 | **Options open** | Options clicked | **Image model** (Nano Banana Pro, Seedream 4.5, FLUX.2, GPT Image 2) and **Aspect ratio**. The ratios follow the model — each publishes its own set — and a ratio the new model does not take is swapped for one it does, rather than sent and refused | Hide options |
+| 98 | **Not connected** | No Higgsfield CLI on the machine | The panel refuses up front: **✦ Generate image** is dark and a callout says so with **Open settings →**. Nothing is sent (section 3's rule, at the bin) | Connect, or Cancel |
+| 99 | **Nothing asked for** | The prompt is empty or blank | **✦ Generate image** is dark. A prompt is always required, even where a model would accept references alone | Type something |
+| 100 | **Generating** | ✦ Generate image pressed | The panel closes and clears, and a shimmering tile joins the bin wearing ✦ and a ✕ — the same language an import already speaks. The editor stays fully usable, the title bar's "n rendering" chip counts it, and another photo can be asked for straight away | Wait, or ✕ to stop |
+| 101 | **Cancelled** | ✕ on a generating tile | The tile goes. Uploading a dozen references takes minutes, so the cancel is honoured the moment the submission is answered rather than a poll later; the job runs out on Higgsfield's side and its result is dropped | — |
+| 102 | **Failed** | The CLI or the job refused | An error row in the bin in the CLI's own words, with **Retry** (only when retrying could help) and **Dismiss**. The prompt and references are on the generation's record, so a retry re-sends exactly what the first attempt did — and a reference removed from the bin meanwhile is simply left out | Retry, or dismiss |
+| 103 | **Landed** | The job completed and the file downloaded | A new photo tile in the bin, named after the file itself, and one **Photo ready** toast. **Nothing on the timeline moves** — drag it on when you want it, exactly like an import. It is an ordinary photo asset with a real path, so it persists like any other (section 11) | Drag it to the track |

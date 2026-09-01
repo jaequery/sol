@@ -212,6 +212,9 @@ function useKeyboardShortcuts() {
         if (store.exportState) useEditor.setState({ exportState: null });
         else if (store.settingsOpen) store.closeSettings();
         else if (store.filmWizardOpen) store.closeFilmWizard();
+        // The compose panel keeps its draft when it closes, so Escape here is a way out
+        // rather than a way to lose a typed prompt.
+        else if (store.imagePanel.open) store.closeImagePanel();
         return;
       }
 

@@ -9,7 +9,7 @@
 
 import { DEFAULT_MODEL_ID } from '../lib/backend';
 import { resetPreviewSync } from '../lib/preview-sync';
-import { useEditor } from '../state/store';
+import { emptyImagePanel, useEditor } from '../state/store';
 
 /**
  * Put the editor back to first-run.
@@ -41,6 +41,7 @@ export function resetEditor(): void {
     animateRun: null,
     film: null,
     filmWizardOpen: false,
+    imagePanel: emptyImagePanel(),
     importProblems: [],
     importing: 0,
     draggingAssetId: null,
