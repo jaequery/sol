@@ -1,0 +1,1537 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Songsmith</title>
+<meta name="description" content="Describe a song in words and hear it composed and synthesized in the browser.">
+<meta name="fredrin:icon" content="wand">
+<style>
+  :root {
+    --ms-bg: var(--background, light-dark(#ffffff, #17181c));
+    --ms-fg: var(--foreground, light-dark(#17181c, #f2f3f5));
+    --ms-card: var(--card, light-dark(#fbfbfc, #1e1f25));
+    --ms-muted: var(--muted-foreground, light-dark(#6b7280, #9aa0ac));
+    --ms-line: var(--border, light-dark(#e6e7ea, #2c2e36));
+    --ms-input: var(--input, light-dark(#ffffff, #1a1b21));
+    --ms-accent: var(--primary, light-dark(#5b46e5, #8b7bff));
+    --ms-on-accent: var(--primary-foreground, light-dark(#ffffff, #0f1014));
+    --ms-danger: var(--destructive, light-dark(#c0392b, #f2777a));
+    --ms-r: 8px;
+    /* light-dark() in the fallbacks is inert without this; the saved-to-disk
+       copy of this page has no injected theme, and would otherwise always render light */
+    color-scheme: light dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--ms-bg);
+    color: var(--ms-fg);
+    font: 400 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 40px 24px 72px; }
+
+  .top { font-size: 12px; color: var(--ms-muted); margin-bottom: 36px; display: flex; gap: 8px; align-items: baseline; }
+  .top b { font-weight: 600; color: var(--ms-fg); }
+  .top .sep { opacity: .5; }
+
+  label.lede { display: block; font-size: 12px; color: var(--ms-muted); margin-bottom: 10px; }
+  textarea#prompt {
+    width: 100%; min-height: 92px; resize: vertical;
+    background: var(--ms-input); color: var(--ms-fg);
+    border: 1px solid var(--ms-line); border-radius: var(--ms-r);
+    padding: 12px 14px; font: inherit; outline: none;
+  }
+  textarea#prompt::placeholder { color: var(--ms-muted); }
+  textarea#prompt:focus { border-color: var(--ms-accent); }
+
+  .row { display: flex; gap: 12px; align-items: center; margin-top: 14px; }
+  .grow { flex: 1; }
+  button {
+    font: inherit; cursor: pointer; border-radius: var(--ms-r);
+    padding: 9px 18px; border: 1px solid var(--ms-line);
+    background: transparent; color: var(--ms-fg);
+  }
+  button:hover:not(:disabled) { border-color: var(--ms-accent); }
+  button:focus-visible { outline: 2px solid var(--ms-accent); outline-offset: 2px; }
+  button:disabled { opacity: .42; cursor: default; }
+  button.primary { background: var(--ms-accent); color: var(--ms-on-accent); border-color: transparent; font-weight: 600; }
+  button.icon { padding: 9px 14px; font-variant-numeric: tabular-nums; }
+
+  .hint { font-size: 12px; color: var(--ms-muted); }
+
+  #stage { margin-top: 40px; }
+  .song-title { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .song-sub { font-size: 12px; color: var(--ms-muted); margin-bottom: 24px; font-variant-numeric: tabular-nums; }
+
+  .transport { display: flex; align-items: center; gap: 14px; }
+  .track { position: relative; height: 2px; background: var(--ms-line); border-radius: 2px; cursor: pointer; }
+  .track > .fill { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--ms-accent); border-radius: 2px; }
+  .time { font-size: 12px; color: var(--ms-muted); font-variant-numeric: tabular-nums; min-width: 76px; text-align: right; }
+
+  .marks { display: flex; gap: 3px; margin-top: 14px; }
+  .marks > span { height: 3px; border-radius: 2px; background: var(--ms-line); }
+  .marks > span.on { background: var(--ms-accent); }
+
+  details { margin-top: 32px; border-top: 1px solid var(--ms-line); padding-top: 14px; }
+  summary { font-size: 12px; color: var(--ms-muted); cursor: pointer; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary:hover { color: var(--ms-fg); }
+  summary:focus-visible { outline: 2px solid var(--ms-accent); outline-offset: 2px; }
+  .panel { padding-top: 16px; }
+
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 20px; margin: 0; font-size: 12px; }
+  dt { color: var(--ms-muted); }
+  dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+  table.lanes { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+  table.lanes th { width: 68px; text-align: left; font-weight: 400; color: var(--ms-muted); padding: 3px 10px 3px 0; white-space: nowrap; }
+  table.lanes td { padding: 3px 0; }
+  .cells { display: flex; gap: 2px; }
+  .cells > i { display: block; height: 8px; flex: 1; border-radius: 1px; background: var(--ms-line); }
+  .cells > i.on { background: var(--ms-accent); }
+  .cells > i.dim { background: var(--ms-accent); opacity: .38; }
+
+  .note { font-size: 12px; color: var(--ms-muted); margin-top: 12px; }
+  .err { font-size: 12px; color: var(--ms-danger); margin-top: 12px; }
+  audio { width: 100%; margin-top: 14px; }
+
+  .skeleton { height: 12px; width: 180px; border-radius: 3px; background: var(--ms-line); opacity: .6; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <b>Songsmith</b><span class="sep">·</span><span id="project"><span class="skeleton"></span></span>
+  </div>
+
+  <label class="lede" for="prompt">Describe the song</label>
+  <textarea id="prompt" rows="3" spellcheck="false"
+    placeholder="dreamy lo-fi at 78 bpm, rainy and nostalgic"></textarea>
+  <div class="row">
+    <button id="go" class="primary">Generate</button>
+    <span class="grow"></span>
+    <span class="hint" id="hint" role="status" aria-live="polite">Same words always make the same song.</span>
+  </div>
+
+  <div id="stage" hidden></div>
+</div>
+
+<script>
+(() => {
+  const METHODS = ["project.get", "tickets.list", "tickets.get", "notes.list", "notes.get", "connectors.list", "connectors.metrics", "ui.toast"];
+  const pending = new Map();
+  const queued = [];
+  let port = null;
+  let seq = 0;
+
+  window.addEventListener("message", (event) => {
+    if (!event.data || event.data.type !== "fredrin:port") return;
+    if (port || !event.ports || !event.ports[0]) return;
+    port = event.ports[0];
+    port.onmessage = (message) => {
+      const reply = message.data;
+      if (!reply || typeof reply.id !== "string") return;
+      const entry = pending.get(reply.id);
+      if (!entry) return;
+      pending.delete(reply.id);
+      if (reply.ok) entry.resolve(reply.data);
+      else entry.reject(new Error(reply.error + ": " + reply.message));
+    };
+    while (queued.length) queued.shift()();
+  });
+
+  const call = (method, params) =>
+    new Promise((resolve, reject) => {
+      const id = "c" + ++seq;
+      const send = () => {
+        pending.set(id, { resolve, reject });
+        port.postMessage({ fredrin: 1, id, method, params });
+      };
+      port ? send() : queued.push(send);
+    });
+
+  const api = {};
+  for (const name of METHODS) {
+    const [ns, fn] = name.split(".");
+    (api[ns] = api[ns] || {})[fn] = (params) => call(name, params);
+  }
+  window.fredrin = api;
+})();
+</script>
+
+<script id="engine">
+/* ENGINE-START — pure, no DOM, no Web Audio. Extracted verbatim by the test harness. */
+var ENGINE = (function () {
+  "use strict";
+
+  /* ---------- seeded randomness (cyrb128 + sfc32) ---------- */
+  function cyrb128(str) {
+    var h1 = 1779033703, h2 = 3144134277, h3 = 1013904242, h4 = 2773480762;
+    for (var i = 0, k; i < str.length; i++) {
+      k = str.charCodeAt(i);
+      h1 = h2 ^ Math.imul(h1 ^ k, 597399067);
+      h2 = h3 ^ Math.imul(h2 ^ k, 2869860233);
+      h3 = h4 ^ Math.imul(h3 ^ k, 951274213);
+      h4 = h1 ^ Math.imul(h4 ^ k, 2716044179);
+    }
+    h1 = Math.imul(h3 ^ (h1 >>> 18), 597399067);
+    h2 = Math.imul(h4 ^ (h2 >>> 22), 2869860233);
+    h3 = Math.imul(h1 ^ (h3 >>> 17), 951274213);
+    h4 = Math.imul(h2 ^ (h4 >>> 19), 2716044179);
+    return [(h1 ^ h2 ^ h3 ^ h4) >>> 0, (h2 ^ h1) >>> 0, (h3 ^ h1) >>> 0, (h4 ^ h1) >>> 0];
+  }
+  function sfc32(a, b, c, d) {
+    return function () {
+      a |= 0; b |= 0; c |= 0; d |= 0;
+      var t = (((a + b) | 0) + d) | 0;
+      d = (d + 1) | 0; a = b ^ (b >>> 9); b = (c + (c << 3)) | 0;
+      c = (c << 21) | (c >>> 11); c = (c + t) | 0;
+      return (t >>> 0) / 4294967296;
+    };
+  }
+  function makeRng(seedString) {
+    var s = cyrb128(seedString);
+    var r = sfc32(s[0], s[1], s[2], s[3]);
+    for (var i = 0; i < 16; i++) r();
+    r.pick = function (arr) { return arr[Math.floor(r() * arr.length) % arr.length]; };
+    r.range = function (lo, hi) { return lo + r() * (hi - lo); };
+    r.int = function (lo, hi) { return Math.floor(lo + r() * (hi - lo + 1)); };
+    r.chance = function (p) { return r() < p; };
+    return r;
+  }
+
+  /* ---------- theory ---------- */
+  var MODES = {
+    major:      [0, 2, 4, 5, 7, 9, 11],
+    minor:      [0, 2, 3, 5, 7, 8, 10],
+    dorian:     [0, 2, 3, 5, 7, 9, 10],
+    phrygian:   [0, 1, 3, 5, 7, 8, 10],
+    lydian:     [0, 2, 4, 6, 7, 9, 11],
+    mixolydian: [0, 2, 4, 5, 7, 9, 10]
+  };
+  var NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+  var MINORISH = { minor: 1, dorian: 1, phrygian: 1 };
+
+  function stack(modeName, degree, count) {
+    var sc = MODES[modeName], out = [];
+    for (var i = 0; i < count; i++) {
+      var idx = degree + i * 2;
+      out.push(sc[idx % 7] + 12 * Math.floor(idx / 7));
+    }
+    return out;
+  }
+
+  /* ---------- genres ---------- */
+  var GENRES = {
+    lofi: {
+      label: "lo-fi", bpm: [68, 88], swing: 0.60, chordTones: 5, barsPerChord: 1,
+      modes: ["minor", "dorian"], reverb: 0.26, delay: 0.18,
+      progressions: [[0, 5, 2, 6], [0, 3, 5, 4], [1, 4, 0, 0], [0, 6, 5, 6]],
+      majorProgressions: [[0, 5, 3, 4], [3, 4, 2, 5], [0, 4, 5, 3]]
+    },
+    house: {
+      label: "house", bpm: [118, 128], swing: 0.54, chordTones: 4, barsPerChord: 1,
+      modes: ["minor", "dorian"], reverb: 0.2, delay: 0.22,
+      progressions: [[0, 3, 5, 6], [5, 6, 0, 0], [0, 6, 5, 6], [3, 6, 2, 5]],
+      majorProgressions: [[0, 4, 5, 3], [5, 3, 0, 4]]
+    },
+    synthwave: {
+      label: "synthwave", bpm: [92, 116], swing: 0.5, chordTones: 3, barsPerChord: 1,
+      modes: ["minor", "dorian"], reverb: 0.3, delay: 0.3,
+      progressions: [[0, 6, 3], [0, 4, 5, 6], [0, 6, 5, 6], [0, 5, 2, 6]],
+      majorProgressions: [[0, 4, 5, 3], [5, 3, 0, 4]]
+    },
+    ambient: {
+      label: "ambient", bpm: [58, 78], swing: 0.5, chordTones: 5, barsPerChord: 2,
+      modes: ["lydian", "dorian", "mixolydian"], reverb: 0.55, delay: 0.3,
+      progressions: [[0, 3], [0, 6], [0, 5, 3, 6]],
+      majorProgressions: [[0, 1], [0, 3], [0, 6]]
+    },
+    trap: {
+      label: "trap", bpm: [130, 152], swing: 0.5, chordTones: 3, barsPerChord: 1,
+      modes: ["minor", "phrygian"], reverb: 0.18, delay: 0.12,
+      progressions: [[0, 5, 6], [0, 6, 5, 6], [0, 0, 5, 5], [0, 1, 5, 6]],
+      majorProgressions: [[0, 5, 3, 4]]
+    }
+  };
+
+  var GENRE_WORDS = {
+    lofi: ["lofi", "lo-fi", "lofihiphop", "chillhop", "chill", "study", "jazzy", "jazz", "rainy", "rain", "nostalgic", "vinyl", "boombap", "mellow", "cozy", "dusty", "tape", "rhodes", "coffee"],
+    house: ["house", "deep", "techno", "dance", "club", "disco", "garage", "edm", "festival", "rave", "groove", "funky", "four", "banger", "drop"],
+    synthwave: ["synthwave", "retro", "80s", "eighties", "outrun", "neon", "vaporwave", "arcade", "cyber", "cyberpunk", "vhs", "miami", "chrome", "darkwave"],
+    ambient: ["ambient", "drone", "cinematic", "film", "score", "soundtrack", "epic", "peaceful", "meditation", "space", "ethereal", "floating", "sleep", "orchestral", "strings", "choir", "vast", "glacial"],
+    trap: ["trap", "hiphop", "rap", "808", "drill", "beat", "bounce", "menacing", "grime", "hardhitting", "phonk"]
+  };
+
+  var VALENCE = {
+    happy: 0.8, uplifting: 0.7, bright: 0.6, joyful: 0.8, sunny: 0.6, hopeful: 0.5,
+    warm: 0.4, sweet: 0.4, triumphant: 0.7, playful: 0.5, summer: 0.5, love: 0.5,
+    sad: -0.8, melancholic: -0.6, melancholy: -0.6, dark: -0.7, moody: -0.5, somber: -0.6,
+    lonely: -0.6, haunting: -0.6, tense: -0.5, angry: -0.6, menacing: -0.7, grim: -0.7,
+    nostalgic: -0.2, wistful: -0.3, bittersweet: -0.2, rainy: -0.3, cold: -0.4, dreamy: 0.15
+  };
+  var ENERGY = {
+    energetic: 0.9, driving: 0.8, fast: 0.8, hard: 0.9, banging: 0.9, intense: 0.85,
+    epic: 0.7, punchy: 0.7, upbeat: 0.7, aggressive: 0.85, heavy: 0.7, frantic: 0.9,
+    calm: -0.7, slow: -0.7, gentle: -0.6, soft: -0.6, sleepy: -0.8, mellow: -0.5,
+    relaxed: -0.6, quiet: -0.7, sparse: -0.5, chill: -0.45, floaty: -0.5, ambient: -0.6,
+    minimal: -0.4, peaceful: -0.7
+  };
+  var INSTRUMENT_WORDS = {
+    piano: "keys", rhodes: "keys", keys: "keys", organ: "keys",
+    guitar: "pluck", pluck: "pluck", arp: "pluck", arpeggio: "pluck", bells: "pluck", harp: "pluck",
+    strings: "pad", choir: "pad", pad: "pad", synth: "pad", warm: "pad",
+    bass: "bass", "808": "bass", sub: "bass",
+    drums: "drums", beat: "drums", percussion: "drums"
+  };
+  var STOP = {};
+  ("a an the and or but with of in on at to for from into is are be am was were song track music "
+   + "make making generate generated create sounding sound like feel feeling that this it its "
+   + "very really some more most please just about kind sort something anything my your our their "
+   + "give want need write compose "
+   /* technical tokens describe the request, not the song — they read badly in a title */
+   + "bpm beat beats tempo key minor major maj min dorian phrygian lydian mixolydian "
+   + "instrumental drumless beatless no").split(" ").forEach(function (w) { STOP[w] = 1; });
+
+  var FALLBACK_TITLES = ["Drift", "Halogen", "Undertow", "Paper Moon", "Slow Static", "Nightfall",
+    "Blue Hour", "Afterimage", "Low Tide", "Signal Lost", "Glass House", "Long Way Down"];
+
+  function normalize(text) {
+    return String(text == null ? "" : text).toLowerCase().replace(/[^a-z0-9#+\- ]+/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  function parsePrompt(text) {
+    var raw = String(text == null ? "" : text);
+    var norm = normalize(raw);
+    var words = norm ? norm.split(" ") : [];
+    var rng = makeRng("songsmith/v1/" + norm);
+
+    /* genre by keyword score, ties broken by seed */
+    var best = null;
+    for (var g in GENRE_WORDS) {
+      var score = 0;
+      for (var i = 0; i < words.length; i++) {
+        if (GENRE_WORDS[g].indexOf(words[i]) >= 0) score += 2;
+        if (GENRE_WORDS[g].indexOf(words[i].replace(/-/g, "")) >= 0) score += 1;
+      }
+      if (!best || score > best.score) best = { g: g, score: score };
+    }
+    var genre = best && best.score > 0 ? best.g : rng.pick(["lofi", "house", "synthwave", "ambient", "trap"]);
+    var G = GENRES[genre];
+
+    /* mood */
+    var valence = 0, energy = 0, moodHits = 0;
+    for (var j = 0; j < words.length; j++) {
+      if (VALENCE[words[j]] !== undefined) { valence += VALENCE[words[j]]; moodHits++; }
+      if (ENERGY[words[j]] !== undefined) { energy += ENERGY[words[j]]; moodHits++; }
+    }
+    if (moodHits > 1) { valence /= Math.sqrt(moodHits); energy /= Math.sqrt(moodHits); }
+    valence = Math.max(-1, Math.min(1, valence));
+    energy = Math.max(-1, Math.min(1, energy + rng.range(-0.12, 0.12)));
+
+    /* tempo */
+    var bpm = null;
+    var mBpm = norm.match(/(\d{2,3})\s*(?:bpm|beats)/);
+    if (mBpm) bpm = Math.max(50, Math.min(200, parseInt(mBpm[1], 10)));
+    if (bpm === null) {
+      var lo = G.bpm[0], hi = G.bpm[1];
+      bpm = Math.round(lo + (hi - lo) * (0.5 + energy * 0.5));
+      bpm = Math.max(lo, Math.min(hi, bpm));
+    }
+
+    /* key + mode */
+    var modeName = null;
+    var mMode = norm.match(/\b(major|minor|dorian|phrygian|lydian|mixolydian|maj|min)\b/);
+    if (mMode) {
+      var mm = mMode[1];
+      modeName = mm === "maj" ? "major" : mm === "min" ? "minor" : mm;
+    }
+    var root = null;
+    var mKey = norm.match(/\b(?:in\s+)?([a-g])\s*(#|b|sharp|flat)?\s*(?:major|minor|dorian|phrygian|lydian|mixolydian|maj|min)\b/);
+    if (!mKey) mKey = norm.match(/\bin\s+([a-g])\s*(#|b|sharp|flat)?\b/);
+    if (mKey) {
+      var base = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }[mKey[1]];
+      var acc = mKey[2];
+      if (acc === "#" || acc === "sharp") base += 1;
+      else if (acc === "b" || acc === "flat") base -= 1;
+      root = ((base % 12) + 12) % 12;
+    }
+    if (modeName === null) {
+      modeName = valence > 0.25 ? "major" : rng.pick(G.modes);
+      if (valence > 0.25 && G.majorProgressions.length === 0) modeName = rng.pick(G.modes);
+    }
+    if (!MODES[modeName]) modeName = "minor";
+    if (root === null) root = rng.int(0, 11);
+
+    /* instruments named explicitly */
+    var instruments = {};
+    for (var k = 0; k < words.length; k++) {
+      var role = INSTRUMENT_WORDS[words[k]];
+      if (role) instruments[role] = 1;
+    }
+    var noDrums = /\bno\s+(?:drums|beat|percussion)\b/.test(norm) || /\b(?:instrumental|drumless|beatless)\b/.test(norm);
+    if (genre === "ambient" && !instruments.drums) noDrums = noDrums || !/\bbeat|drums|percussion\b/.test(norm);
+
+    /* length */
+    var lengthHint = /\b(short|brief|quick|tiny)\b/.test(norm) ? "short"
+      : /\b(long|extended|full)\b/.test(norm) ? "long" : "normal";
+
+    /* title from the most distinctive words */
+    var picked = [];
+    for (var w = 0; w < words.length && picked.length < 3; w++) {
+      var t = words[w];
+      if (STOP[t] || t.length < 3 || /^\d+$/.test(t)) continue;
+      if (picked.indexOf(t) >= 0) continue;
+      picked.push(t);
+    }
+    var title = picked.length
+      ? picked.map(function (s) { return s.charAt(0).toUpperCase() + s.slice(1); }).join(" ")
+      : rng.pick(FALLBACK_TITLES);
+    if (title.length > 42) title = title.slice(0, 42).trim();
+
+    return {
+      prompt: raw, seed: "songsmith/v1/" + norm, genre: genre, genreLabel: G.label,
+      bpm: bpm, root: root, rootName: NOTE_NAMES[root], mode: modeName,
+      valence: Math.round(valence * 100) / 100, energy: Math.round(energy * 100) / 100,
+      instruments: instruments, noDrums: noDrums, lengthHint: lengthHint, title: title
+    };
+  }
+
+  /* ---------- arrangement ---------- */
+  var LAYERS = {
+    intro:  { pad: 0.75, keys: 0.6, bass: 0.0, sub: 0, kick: 0, snare: 0, hat: 0.45, pluck: 0.5, lead: 0 },
+    verse:  { pad: 0.7,  keys: 0.8, bass: 1.0, sub: 0.7, kick: 1, snare: 1, hat: 1.0, pluck: 0.7, lead: 0 },
+    build:  { pad: 0.8,  keys: 0.7, bass: 1.0, sub: 0.8, kick: 1, snare: 1, hat: 1.0, pluck: 0.9, lead: 0.5 },
+    chorus: { pad: 1.0,  keys: 0.9, bass: 1.0, sub: 1.0, kick: 1, snare: 1, hat: 1.0, pluck: 0.7, lead: 1.0 },
+    bridge: { pad: 0.9,  keys: 0.7, bass: 0.6, sub: 0.0, kick: 0, snare: 0, hat: 0.35, pluck: 0.5, lead: 0.7 },
+    outro:  { pad: 0.7,  keys: 0.5, bass: 0.4, sub: 0.0, kick: 0, snare: 0, hat: 0.0, pluck: 0.4, lead: 0 }
+  };
+
+  function sectionPlan(genre, lengthHint) {
+    if (genre === "ambient") {
+      if (lengthHint === "short") return [["intro", 8], ["verse", 16], ["outro", 8]];
+      return [["intro", 8], ["verse", 16], ["bridge", 8], ["chorus", 16], ["outro", 8]];
+    }
+    if (lengthHint === "short") return [["intro", 4], ["verse", 8], ["chorus", 8], ["outro", 4]];
+    if (lengthHint === "long") {
+      return [["intro", 4], ["verse", 8], ["build", 4], ["chorus", 8], ["verse", 8],
+              ["build", 4], ["chorus", 8], ["bridge", 8], ["chorus", 8], ["outro", 4]];
+    }
+    return [["intro", 4], ["verse", 8], ["build", 4], ["chorus", 8], ["verse", 8], ["chorus", 8], ["outro", 4]];
+  }
+
+  /* drum grids, 16 steps to the bar */
+  var PATTERNS = {
+    lofi:      { kick: "x.....x...x.....", snare: "....x.......x...", ghost: "..x...........x.", hat: "x.x.x.x.x.x.x.x.", ohat: "..............x." },
+    house:     { kick: "x...x...x...x...", snare: "....x.......x...", ghost: "................", hat: "..x...x...x...x.", ohat: "..x...x...x...x." },
+    synthwave: { kick: "x.....x.x...x...", snare: "....x.......x...", ghost: "................", hat: "x.x.x.x.x.x.x.x.", ohat: "..............x." },
+    ambient:   { kick: "x...............", snare: "................", ghost: "................", hat: "................", ohat: "................" },
+    trap:      { kick: "x.....x...x.....", snare: "........x.......", ghost: "................", hat: "xxxxxxxxxxxxxxxx", ohat: "..........x....." }
+  };
+
+  function voiceChord(prev, semis, rootMidi, lo, hi) {
+    var cand = semis.map(function (s) { return rootMidi + s; });
+    var best = null;
+    for (var oct = -2; oct <= 2; oct++) {
+      var v = cand.map(function (p) { return p + 12 * oct; });
+      var outOfRange = false;
+      for (var i = 0; i < v.length; i++) if (v[i] < lo || v[i] > hi) { outOfRange = true; break; }
+      if (outOfRange) continue;
+      var cost = 0;
+      if (prev && prev.length) {
+        for (var a = 0; a < v.length; a++) {
+          var m = 1e9;
+          for (var b = 0; b < prev.length; b++) m = Math.min(m, Math.abs(v[a] - prev[b]));
+          cost += m;
+        }
+      } else {
+        cost = Math.abs(v[0] - (lo + hi) / 2);
+      }
+      if (!best || cost < best.cost) best = { v: v, cost: cost };
+    }
+    return best ? best.v : cand;
+  }
+
+  function composeSong(brief) {
+    var rng = makeRng(brief.seed + "/compose");
+    var G = GENRES[brief.genre];
+    var isMinor = !!MINORISH[brief.mode];
+    var beatSec = 60 / brief.bpm;
+    var barSec = beatSec * 4;
+    var stepSec = barSec / 16;
+
+    /* sections, capped at 150s */
+    var plan = sectionPlan(brief.genre, brief.lengthHint);
+    var sections = [], barCursor = 0;
+    for (var s = 0; s < plan.length; s++) {
+      if ((barCursor + plan[s][1]) * barSec > 150 && sections.length >= 3) break;
+      sections.push({ name: plan[s][0], startBar: barCursor, bars: plan[s][1] });
+      barCursor += plan[s][1];
+    }
+    var bars = barCursor;
+
+    /* harmony */
+    var bank = isMinor ? G.progressions : (G.majorProgressions.length ? G.majorProgressions : G.progressions);
+    var prog = rng.pick(bank).slice();
+    var barsPerChord = G.barsPerChord;
+    var rootMidi = 48 + brief.root; /* C3-ish register for the chord bed */
+
+    var chords = [], prevVoicing = null, ci = 0;
+    for (var bar = 0; bar < bars; bar += barsPerChord) {
+      var sec = sections.filter(function (x) { return bar >= x.startBar && bar < x.startBar + x.bars; })[0] || sections[0];
+      var lastBarOfSection = bar + barsPerChord >= sec.startBar + sec.bars;
+      var degree = prog[ci % prog.length];
+      /* resolve to tonic only at section ends */
+      if (lastBarOfSection && sec.name !== "build" && rng.chance(0.55)) degree = 0;
+      var semis = stack(brief.mode, degree, G.chordTones);
+      /* borrowed major V in a minor key — the single biggest lift in minor */
+      if (isMinor && degree === 4 && rng.chance(0.7)) {
+        semis = semis.slice();
+        semis[1] = semis[1] + 1;
+      }
+      var voicing = voiceChord(prevVoicing, semis, rootMidi, 45, 76);
+      prevVoicing = voicing;
+      chords.push({
+        bar: bar, bars: barsPerChord, degree: degree,
+        rootMidi: rootMidi + MODES[brief.mode][degree],
+        pitches: voicing
+      });
+      ci++;
+    }
+    function chordAtBar(bar) {
+      for (var i = chords.length - 1; i >= 0; i--) if (chords[i].bar <= bar) return chords[i];
+      return chords[0];
+    }
+    function sectionAtBar(bar) {
+      for (var i = 0; i < sections.length; i++) {
+        if (bar >= sections[i].startBar && bar < sections[i].startBar + sections[i].bars) return sections[i];
+      }
+      return sections[sections.length - 1];
+    }
+
+    /* one motif, then developed — repetition is what reads as intentional */
+    var motifLen = rng.pick([4, 6, 6, 8]);
+    var motif = [];
+    var mstep = 0;
+    for (var n = 0; n < motifLen && mstep < 16; n++) {
+      var dur = rng.pick([2, 2, 2, 4, 4, 6]);
+      motif.push({ step: mstep, dur: dur, tone: rng.int(0, 3), rest: rng.chance(0.18) });
+      mstep += dur + (rng.chance(0.25) ? 2 : 0);
+    }
+
+    /* micro-timing: a per-voice constant push/pull is what "feel" actually is */
+    var FEEL = { kick: 0, sub: 0.004, snare: 0.004, ghost: 0.004, hat: -0.003, ohat: -0.003,
+                 bass: 0.008, pad: 0.012, keys: 0.006, pluck: -0.002, lead: 0.002, crash: 0, riser: 0 };
+    var swing = G.swing;
+
+    var events = [];
+    function push(voice, bar, step, durSteps, pitch, vel, extra) {
+      var lay = LAYERS[sectionAtBar(bar).name];
+      var mult = lay[voice] !== undefined ? lay[voice] : 1;
+      if (mult <= 0) return;
+      var t = bar * barSec + step * stepSec;
+      if (swing > 0.5 && step % 2 === 1) t += (swing - 0.5) * 2 * stepSec * 0.5;
+      t += (FEEL[voice] || 0) + rng.range(-0.006, 0.006);
+      if (t < 0) t = 0;
+      var e = { v: voice, t: Math.round(t * 1e6) / 1e6, d: Math.max(0.02, durSteps * stepSec), p: pitch, vel: Math.max(0.05, Math.min(1, vel * mult)) };
+      if (extra) for (var kk in extra) e[kk] = extra[kk];
+      events.push(e);
+    }
+
+    var pat = PATTERNS[brief.genre];
+    for (var b2 = 0; b2 < bars; b2++) {
+      var sec2 = sectionAtBar(b2);
+      var lay2 = LAYERS[sec2.name];
+      var barInSec = b2 - sec2.startBar;
+      var isLastBar = barInSec === sec2.bars - 1;
+      var ch = chordAtBar(b2);
+
+      /* --- drums --- */
+      if (!brief.noDrums) {
+        for (var st = 0; st < 16; st++) {
+          var accent = st === 0 ? 1 : st === 8 ? 0.9 : st % 4 === 0 ? 0.84 : st % 2 === 0 ? 0.68 : 0.5;
+          if (pat.kick[st] === "x") push("kick", b2, st, 2, 0, accent);
+          if (pat.snare[st] === "x") push("snare", b2, st, 2, 0, accent * 0.95);
+          if (pat.ghost[st] === "x" && rng.chance(0.6)) push("ghost", b2, st, 1, 0, 0.3);
+          if (pat.hat[st] === "x") {
+            /* hats drop out on the last bar of a section — cheap, and it reads as an arrangement */
+            if (!(isLastBar && rng.chance(0.5))) push("hat", b2, st, 1, 0, accent * 0.6);
+          }
+          if (pat.ohat[st] === "x") push("ohat", b2, st, 2, 0, accent * 0.5);
+        }
+        /* fills on the last bar of a section */
+        if (isLastBar && sec2.bars >= 4) {
+          for (var f = 8; f < 16; f += 2) {
+            if (rng.chance(0.7)) push("snare", b2, f, 1, 0, 0.45 + (f / 16) * 0.4);
+          }
+        }
+        /* trap hat rolls */
+        if (brief.genre === "trap" && rng.chance(0.35)) {
+          var rollAt = rng.pick([6, 10, 14]);
+          for (var rr = 0; rr < 3; rr++) push("hat", b2, rollAt + rr / 3, 0.5, 0, 0.5);
+        }
+        if (sec2.name === "chorus" && barInSec === 0) push("crash", b2, 0, 8, 0, 0.7);
+      }
+
+      /* --- bass --- */
+      var bassRoot = ch.rootMidi - 12;
+      if (brief.genre === "house") {
+        for (var hb = 0; hb < 16; hb += 2) if (hb % 4 !== 0) push("bass", b2, hb, 1.6, bassRoot, 0.8);
+        push("bass", b2, 0, 2, bassRoot, 0.9);
+      } else if (brief.genre === "trap") {
+        push("bass", b2, 0, 8, bassRoot, 0.95, { glide: true });
+        if (rng.chance(0.5)) push("bass", b2, 10, 5, bassRoot + (rng.chance(0.5) ? 0 : 3), 0.8, { glide: true });
+      } else if (brief.genre === "synthwave") {
+        for (var sb = 0; sb < 16; sb += 2) push("bass", b2, sb, 1.7, bassRoot, sb % 4 === 0 ? 0.9 : 0.7);
+      } else if (brief.genre === "ambient") {
+        push("bass", b2, 0, 16, bassRoot, 0.6);
+      } else {
+        push("bass", b2, 0, 5, bassRoot, 0.9);
+        push("bass", b2, 6, 3, bassRoot, 0.7);
+        if (rng.chance(0.4)) push("bass", b2, 11, 3, bassRoot + 7, 0.62);
+      }
+      if (lay2.sub > 0) push("sub", b2, 0, 14, bassRoot - 12, 0.8);
+
+      /* --- pad holds the voicing --- */
+      if (b2 % barsPerChord === 0) push("pad", b2, 0, 16 * barsPerChord, ch.pitches[0], 0.55, { chord: ch.pitches });
+
+      /* --- keys: chord stabs --- */
+      if (lay2.keys > 0) {
+        var stabs = brief.genre === "lofi" ? [0, 6, 10] : brief.genre === "ambient" ? [0] : [0, 8];
+        for (var sIdx = 0; sIdx < stabs.length; sIdx++) {
+          if (rng.chance(0.85)) push("keys", b2, stabs[sIdx], 3, ch.pitches[0], sIdx === 0 ? 0.6 : 0.45, { chord: ch.pitches });
+        }
+      }
+
+      /* --- pluck / arp --- */
+      if (lay2.pluck > 0) {
+        var arpSteps = brief.genre === "synthwave" ? 1 : 2;
+        for (var ap = 0; ap < 16; ap += arpSteps) {
+          if (brief.genre !== "synthwave" && !rng.chance(0.55)) continue;
+          var tone = ch.pitches[(ap / arpSteps) % ch.pitches.length];
+          push("pluck", b2, ap, arpSteps, tone + 12, ap % 4 === 0 ? 0.5 : 0.34);
+        }
+      }
+
+      /* --- lead: the motif, developed --- */
+      if (lay2.lead > 0) {
+        var variant = barInSec % 4;
+        for (var mi = 0; mi < motif.length; mi++) {
+          var m = motif[mi];
+          if (m.rest) continue;
+          if (variant === 3 && rng.chance(0.5)) continue; /* call and response: leave a gap */
+          var toneIdx = m.tone;
+          if (variant === 1) toneIdx = (toneIdx + 1) % ch.pitches.length;   /* transpose to chord tones */
+          if (variant === 2) toneIdx = (ch.pitches.length - 1) - (toneIdx % ch.pitches.length); /* inversion */
+          var pitch = ch.pitches[toneIdx % ch.pitches.length] + 12;
+          if (m.step < 16) push("lead", b2, m.step, m.dur, pitch, m.step === 0 ? 0.72 : 0.58);
+        }
+      }
+
+      /* --- riser into a chorus --- */
+      if (isLastBar && sec2.name === "build") push("riser", b2, 0, 16, 0, 0.5);
+    }
+
+    events.sort(function (a, b) { return a.t - b.t; });
+    var seconds = bars * barSec;
+
+    return {
+      title: brief.title, brief: brief, bpm: brief.bpm, genre: brief.genre,
+      rootName: brief.rootName, mode: brief.mode, bars: bars, barSec: barSec,
+      seconds: seconds, sections: sections, chords: chords, events: events,
+      reverb: GENRES[brief.genre].reverb, delay: GENRES[brief.genre].delay,
+      swing: swing, chordCount: chords.length
+    };
+  }
+
+  function generate(text) { return composeSong(parsePrompt(text)); }
+
+  return {
+    makeRng: makeRng, parsePrompt: parsePrompt, composeSong: composeSong, generate: generate,
+    MODES: MODES, GENRES: GENRES, NOTE_NAMES: NOTE_NAMES, LAYERS: LAYERS
+  };
+})();
+/* ENGINE-END */
+</script>
+
+<script>
+/* ---------------- audio: render once, then play and encode the same samples ----------------
+   Node lifetime is the whole cost model here. A node that finished playing is not released
+   until the render ends, and the price is superlinear: measured in this Chromium, 200
+   osc+gain pairs render at 227x realtime, 800 at 44x, and 2000 at 8.8x. So voices are baked
+   into a small sample bank once, each note costs a single BufferSource, and the reverb and
+   delay sends hang off the buses rather than off every note. */
+var AUDIO = (function () {
+  "use strict";
+  var SR = 48000;
+  var EPS = 0.0001;
+  var mtof = function (m) { return 440 * Math.pow(2, (m - 69) / 12); };
+  var VLAYERS = [0.34, 0.58, 0.8, 1.0];
+  var REF_LOW = 36, REF_HIGH = 60;
+
+  function noiseBuf(ctx, rng, seconds) {
+    var b = ctx.createBuffer(1, Math.max(128, Math.floor(SR * seconds)), SR);
+    var d = b.getChannelData(0);
+    for (var i = 0; i < d.length; i++) d[i] = rng() * 2 - 1;
+    return b;
+  }
+
+  /* early reflections + frequency-dependent decay; flat decaying noise sounds like a hiss spray */
+  function makeIR(ctx, rng, seconds, bright) {
+    var len = Math.floor(SR * seconds);
+    var buf = ctx.createBuffer(2, len, SR);
+    for (var ch = 0; ch < 2; ch++) {
+      var d = buf.getChannelData(ch), y = 0;
+      for (var i = 0; i < len; i++) {
+        var t = i / len;
+        var a = 0.06 + (0.5 + bright * 0.2) * (1 - t);
+        y += a * ((rng() * 2 - 1) - y);
+        d[i] = y * Math.pow(1 - t, 2.6);
+      }
+      for (var e = 0; e < 9; e++) {
+        var pos = Math.floor((0.004 + rng() * 0.056 + ch * 0.0013) * SR);
+        if (pos < len) d[pos] += (rng() * 2 - 1) * 0.55 * (1 - e / 9);
+      }
+    }
+    return buf;
+  }
+
+  function tanhCurve() {
+    var n = 2048, c = new Float32Array(n);
+    for (var i = 0; i < n; i++) { var x = (i / (n - 1)) * 2 - 1; c[i] = Math.tanh(x * 1.5) / Math.tanh(1.5); }
+    return c;
+  }
+
+  /* ---------- the sample bank ---------- */
+  function renderBank(song, rng) {
+    var barSec = song.barSec;
+    var bpc = song.chords.length ? song.chords[0].bars : 1;
+    var padLen = Math.min(24, barSec * bpc * 2.6);
+    var specs = [];
+    function add(key, dur, fn) { specs.push({ key: key, dur: dur, fn: fn }); }
+
+    function shaped(ctx, t, dest, gainEnv) { var g = ctx.createGain(); g.connect(dest); gainEnv(g.gain, t); return g; }
+
+    for (var L = 0; L < 4; L++) {
+      (function (v, idx) {
+        add("kick" + idx, 0.5, function (ctx, t, dest, noise) {
+          var o = ctx.createOscillator(); o.type = "sine";
+          o.frequency.setValueAtTime(150 + v * 20, t);
+          o.frequency.exponentialRampToValueAtTime(44, t + 0.085);
+          var g = ctx.createGain(); g.connect(dest);
+          g.gain.setValueAtTime(1, t); g.gain.exponentialRampToValueAtTime(EPS, t + 0.3 + v * 0.06);
+          o.connect(g); o.start(t); o.stop(t + 0.46);
+          var cg = ctx.createGain(); cg.connect(dest);
+          cg.gain.setValueAtTime(0.42, t); cg.gain.exponentialRampToValueAtTime(EPS, t + 0.012);
+          var hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 1100;
+          var ns = ctx.createBufferSource(); ns.buffer = noise; ns.loop = true;
+          ns.connect(hp); hp.connect(cg); ns.start(t); ns.stop(t + 0.02);
+        });
+        add("snare" + idx, 0.4, function (ctx, t, dest, noise) {
+          var bp = ctx.createBiquadFilter(); bp.type = "bandpass";
+          bp.frequency.value = 1500 + v * 900; bp.Q.value = 0.9;   /* louder reads as brighter */
+          var g = ctx.createGain(); g.connect(dest);
+          g.gain.setValueAtTime(1, t); g.gain.exponentialRampToValueAtTime(EPS, t + 0.16 + v * 0.05);
+          var ns = ctx.createBufferSource(); ns.buffer = noise; ns.loop = true;
+          ns.connect(bp); bp.connect(g); ns.start(t); ns.stop(t + 0.3);
+          var bo = ctx.createOscillator(); bo.type = "triangle"; bo.frequency.value = 185;
+          var bg = ctx.createGain(); bg.connect(dest);
+          bg.gain.setValueAtTime(0.4, t); bg.gain.exponentialRampToValueAtTime(EPS, t + 0.11);
+          bo.connect(bg); bo.start(t); bo.stop(t + 0.15);
+        });
+        add("hat" + idx, 0.15, function (ctx, t, dest, noise) {
+          var hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 7000 + v * 1400;
+          var g = ctx.createGain(); g.connect(dest);
+          g.gain.setValueAtTime(1, t); g.gain.exponentialRampToValueAtTime(EPS, t + 0.032);
+          var ns = ctx.createBufferSource(); ns.buffer = noise; ns.loop = true;
+          ns.connect(hp); hp.connect(g); ns.start(t); ns.stop(t + 0.06);
+        });
+      })(VLAYERS[L], L);
+    }
+    for (var M = 0; M < 2; M++) {
+      (function (v, idx) {
+        add("ghost" + idx, 0.18, function (ctx, t, dest, noise) {
+          var bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 2400; bp.Q.value = 1.1;
+          var g = ctx.createGain(); g.connect(dest);
+          g.gain.setValueAtTime(1, t); g.gain.exponentialRampToValueAtTime(EPS, t + 0.07);
+          var ns = ctx.createBufferSource(); ns.buffer = noise; ns.loop = true;
+          ns.connect(bp); bp.connect(g); ns.start(t); ns.stop(t + 0.1);
+        });
+        add("ohat" + idx, 0.42, function (ctx, t, dest, noise) {
+          var hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 6200;
+          var g = ctx.createGain(); g.connect(dest);
+          g.gain.setValueAtTime(1, t); g.gain.exponentialRampToValueAtTime(EPS, t + 0.24);
+          var ns = ctx.createBufferSource(); ns.buffer = noise; ns.loop = true;
+          ns.connect(hp); hp.connect(g); ns.start(t); ns.stop(t + 0.36);
+        });
+        add("crash" + idx, 1.9, function (ctx, t, dest, noise) {
+          var hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 3800;
+          var g = ctx.createGain(); g.connect(dest);
+          g.gain.setValueAtTime(1, t); g.gain.exponentialRampToValueAtTime(EPS, t + 1.6);
+          var ns = ctx.createBufferSource(); ns.buffer = noise; ns.loop = true;
+          ns.connect(hp); hp.connect(g); ns.start(t); ns.stop(t + 1.8);
+        });
+      })(M === 0 ? 0.5 : 1.0, M);
+    }
+
+    var isTrap = song.genre === "trap";
+    add("bass", barSec * 1.6, function (ctx, t, dest) {
+      var o = ctx.createOscillator();
+      o.type = isTrap ? "sine" : "sawtooth";
+      o.frequency.setValueAtTime(mtof(REF_LOW), t);
+      var lp = ctx.createBiquadFilter(); lp.type = "lowpass";
+      lp.frequency.value = isTrap ? 240 : 900; lp.Q.value = isTrap ? 0.7 : 4;
+      var g = ctx.createGain(); g.connect(dest);
+      g.gain.setValueAtTime(EPS, t);
+      g.gain.exponentialRampToValueAtTime(0.85, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.5, t + 0.14);
+      g.gain.exponentialRampToValueAtTime(EPS, t + barSec * 1.55);
+      o.connect(lp); lp.connect(g); o.start(t); o.stop(t + barSec * 1.6);
+    });
+    add("sub", barSec * 1.6, function (ctx, t, dest) {
+      var o = ctx.createOscillator(); o.type = "sine"; o.frequency.value = mtof(REF_LOW);
+      var slp = ctx.createBiquadFilter(); slp.type = "lowpass"; slp.frequency.value = 120;
+      var g = ctx.createGain(); slp.connect(g); g.connect(dest);
+      g.gain.setValueAtTime(EPS, t);
+      g.gain.exponentialRampToValueAtTime(0.9, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(EPS, t + barSec * 1.55);
+      o.connect(slp); o.start(t); o.stop(t + barSec * 1.6);
+    });
+    add("pluck", 1.1, function (ctx, t, dest) {
+      var o = ctx.createOscillator(); o.type = "triangle"; o.frequency.value = mtof(REF_HIGH);
+      var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 3200; lp.Q.value = 1.1;
+      var g = ctx.createGain(); g.connect(dest);
+      g.gain.setValueAtTime(EPS, t);
+      g.gain.exponentialRampToValueAtTime(0.8, t + 0.005);
+      g.gain.exponentialRampToValueAtTime(EPS, t + 0.95);
+      o.connect(lp); lp.connect(g); o.start(t); o.stop(t + 1.05);
+    });
+    add("lead", 1.8, function (ctx, t, dest) {
+      var g = ctx.createGain(); g.connect(dest);
+      g.gain.setValueAtTime(EPS, t);
+      g.gain.exponentialRampToValueAtTime(0.7, t + 0.014);
+      g.gain.exponentialRampToValueAtTime(0.42, t + 0.2);
+      g.gain.exponentialRampToValueAtTime(EPS, t + 1.7);
+      var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 3600; lp.Q.value = 1.3;
+      var pk = ctx.createBiquadFilter(); pk.type = "peaking"; pk.frequency.value = 3000;
+      pk.Q.value = 0.9; pk.gain.value = 3;
+      lp.connect(pk); pk.connect(g);
+      for (var d = 0; d < 2; d++) {
+        var o = ctx.createOscillator(); o.type = "sawtooth";
+        o.frequency.value = mtof(REF_HIGH); o.detune.value = d === 0 ? -5 : 5;
+        var ng = ctx.createGain(); ng.gain.value = 0.5;
+        o.connect(ng); ng.connect(lp); o.start(t); o.stop(t + 1.75);
+      }
+    });
+    add("keys", 2.0, function (ctx, t, dest) {
+      var g = ctx.createGain(); g.connect(dest);
+      g.gain.setValueAtTime(EPS, t);
+      g.gain.exponentialRampToValueAtTime(0.8, t + 0.008);
+      g.gain.exponentialRampToValueAtTime(0.3, t + 0.35);
+      g.gain.exponentialRampToValueAtTime(EPS, t + 1.9);
+      var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 2600;
+      lp.connect(g);
+      var o1 = ctx.createOscillator(); o1.type = "triangle"; o1.frequency.value = mtof(REF_HIGH);
+      var o2 = ctx.createOscillator(); o2.type = "sine"; o2.frequency.value = mtof(REF_HIGH + 12);
+      var g2 = ctx.createGain(); g2.gain.value = 0.3;
+      o1.connect(lp); o2.connect(g2); g2.connect(lp);
+      o1.start(t); o1.stop(t + 1.95); o2.start(t); o2.stop(t + 1.95);
+    });
+    add("pad", padLen, function (ctx, t, dest) {
+      var g = ctx.createGain(); g.connect(dest);
+      g.gain.setValueAtTime(EPS, t);
+      g.gain.exponentialRampToValueAtTime(0.8, t + Math.min(0.9, padLen * 0.16));
+      g.gain.setValueAtTime(0.8, t + padLen * 0.62);
+      g.gain.exponentialRampToValueAtTime(EPS, t + padLen * 0.98);
+      var lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 1500; lp.Q.value = 0.6;
+      var php = ctx.createBiquadFilter(); php.type = "highpass"; php.frequency.value = 200;
+      lp.connect(php); php.connect(g);
+      for (var d2 = 0; d2 < 3; d2++) {
+        var o = ctx.createOscillator(); o.type = "sawtooth";
+        o.frequency.value = mtof(REF_HIGH); o.detune.value = (d2 - 1) * 7;
+        var ng2 = ctx.createGain(); ng2.gain.value = 0.33;
+        o.connect(ng2); ng2.connect(lp); o.start(t); o.stop(t + padLen);
+      }
+    });
+    add("riser", Math.min(8, barSec * 1.1), function (ctx, t, dest, noise) {
+      var dur = Math.min(8, barSec * 1.1);
+      var bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.Q.value = 4;
+      bp.frequency.setValueAtTime(400, t);
+      bp.frequency.exponentialRampToValueAtTime(7600, t + dur * 0.95);
+      var g = ctx.createGain(); g.connect(dest);
+      g.gain.setValueAtTime(EPS, t);
+      g.gain.exponentialRampToValueAtTime(0.75, t + dur * 0.95);
+      g.gain.exponentialRampToValueAtTime(EPS, t + dur);
+      var ns = ctx.createBufferSource(); ns.buffer = noise; ns.loop = true;
+      ns.connect(bp); bp.connect(g); ns.start(t); ns.stop(t + dur);
+    });
+
+    var pad = 0.05, offsets = [], total = 0, i;
+    for (i = 0; i < specs.length; i++) { offsets.push(total); total += specs[i].dur + pad; }
+    var ctx = new OfflineAudioContext(1, Math.ceil(total * SR), SR);
+    var noise = noiseBuf(ctx, rng, 2);
+    for (i = 0; i < specs.length; i++) specs[i].fn(ctx, offsets[i], ctx.destination, noise);
+    return ctx.startRendering().then(function (rendered) {
+      var data = rendered.getChannelData(0), bank = {};
+      for (var j = 0; j < specs.length; j++) {
+        var from = Math.floor(offsets[j] * SR), n = Math.floor(specs[j].dur * SR);
+        var b = new AudioBuffer({ length: n, sampleRate: SR, numberOfChannels: 1 });
+        b.copyToChannel(data.subarray(from, from + n), 0);
+        bank[specs[j].key] = b;
+      }
+      return bank;
+    });
+  }
+
+  /* ---------- the song ----------
+     Notes are mixed straight into buffers here rather than scheduled as nodes. A scheduled
+     node is not released when it finishes, so its cost is (node x whole render length) —
+     measured at ~17 ms per note on a 74 s song, which is most of the render. Mixing is
+     O(samples actually written), and the graph is then a fixed dozen nodes for the effects. */
+  var DRUM_LAYERS = { kick: 4, snare: 4, hat: 4, ghost: 2, ohat: 2, crash: 2 };
+  var VOICE = {
+    kick:  { g: 0.95, pan:  0.00, rev: 0.03, dly: 0.00 },
+    snare: { g: 0.62, pan:  0.04, rev: 0.22, dly: 0.00 },
+    ghost: { g: 0.36, pan: -0.06, rev: 0.14, dly: 0.00 },
+    hat:   { g: 0.30, pan:  0.10, rev: 0.05, dly: 0.00 },
+    ohat:  { g: 0.28, pan:  0.12, rev: 0.08, dly: 0.00 },
+    crash: { g: 0.38, pan: -0.10, rev: 0.30, dly: 0.00 },
+    bass:  { g: 0.72, pan:  0.00, rev: 0.00, dly: 0.00 },
+    sub:   { g: 0.66, pan:  0.00, rev: 0.00, dly: 0.00 },
+    pad:   { g: 0.40, pan:  0.00, rev: 0.50, dly: 0.00 },
+    keys:  { g: 0.42, pan: -0.12, rev: 0.30, dly: 0.12 },
+    pluck: { g: 0.34, pan:  0.14, rev: 0.22, dly: 0.24 },
+    lead:  { g: 0.40, pan: -0.05, rev: 0.26, dly: 0.30 },
+    riser: { g: 0.34, pan:  0.00, rev: 0.30, dly: 0.00 }
+  };
+
+  function renderSong(song, bank, rng) {
+    var tail = 3.4;
+    var total = Math.ceil((song.seconds + tail) * SR);
+    var ctx = new OfflineAudioContext(2, total, SR);
+    var beatSec = 60 / song.bpm;
+
+    /* mixed into directly — no intermediate JS arrays to hold alongside the buffers */
+    var dryBuf = ctx.createBuffer(2, total, SR);
+    var revBuf = ctx.createBuffer(1, total, SR);
+    var dlyBuf = ctx.createBuffer(1, total, SR);
+    var dL = dryBuf.getChannelData(0), dR = dryBuf.getChannelData(1);
+    var rv = revBuf.getChannelData(0), dl = dlyBuf.getChannelData(0);
+
+    var evs = song.events, fadeF = Math.floor(SR * 0.04);
+    for (var i = 0; i < evs.length; i++) {
+      var e = evs[i], spec = VOICE[e.v];
+      if (!spec) continue;
+      var layers = DRUM_LAYERS[e.v], src, rate = 1;
+      if (layers) {
+        var li = Math.max(0, Math.min(layers - 1, Math.round(e.vel * (layers - 1))));
+        src = bank[e.v + li];
+      } else {
+        src = bank[e.v];
+        if (e.v !== "riser") {
+          var ref = (e.v === "bass" || e.v === "sub") ? REF_LOW : REF_HIGH;
+          rate = Math.pow(2, (e.p - ref) / 12);
+        }
+      }
+      if (!src) continue;
+      var s = src.getChannelData(0), sn = s.length;
+      var start = Math.floor(e.t * SR);
+      if (start < 0) start = 0;
+      var g = spec.g * e.vel;
+      var ang = (spec.pan + 1) * Math.PI / 4;
+      var gl = Math.cos(ang) * Math.SQRT2, gr = Math.sin(ang) * Math.SQRT2;
+      var rvA = spec.rev, dlA = spec.dly;
+      /* pitched notes are cut to their written length with a short fade; drums ring out */
+      var stop = layers ? total : Math.min(total, start + Math.floor((e.d + 0.3) * SR));
+      var pos = 0, k = start;
+      while (k < stop) {
+        var i0 = pos | 0;
+        if (i0 >= sn - 1) break;
+        var v = (s[i0] + (s[i0 + 1] - s[i0]) * (pos - i0)) * g;
+        var left = stop - k;
+        if (left < fadeF) v *= left / fadeF;
+        dL[k] += v * gl; dR[k] += v * gr;
+        if (rvA) rv[k] += v * rvA;
+        if (dlA) dl[k] += v * dlA;
+        k++; pos += rate;
+      }
+    }
+
+    var master = ctx.createGain(); master.gain.value = 0.55;
+    var shaper = ctx.createWaveShaper(); shaper.curve = tanhCurve();
+    var dcHp = ctx.createBiquadFilter(); dcHp.type = "highpass"; dcHp.frequency.value = 25;
+    master.connect(shaper); shaper.connect(dcHp); dcHp.connect(ctx.destination);
+
+    var pre = ctx.createDelay(0.2); pre.delayTime.value = 0.018;
+    var conv = ctx.createConvolver(); conv.normalize = false;
+    conv.buffer = makeIR(ctx, rng, song.genre === "ambient" ? 3.0 : 2.1, song.brief.energy);
+    var revHp = ctx.createBiquadFilter(); revHp.type = "highpass"; revHp.frequency.value = 300;
+    var revOut = ctx.createGain(); revOut.gain.value = song.reverb;
+    pre.connect(conv); conv.connect(revHp); revHp.connect(revOut); revOut.connect(master);
+
+    var dly = ctx.createDelay(2); dly.delayTime.value = Math.min(1.9, beatSec * 0.75);
+    var fb = ctx.createGain(); fb.gain.value = 0.36;
+    var fbLp = ctx.createBiquadFilter(); fbLp.type = "lowpass"; fbLp.frequency.value = 2400;
+    var dlyOut = ctx.createGain(); dlyOut.gain.value = song.delay;
+    dly.connect(fbLp); fbLp.connect(fb); fb.connect(dly); dly.connect(dlyOut); dlyOut.connect(master);
+
+    function feed(buffer, dest) {
+      var s2 = ctx.createBufferSource(); s2.buffer = buffer; s2.connect(dest); s2.start(0); return s2;
+    }
+    feed(dryBuf, master); feed(revBuf, pre); feed(dlyBuf, dly);
+
+    return ctx.startRendering().then(function (buf) {
+      var peak = 0, ch, d, j, a;
+      for (ch = 0; ch < buf.numberOfChannels; ch++) {
+        d = buf.getChannelData(ch);
+        for (j = 0; j < d.length; j++) { a = d[j] < 0 ? -d[j] : d[j]; if (a > peak) peak = a; }
+      }
+      /* post-render normalisation to -1 dBFS. A compressor would pump and would shift the
+         whole bus by its lookahead; scaling finished samples cannot. */
+      var gain = peak > 1e-6 ? 0.891 / peak : 1;
+      if (gain > 12) gain = 12;
+      for (ch = 0; ch < buf.numberOfChannels; ch++) {
+        d = buf.getChannelData(ch);
+        for (j = 0; j < d.length; j++) d[j] *= gain;
+      }
+      var fade = Math.floor(SR * 0.012);
+      for (ch = 0; ch < buf.numberOfChannels; ch++) {
+        d = buf.getChannelData(ch);
+        for (j = 0; j < fade; j++) { d[j] *= j / fade; d[d.length - 1 - j] *= j / fade; }
+      }
+      return buf;
+    });
+  }
+
+  return { SR: SR, renderBank: renderBank, renderSong: renderSong, makeIR: makeIR };
+})();
+</script>
+
+<script>
+/* ---------------- export: AAC in an MP4 container, WAV where AAC is unavailable -------------- */
+var EXPORT = (function () {
+  "use strict";
+
+  function encodeWav(buf) {
+    var n = buf.length, ch = buf.numberOfChannels, sr = buf.sampleRate;
+    var total = 44 + n * ch * 2;
+    var ab = new ArrayBuffer(total), dv = new DataView(ab);
+    function tag(off, s) { for (var i = 0; i < 4; i++) dv.setUint8(off + i, s.charCodeAt(i)); }
+    tag(0, "RIFF"); dv.setUint32(4, total - 8, true); tag(8, "WAVE");
+    tag(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true);
+    dv.setUint16(22, ch, true); dv.setUint32(24, sr, true);
+    dv.setUint32(28, sr * ch * 2, true); dv.setUint16(32, ch * 2, true); dv.setUint16(34, 16, true);
+    tag(36, "data"); dv.setUint32(40, n * ch * 2, true);
+    var chans = [], c;
+    for (c = 0; c < ch; c++) chans.push(buf.getChannelData(c));
+    var o = 44;
+    for (var i = 0; i < n; i++) {
+      for (c = 0; c < ch; c++) {
+        var s = chans[c][i];
+        s = s < -1 ? -1 : s > 1 ? 1 : s;          /* clamp BEFORE rounding, or 1.0001 wraps */
+        dv.setInt16(o, Math.round(s * 32767), true);
+        o += 2;
+      }
+    }
+    return new Blob([ab], { type: "audio/wav" });
+  }
+
+  /* ---- ISO-BMFF writing ---- */
+  function u32(n) { n = n >>> 0; return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]; }
+  function u16(n) { return [(n >>> 8) & 255, n & 255]; }
+  function s4(s) { return [s.charCodeAt(0), s.charCodeAt(1), s.charCodeAt(2), s.charCodeAt(3)]; }
+  function cat() {
+    var out = [];
+    for (var i = 0; i < arguments.length; i++) {
+      var a = arguments[i];
+      for (var j = 0; j < a.length; j++) out.push(a[j]);
+    }
+    return out;
+  }
+  function box(type) {
+    var parts = Array.prototype.slice.call(arguments, 1);
+    var body = cat.apply(null, parts);
+    return cat(u32(body.length + 8), s4(type), body);
+  }
+  function fbox(type, version, flags) {
+    var parts = Array.prototype.slice.call(arguments, 3);
+    var body = cat.apply(null, parts);
+    return cat(u32(body.length + 12), s4(type),
+      [version, (flags >> 16) & 255, (flags >> 8) & 255, flags & 255], body);
+  }
+  function descLen(n) {
+    var out = [];
+    do { var b = n & 0x7f; n >>>= 7; out.unshift(n > 0 ? (b | 0x80) : b); } while (n > 0);
+    return out;
+  }
+  var MATRIX = cat(u32(0x00010000), u32(0), u32(0), u32(0), u32(0x00010000), u32(0), u32(0), u32(0), u32(0x40000000));
+
+  /* Safari 26 (WebKit #302253) hands back the AudioToolbox magic cookie — a full
+     ES_Descriptor — instead of the 2-byte AudioSpecificConfig. Splicing that into esds
+     verbatim yields an MP4 that plays as silence, with no error anywhere. */
+  function extractASC(desc) {
+    var u = desc instanceof Uint8Array ? desc : new Uint8Array(desc);
+    if (!u.length || u[0] !== 0x03) return u;
+    var i = 1;
+    function rd() { var len = 0, b; do { b = u[i++]; len = (len << 7) | (b & 0x7f); } while (b & 0x80); return len; }
+    rd(); i += 3;
+    if (u[i] !== 0x04) return u;
+    i++; rd(); i += 13;
+    if (u[i] !== 0x05) return u;
+    i++; var l = rd();
+    return u.subarray(i, i + l);
+  }
+
+  function buildMp4(asc, frames, sr, channels) {
+    var nFrames = frames.length, i;
+    var mdatSize = 0;
+    for (i = 0; i < nFrames; i++) mdatSize += frames[i].length;
+    var duration = nFrames * 1024;
+    var priming = 1024;
+
+    var dsi = cat([0x05], descLen(asc.length), Array.prototype.slice.call(asc));
+    var dcdBody = cat([0x40, 0x15], [0, 0, 0], u32(0), u32(0), dsi);
+    var dcd = cat([0x04], descLen(dcdBody.length), dcdBody);
+    var sl = cat([0x06], descLen(1), [0x02]);
+    var esBody = cat(u16(1), [0x00], dcd, sl);
+    var es = cat([0x03], descLen(esBody.length), esBody);
+    var esds = fbox("esds", 0, 0, es);
+
+    var mp4a = box("mp4a",
+      [0, 0, 0, 0, 0, 0], u16(1),
+      u16(0), u16(0), u32(0),
+      u16(channels), u16(16),
+      u16(0), u16(0),
+      u32(sr * 65536),
+      esds);
+
+    var stsd = fbox("stsd", 0, 0, u32(1), mp4a);
+    /* media timescale IS the sample rate, so every frame is exactly 1024 and nothing drifts.
+       A timescale of 1000 would accumulate ~1.5% error — seconds of it over a whole song. */
+    var stts = fbox("stts", 0, 0, u32(1), u32(nFrames), u32(1024));
+    var stsc = fbox("stsc", 0, 0, u32(1), u32(1), u32(nFrames), u32(1));
+    var sizes = [];
+    for (i = 0; i < nFrames; i++) sizes = cat(sizes, u32(frames[i].length));
+    var stsz = fbox("stsz", 0, 0, u32(0), u32(nFrames), sizes);
+
+    var smhd = fbox("smhd", 0, 0, u16(0), u16(0));
+    var dinf = box("dinf", fbox("dref", 0, 0, u32(1), fbox("url ", 0, 1)));
+    var hdlrName = [83, 111, 117, 110, 100, 72, 97, 110, 100, 108, 101, 114, 0];
+    var hdlr = fbox("hdlr", 0, 0, u32(0), s4("soun"), u32(0), u32(0), u32(0), hdlrName);
+    var mdhd = fbox("mdhd", 0, 0, u32(0), u32(0), u32(sr), u32(duration), u16(0x55C4), u16(0));
+    var tkhd = fbox("tkhd", 0, 7, u32(0), u32(0), u32(1), u32(0), u32(duration),
+      u32(0), u32(0), u16(0), u16(0), u16(0x0100), u16(0), MATRIX, u32(0), u32(0));
+    /* AAC has ~1024 samples of encoder priming; without this edit list the file starts late */
+    var edts = box("edts", fbox("elst", 0, 0, u32(1), u32(duration - priming), u32(priming), u16(1), u16(0)));
+    var mvhd = fbox("mvhd", 0, 0, u32(0), u32(0), u32(sr), u32(duration), u32(0x00010000),
+      u16(0x0100), u16(0), u32(0), u32(0), MATRIX,
+      u32(0), u32(0), u32(0), u32(0), u32(0), u32(0), u32(2));
+
+    function assemble(mdatOffset) {
+      var stco = fbox("stco", 0, 0, u32(1), u32(mdatOffset));
+      var stbl = box("stbl", stsd, stts, stsc, stsz, stco);
+      var minf = box("minf", smhd, dinf, stbl);
+      var mdia = box("mdia", mdhd, hdlr, minf);
+      var trak = box("trak", tkhd, edts, mdia);
+      return box("moov", mvhd, trak);
+    }
+    var ftyp = box("ftyp", s4("isom"), u32(0x200), s4("isom"), s4("iso2"), s4("mp41"));
+    /* stco holds a fixed-width offset, so measuring with a placeholder then rebuilding
+       keeps moov exactly the same size — this is faststart in five lines */
+    var moovLen = assemble(0).length;
+    var moov = assemble(ftyp.length + moovLen + 8);
+
+    var out = new Uint8Array(ftyp.length + moov.length + 8 + mdatSize);
+    var p = 0;
+    out.set(ftyp, p); p += ftyp.length;
+    out.set(moov, p); p += moov.length;
+    out.set(u32(mdatSize + 8), p); p += 4;
+    out.set(s4("mdat"), p); p += 4;
+    for (i = 0; i < nFrames; i++) { out.set(frames[i], p); p += frames[i].length; }
+    return out;
+  }
+
+  function encodeAac(buf, onProgress) {
+    if (typeof AudioEncoder === "undefined") return Promise.resolve(null);
+    var ch = Math.min(2, buf.numberOfChannels), sr = buf.sampleRate;
+    var cfg = { codec: "mp4a.40.2", sampleRate: sr, numberOfChannels: ch, bitrate: 192000 };
+    return AudioEncoder.isConfigSupported(cfg).then(function (res) {
+      if (!res || !res.supported) return null;
+      var frames = [], desc = null, err = null;
+      var enc = new AudioEncoder({
+        output: function (chunk, meta) {
+          /* decoderConfig arrives on the FIRST chunk only */
+          if (!desc && meta && meta.decoderConfig && meta.decoderConfig.description) {
+            desc = new Uint8Array(meta.decoderConfig.description);
+          }
+          var b = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(b);
+          frames.push(b);
+        },
+        error: function (e) { err = e; }
+      });
+      enc.configure(cfg);
+      var n = buf.length;
+      var c0 = buf.getChannelData(0), c1 = ch > 1 ? buf.getChannelData(1) : c0;
+      var BLK = 9600, i = 0;
+      function step() {
+        if (err || i >= n) return Promise.resolve();
+        var len = Math.min(BLK, n - i);
+        var planar = new Float32Array(len * ch);       /* planar: ch0 in full, then ch1 */
+        planar.set(c0.subarray(i, i + len), 0);
+        if (ch > 1) planar.set(c1.subarray(i, i + len), len);
+        var ad = new AudioData({
+          format: "f32-planar", sampleRate: sr, numberOfFrames: len, numberOfChannels: ch,
+          timestamp: Math.round((i / sr) * 1e6),        /* MICROseconds, monotonic */
+          data: planar
+        });
+        enc.encode(ad);
+        ad.close();
+        if (onProgress) onProgress(i / n);
+        i += len;
+        var wait = enc.encodeQueueSize > 24
+          ? new Promise(function (r) { enc.addEventListener("dequeue", r, { once: true }); })
+          : Promise.resolve();
+        return wait.then(step);
+      }
+      return step()
+        .then(function () { return enc.flush(); })
+        .then(function () {
+          try { enc.close(); } catch (e) { /* already closed */ }
+          if (err || !frames.length || !desc) return null;
+          var asc = extractASC(desc);
+          if (!asc || !asc.length) return null;
+          return {
+            blob: new Blob([buildMp4(asc, frames, sr, ch)], { type: "audio/mp4" }),
+            ext: "m4a", mime: "audio/mp4", codec: "AAC-LC 192 kbps, MP4 container"
+          };
+        })
+        .catch(function () { try { enc.close(); } catch (e) {} return null; });
+    }).catch(function () { return null; });
+  }
+
+  function encode(buf, onProgress) {
+    return encodeAac(buf, onProgress).then(function (aac) {
+      if (aac) return aac;
+      return { blob: encodeWav(buf), ext: "wav", mime: "audio/wav", codec: "WAV, 16-bit PCM" };
+    });
+  }
+
+  return { encode: encode, encodeWav: encodeWav, buildMp4: buildMp4, extractASC: extractASC };
+})();
+</script>
+
+<script>
+/* ---------------- interface ---------------- */
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var promptEl = $("prompt"), goEl = $("go"), hintEl = $("hint"), stageEl = $("stage");
+
+  var S = { song: null, buffer: null, token: 0, url: null, exportUrl: null,
+            actx: null, node: null, startedAt: 0, offset: 0, playing: false, raf: 0, busy: false };
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = text;   /* never innerHTML */
+    return n;
+  }
+  function clock(sec) {
+    if (!isFinite(sec) || sec < 0) sec = 0;
+    var m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+    return m + ":" + (s < 10 ? "0" : "") + s;
+  }
+  function say(msg) { hintEl.textContent = msg; }
+
+  /* ---- project name: the one SDK read. Raced, because off-frame the bootstrap queues
+          forever and the header would otherwise sit on a skeleton for good. ---- */
+  (function loadProject() {
+    var target = $("project");
+    var timeout = new Promise(function (res) { setTimeout(function () { res(null); }, 2500); });
+    var ask;
+    try { ask = window.fredrin.project.get(); } catch (e) { ask = Promise.reject(e); }
+    Promise.race([ask, timeout]).then(function (p) {
+      target.textContent = p && p.name ? p.name : "standalone";
+    }).catch(function () {
+      target.textContent = "offline";
+      target.title = "Fredrin data is unavailable; the music does not need it.";
+    });
+  })();
+
+  /* ---- playback ---- */
+  function stopNode() {
+    if (S.node) {
+      var n = S.node;
+      S.node = null;               /* clear first so the stale onended cannot fire on us */
+      try { n.onended = null; n.stop(); } catch (e) { /* already stopped */ }
+    }
+    S.playing = false;
+    if (S.raf) { cancelAnimationFrame(S.raf); S.raf = 0; }
+  }
+  function position() {
+    if (!S.buffer) return 0;
+    var p = S.playing ? (S.actx.currentTime - S.startedAt) : S.offset;
+    return Math.max(0, Math.min(S.buffer.duration, p));
+  }
+  function startAt(off) {
+    if (!S.buffer) return;
+    stopNode();
+    if (off >= S.buffer.duration - 0.05) off = 0;
+    var n = S.actx.createBufferSource();
+    n.buffer = S.buffer;
+    n.connect(S.actx.destination);
+    n.onended = function () { if (S.node === n) { stopNode(); S.offset = 0; paint(); } };
+    n.start(0, off);
+    S.node = n; S.playing = true; S.offset = off;
+    S.startedAt = S.actx.currentTime - off;
+    tick();
+    paint();
+  }
+  function pause() { S.offset = position(); stopNode(); paint(); }
+  function tick() {
+    /* derived from the audio clock, never accumulated — rAF is stopped, not throttled,
+       while this frame is scrolled out of view */
+    if (!S.playing) return;
+    paintProgress();
+    S.raf = requestAnimationFrame(tick);
+  }
+
+  var refs = {};
+  function paintProgress() {
+    if (!refs.fill || !S.buffer) return;
+    var p = position(), frac = p / S.buffer.duration;
+    refs.fill.style.width = (frac * 100).toFixed(3) + "%";
+    refs.time.textContent = clock(p) + " / " + clock(S.buffer.duration);
+    if (refs.marks) {
+      for (var i = 0; i < refs.marks.length; i++) {
+        var sec = S.song.sections[i];
+        var on = p >= sec.startBar * S.song.barSec &&
+                 p < (sec.startBar + sec.bars) * S.song.barSec;
+        refs.marks[i].className = on ? "on" : "";
+      }
+    }
+  }
+  function paint() {
+    if (refs.play) refs.play.textContent = S.playing ? "Pause" : "Play";
+    if (refs.play) refs.play.setAttribute("aria-label", S.playing ? "Pause" : "Play");
+    paintProgress();
+  }
+
+  /* ---- the song view ---- */
+  var VOICE_ROWS = [
+    ["Drums", ["kick", "snare", "hat"]], ["Bass", ["bass", "sub"]], ["Pad", ["pad"]],
+    ["Keys", ["keys"]], ["Arp", ["pluck"]], ["Lead", ["lead"]]
+  ];
+
+  function renderStage() {
+    var song = S.song;
+    stageEl.textContent = "";
+    stageEl.hidden = false;
+
+    stageEl.appendChild(el("h2", "song-title", song.title));
+    var G = ENGINE.GENRES[song.genre];
+    stageEl.appendChild(el("div", "song-sub",
+      G.label + " · " + song.rootName + " " + song.mode + " · " + song.bpm + " bpm · " +
+      song.sections.length + " sections · " + clock(S.buffer ? S.buffer.duration : song.seconds)));
+
+    var tr = el("div", "transport");
+    refs.play = el("button", "icon", "Play");
+    refs.play.addEventListener("click", function () {
+      if (S.playing) pause(); else startAt(S.offset);
+    });
+    var trackWrap = el("div", "grow");
+    var track = el("div", "track");
+    refs.fill = el("div", "fill");
+    track.appendChild(refs.fill);
+    track.addEventListener("click", function (ev) {
+      var r = track.getBoundingClientRect();
+      var frac = Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width));
+      var to = frac * S.buffer.duration;
+      if (S.playing) startAt(to); else { S.offset = to; paint(); }
+    });
+    trackWrap.appendChild(track);
+    var marksWrap = el("div", "marks");
+    refs.marks = [];
+    for (var i = 0; i < song.sections.length; i++) {
+      var mk = el("span");
+      mk.style.flex = String(song.sections[i].bars);
+      mk.title = song.sections[i].name;
+      marksWrap.appendChild(mk);
+      refs.marks.push(mk);
+    }
+    trackWrap.appendChild(marksWrap);
+    refs.time = el("div", "time", "0:00 / " + clock(song.seconds));
+    tr.appendChild(refs.play); tr.appendChild(trackWrap); tr.appendChild(refs.time);
+    stageEl.appendChild(tr);
+
+    /* --- secondary: how it was read, behind a disclosure --- */
+    var d1 = el("details");
+    d1.appendChild(el("summary", null, "How this was read"));
+    var p1 = el("div", "panel");
+    var dl = el("dl");
+    function pair(k, v) { dl.appendChild(el("dt", null, k)); dl.appendChild(el("dd", null, v)); }
+    pair("Genre", G.label);
+    pair("Key", song.rootName + " " + song.mode);
+    pair("Tempo", song.bpm + " bpm" + (song.swing > 0.5 ? " · swung " + Math.round(song.swing * 100) + "%" : ""));
+    pair("Mood", "valence " + song.brief.valence.toFixed(2) + " · energy " + song.brief.energy.toFixed(2));
+    pair("Form", song.sections.map(function (s) { return s.name; }).join(" → "));
+    pair("Chords", song.chordCount + " over " + song.bars + " bars");
+    pair("Notes", String(song.events.length));
+    p1.appendChild(dl);
+
+    var tbl = el("table", "lanes");
+    for (var r = 0; r < VOICE_ROWS.length; r++) {
+      var row = el("tr");
+      row.appendChild(el("th", null, VOICE_ROWS[r][0]));
+      var td = el("td");
+      var cells = el("div", "cells");
+      for (var sIdx = 0; sIdx < song.sections.length; sIdx++) {
+        var lay = ENGINE.LAYERS[song.sections[sIdx].name];
+        var amt = 0;
+        for (var vI = 0; vI < VOICE_ROWS[r][1].length; vI++) {
+          amt = Math.max(amt, lay[VOICE_ROWS[r][1][vI]] || 0);
+        }
+        var cell = el("i", amt >= 0.8 ? "on" : amt > 0 ? "dim" : "");
+        cell.style.flex = String(song.sections[sIdx].bars);
+        cell.title = song.sections[sIdx].name;
+        cells.appendChild(cell);
+      }
+      td.appendChild(cells); row.appendChild(td); tbl.appendChild(row);
+    }
+    p1.appendChild(tbl);
+    d1.appendChild(p1);
+    stageEl.appendChild(d1);
+
+    /* --- export, behind its own disclosure --- */
+    var d2 = el("details");
+    d2.appendChild(el("summary", null, "Export"));
+    var p2 = el("div", "panel");
+    var expBtn = el("button", null, "Render file");
+    var expNote = el("div", "note", "Encodes the exact audio you just heard.");
+    var expHolder = el("div");
+    expBtn.addEventListener("click", function () { doExport(expBtn, expNote, expHolder); });
+    p2.appendChild(expBtn); p2.appendChild(expNote); p2.appendChild(expHolder);
+    d2.appendChild(p2);
+    stageEl.appendChild(d2);
+
+    paint();
+  }
+
+  function doExport(btn, note, holder) {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    holder.textContent = "";
+    note.textContent = "Encoding…";
+    if (S.exportUrl) { URL.revokeObjectURL(S.exportUrl); S.exportUrl = null; }
+    EXPORT.encode(S.buffer, function (frac) {
+      note.textContent = "Encoding… " + Math.round(frac * 100) + "%";
+    }).then(function (res) {
+      var name = S.song.title.replace(/[^\w\- ]+/g, "").replace(/\s+/g, "-").toLowerCase() || "song";
+      name = name + "." + res.ext;
+      S.exportUrl = URL.createObjectURL(res.blob);
+      var kb = Math.round(res.blob.size / 1024);
+      note.textContent = res.codec + " · " + name + " · " + (kb > 1024 ? (kb / 1024).toFixed(1) + " MB" : kb + " KB");
+
+      var audio = document.createElement("audio");
+      audio.controls = true;
+      audio.src = S.exportUrl;
+      holder.appendChild(audio);
+
+      var row = el("div", "row");
+      var save = el("button", null, "Save");
+      save.addEventListener("click", function () {
+        var a = document.createElement("a");
+        a.href = S.exportUrl; a.download = name;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      });
+      row.appendChild(save);
+      holder.appendChild(row);
+
+      /* The sandbox blocks content-initiated downloads and gives no signal when it does,
+         so this is stated rather than detected. */
+      holder.appendChild(el("div", "note",
+        "Fredrin runs this app in a sandbox that blocks downloads, silently — Save may do " +
+        "nothing here. To keep the file, right-click the player above and choose “Save audio " +
+        "as…”, or use Fredrin's own Download button on this app and open the saved page from " +
+        "your computer, where Save works. The same words always compose the same song, so the " +
+        "file you get either way is identical."));
+      btn.disabled = false;
+    }).catch(function (e) {
+      note.textContent = "";
+      holder.appendChild(el("div", "err", "Could not encode: " + (e && e.message ? e.message : "unknown error")));
+      btn.disabled = false;
+    });
+  }
+
+  /* ---- generate ---- */
+  function generate() {
+    if (S.busy) return;
+    var text = promptEl.value;
+    if (!text.trim()) {
+      text = promptEl.placeholder;
+      promptEl.value = text;
+    }
+    S.busy = true;
+    goEl.disabled = true;
+    stopNode();
+    S.offset = 0;
+    var token = ++S.token;
+    say("Composing…");
+
+    if (!S.actx) {
+      try { S.actx = new AudioContext({ sampleRate: AUDIO.SR }); }
+      catch (e) { S.actx = new AudioContext(); }
+    }
+    if (S.actx.state === "suspended") S.actx.resume();
+
+    /* let the label paint before the graph build takes the main thread */
+    setTimeout(function () {
+      var song, rng;
+      try {
+        song = ENGINE.generate(text);
+        rng = ENGINE.makeRng(song.brief.seed + "/audio");
+      } catch (e) {
+        fail(e); return;
+      }
+      say("Composing… synthesising " + song.events.length + " notes");
+      AUDIO.renderBank(song, rng).then(function (kit) {
+        if (token !== S.token) return null;
+        return AUDIO.renderSong(song, kit, rng);
+      }).then(function (buf) {
+        if (!buf || token !== S.token) return;
+        if (S.url) { URL.revokeObjectURL(S.url); S.url = null; }
+        if (S.exportUrl) { URL.revokeObjectURL(S.exportUrl); S.exportUrl = null; }
+        S.song = song;
+        S.buffer = buf;              /* the previous buffer is dropped here, not retained */
+        S.busy = false; goEl.disabled = false;
+        goEl.textContent = "Generate";
+        say("Same words always make the same song.");
+        renderStage();
+        startAt(0);
+      }).catch(fail);
+    }, 16);
+
+    function fail(e) {
+      if (token !== S.token) return;
+      S.busy = false; goEl.disabled = false;
+      say("");
+      stageEl.hidden = false;
+      stageEl.textContent = "";
+      stageEl.appendChild(el("div", "err",
+        "Could not compose that: " + (e && e.message ? e.message : "unknown error") +
+        ". Try different words."));
+    }
+  }
+
+  goEl.addEventListener("click", generate);
+  promptEl.addEventListener("keydown", function (ev) {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") { ev.preventDefault(); generate(); }
+  });
+})();
+</script>
+</body>
+</html>
