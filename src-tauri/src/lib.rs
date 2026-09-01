@@ -166,6 +166,7 @@ pub struct GenerateInput {
 }
 
 /// Which backend a request named.
+#[derive(Debug)]
 enum Backend {
     Higgsfield,
     Agent(Agent),
