@@ -82,7 +82,13 @@ impl Settings {
 
 /// What the frontend sees: whether the CLI is reachable (and where), the stored custom
 /// model, and *about* the key — never the key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// `Serialize` only, deliberately. This is a redacted, lossy projection of [`Settings`] —
+/// a mask stands where the key id is — so it has no meaningful inverse, and nothing has
+/// ever deserialized one. The `Deserialize` it used to carry was free while every field
+/// was a primitive and became a hard error the moment one was not: it silently required
+/// every future field of an outbound-only view to be deserializable too.
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsView {
     /// The **Higgsfield** CLI binary was found — a Higgsfield generation can at least be
@@ -258,11 +264,12 @@ mod tests {
         let view = SettingsView::new(
             &Settings::default(),
             Some(Path::new("/usr/local/bin/higgsfield")),
+            Vec::new(),
         );
         assert!(view.configured);
         assert_eq!(view.cli_path.as_deref(), Some("/usr/local/bin/higgsfield"));
 
-        let view = SettingsView::new(&Settings::default(), None);
+        let view = SettingsView::new(&Settings::default(), None, Vec::new());
         assert!(!view.configured);
         assert_eq!(view.cli_path, None);
     }
@@ -271,14 +278,14 @@ mod tests {
     /// think it can generate. Every "Connect Higgsfield" gate reads `configured`.
     #[test]
     fn a_stored_key_does_not_make_the_app_look_connected() {
-        let view = SettingsView::new(&with_key(), None);
+        let view = SettingsView::new(&with_key(), None, Vec::new());
         assert!(view.has_api_key, "the key is stored");
         assert!(!view.configured, "but the CLI is still what renders");
     }
 
     #[test]
     fn the_view_carries_a_mask_and_never_the_credential() {
-        let view = SettingsView::new(&with_key(), None);
+        let view = SettingsView::new(&with_key(), None, Vec::new());
         assert!(view.has_api_key);
         assert_eq!(view.api_key_id_hint, "••••••••••••••7fa2");
 
@@ -299,7 +306,7 @@ mod tests {
             ..Settings::default()
         };
         assert!(half.credential().is_none());
-        assert!(!SettingsView::new(&half, None).has_api_key);
+        assert!(!SettingsView::new(&half, None, Vec::new()).has_api_key);
     }
 
     #[test]
@@ -375,7 +382,10 @@ mod tests {
 
         assert_eq!(saved.api_key_id, "test-id");
         assert_eq!(saved.api_key_secret, "test-secret");
-        assert_eq!(SettingsView::new(&saved, None).api_key_id_hint, "•••t-id");
+        assert_eq!(
+            SettingsView::new(&saved, None, Vec::new()).api_key_id_hint,
+            "•••t-id"
+        );
     }
 
     /// Blank-means-keep would otherwise make a stored credential permanent. Forget is the

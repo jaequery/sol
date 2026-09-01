@@ -283,7 +283,42 @@ pnpm test                                             # vitest — timeline logi
 cargo test -p solcut-agent -p solcut-higgsfield -p solcut-render
 cargo clippy -p solcut-agent -p solcut-higgsfield -p solcut-render --all-targets -- -D warnings
 cargo fmt --all --check
+cargo clippy -p solcut --all-targets -- -D warnings   # the shell; needs the libraries above
 ```
+
+### Checking the shell without a GUI toolchain
+
+That last line is the one that is easy to skip, and skipping it is how a `solcut` lib that
+did not compile once reached `main` with every other check green: the three crates above
+are deliberately Tauri-free so they build anywhere, which leaves `src-tauri/src` — the
+commands, the settings view, the job loop — compiled by nothing at all. Its `#[cfg(test)]`
+modules are worse off again, because a plain `cargo build` never reaches them; that is
+where six stale call sites sat unnoticed through four releases.
+
+On a machine without the Linux system libraries — a CI box, an agent worktree — check the
+shell against **macOS** instead. `cargo check` never links, so the only thing in the way is
+a handful of C and Objective-C files in build scripts, and an empty object file satisfies
+every one of them:
+
+```bash
+rustup target add aarch64-apple-darwin
+cat > /tmp/noop-cc <<'SH'
+#!/bin/sh
+for a in "$@"; do
+  case $a in -Fo*) a=${a#-Fo};; *.o) ;; *) continue;; esac
+  mkdir -p "$(dirname "$a")" && : > "$a"
+done
+SH
+chmod +x /tmp/noop-cc
+
+CC_aarch64_apple_darwin=/tmp/noop-cc \
+  cargo clippy --workspace --all-targets --target aarch64-apple-darwin -- -D warnings
+```
+
+This is the real build minus the link step: it runs `build.rs` (which validates
+`tauri.conf.json` and the capability files), expands every `#[tauri::command]` and
+`generate_handler!`, and runs borrow-checking — none of which the crate-level checks above
+reach. It cannot tell you the app *launches*, only that it compiles.
 
 Everything above runs offline against a stub `higgsfield` executable. To prove the real
 CLI on this machine — one read-only model listing, nothing generated and nothing charged,

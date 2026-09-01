@@ -1,2 +1,5 @@
-allowBuilds:
-  esbuild: set this to true or false
+# esbuild ships its binary as a platform optional dependency and its install script only
+# links it into place. pnpm 10 holds every dependency build script until it is named here,
+# so without this line every `pnpm install` ends on an "Ignored build scripts" warning.
+onlyBuiltDependencies:
+  - esbuild
