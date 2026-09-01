@@ -24,6 +24,12 @@ closed by every exit they offer.
 >   transition picker's `Model` label, `✦ Generate image` offers nothing it would refuse
 >   (empty prompt, no CLI), and a bin tile becomes a reference toggle whose remove button
 >   stands down — which is what keeps a `<button>` out of a `<button>`.
+> - **The Duration box** (SOL-VEKYO9) — the inspector's numeric length. Covered by
+>   `describe('a typed length')`, which is driven by a `RESIZABLE` table rather than one
+>   sampled clip: every case runs once per element type that wears edge handles, and a
+>   sibling test reads back every resize handle the app renders and fails if a resizable
+>   element type is missing from that table. That is what makes "any element type, not a
+>   subset" falsifiable instead of a sentence in a ticket.
 
 **Result: 19 defects found and fixed, 14 more found and documented below.**
 
