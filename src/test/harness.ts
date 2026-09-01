@@ -53,6 +53,10 @@ export function resetEditor(): void {
     snapping: true,
     pxPerSecond: 100,
     saveError: null,
+    projectPath: null,
+    saveBlocked: false,
+    pendingSwitch: null,
+    projectMenuOpen: false,
   });
 }
 

@@ -126,7 +126,9 @@ describe('restoring at launch', () => {
     });
     // The `asset:` URL is rebuilt from the stored path, never restored from the old session.
     expect(useEditor.getState().assets.asset_p.src).toBe(`asset://${PHOTO_PATH}`);
-    expect(screen.getByText('1 clips')).toBeInTheDocument();
+    // The scratch is the untitled project, and the bar says so — it names the project now
+    // rather than counting its clips, which the timeline was already showing.
+    expect(screen.getByRole('button', { name: 'Untitled project' })).toBeInTheDocument();
   });
 
   it('starts empty on a fresh install, and says nothing about it', async () => {
