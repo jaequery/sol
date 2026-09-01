@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as backend from '../lib/backend';
 import { animatableCuts, useEditor } from '../state/store';
-import type { AudioTrack, Clip, ClipEdge, Generation, MediaAsset, Selection } from '../types/project';
+import {
+  DEFAULT_PX_PER_SECOND,
+  MAX_PX_PER_SECOND,
+  MIN_PX_PER_SECOND,
+  type AudioTrack,
+  type Clip,
+  type ClipEdge,
+  type Generation,
+  type MediaAsset,
+  type Selection,
+} from '../types/project';
 import {
   canDeleteSelection,
   canSplitAt,
@@ -596,13 +606,13 @@ export function Timeline() {
           ZOOM
           <input
             type="range"
-            min={12}
-            max={160}
+            min={MIN_PX_PER_SECOND}
+            max={MAX_PX_PER_SECOND}
             value={pxPerSecond}
             aria-label="Timeline zoom"
             onChange={(e) => useEditor.setState({ pxPerSecond: Number(e.target.value) })}
           />
-          {Math.round((pxPerSecond / 46) * 100)}%
+          {Math.round((pxPerSecond / DEFAULT_PX_PER_SECOND) * 100)}%
         </label>
       </div>
 

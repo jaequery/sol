@@ -11,9 +11,9 @@ import { Timeline } from './components/Timeline';
 import { Toasts } from './components/Toasts';
 import { TitleBar } from './components/TitleBar';
 import { Transport } from './components/Transport';
-import { onExportProgress, onGenerationUpdate } from './lib/backend';
+import { onExportProgress, onGenerationUpdate, onWindowClose } from './lib/backend';
 import { nextPlayheadMs } from './lib/preview-sync';
-import { useEditor, type RestoreOutcome } from './state/store';
+import { liveGenerationKey, unsavedChanges, useEditor, type RestoreOutcome } from './state/store';
 
 export function App() {
   useBackendEvents();
@@ -81,32 +81,72 @@ const SAVE_DEBOUNCE_MS = 500;
  * drag would save nothing at all. This is the promise that an edit lands even mid-gesture.
  */
 const SAVE_MAX_WAIT_MS = 5000;
+/**
+ * How often the editor is asked whether anything is still unwritten.
+ *
+ * The change stream is not the whole story, which is why this exists at all rather than
+ * being a second way to do the same job:
+ *
+ * - **A write that failed** — an unplugged drive, a full disk — used to sit there unwritten
+ *   until the user happened to make another edit. Now it is retried on its own.
+ * - **Where the user is looking** deliberately does not trigger the debounce, because the
+ *   playhead moves sixty times a second during playback. This is what gets it to disk.
+ * - **Anything the change stream misses** lands within one interval instead of never.
+ *
+ * Deliberately the same number as the ceiling above: both answer "how stale is the file
+ * allowed to be", and two different answers to that would be two things to reason about.
+ */
+const SAVE_HEARTBEAT_MS = 5000;
+/**
+ * How long the last write gets before the window closes anyway.
+ *
+ * The close is *held* for the flush, so a write that never settles is a window that never
+ * shuts. Losing the last edit is a bad outcome; an editor the user cannot quit is a worse
+ * one, so the wait is bounded.
+ */
+const CLOSE_FLUSH_TIMEOUT_MS = 3000;
 
 /**
- * The saved project: put it back at launch, then keep it written as the timeline changes.
+ * The saved project: put it back at launch, then keep it written as the editor changes.
  *
  * Autosave is still the whole of how a project reaches disk — Save as… only decides *which*
- * file that is. Two rules carry it:
+ * file that is. Three rules carry it:
  *
- * 1. **Restore answers before autosave starts.** Arming the subscription first would let
- *    an empty editor write over a good project before the read came back.
+ * 1. **Restore answers before *any* writer starts.** Arming a writer first would let an
+ *    empty editor write over a good project before the read came back. There are three
+ *    writers now — the change subscription, the heartbeat and the close flush — and all
+ *    three are armed in `arm`, together, for exactly this reason. Before that, the close
+ *    listener is not registered at all, so a window closed during a slow restore closes
+ *    natively and writes nothing: fail-open, which is the safe direction.
  * 2. **The refusal lives in the store, not here.** A project that must not be overwritten
  *    sets `saveBlocked`, and `persistProject` writes nothing while it is up. This hook used
  *    to enforce that by never subscribing, which also meant a session could never be
  *    un-blocked: opening another project or naming this one had no way to turn saving back
  *    on. It subscribes unconditionally now, and the store decides each write.
+ * 3. **The restore happens once per editor**, however many times the effect runs.
  */
 function useProjectPersistence() {
   const restoreProject = useEditor((s) => s.restoreProject);
-  // Survives StrictMode's deliberate mount/unmount/mount, so the restore runs once per
-  // editor rather than twice — the second run would find its own work already on the
-  // timeline and mistake it for the user having got there first.
-  const outcome = useRef<RestoreOutcome | null>(null);
+  /**
+   * The restore, shared across StrictMode's deliberate mount → unmount → mount.
+   *
+   * This holds the *promise*, and that is the whole fix. It used to hold the outcome, which
+   * is only assigned once the promise resolves — long after StrictMode's remount, which is
+   * synchronous. So both effect runs found it null and started their own restore; the first
+   * installed the project and the second found clips already on the timeline, concluded the
+   * editor had been in use, and switched saving off for the rest of the session. In a
+   * development build — how the app is actually run — that meant every launch with a
+   * non-empty project wrote nothing at all, and the next launch was back where the last one
+   * started. Holding the promise makes the second run await the first run's answer.
+   */
+  const restore = useRef<Promise<RestoreOutcome> | null>(null);
 
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
     let unsubscribe: (() => void) | undefined;
+    const unlisten: Array<() => void> = [];
     let writing = false;
     let again = false;
     let pendingSince = 0;
@@ -132,6 +172,21 @@ function useProjectPersistence() {
         });
     };
 
+    /**
+     * The write the window is held open for.
+     *
+     * Awaitable where `flush` is not, which is the whole point: the store queues every
+     * writer, and a `persistProject` joining that queue both waits for anything already in
+     * flight and re-reads the newest state when its own turn comes — so this one call
+     * subsumes the pending debounce and any deferred re-flush behind it.
+     */
+    const flushNow = async () => {
+      clearTimeout(timer);
+      pendingSince = 0;
+      if (disposed) return;
+      await useEditor.getState().persistProject();
+    };
+
     const schedule = () => {
       const now = Date.now();
       if (pendingSince === 0) pendingSince = now;
@@ -139,33 +194,63 @@ function useProjectPersistence() {
       timer = setTimeout(flush, Math.min(SAVE_DEBOUNCE_MS, Math.max(0, pendingSince + SAVE_MAX_WAIT_MS - now)));
     };
 
-    const arm = (result: RestoreOutcome) => {
-      outcome.current = result;
-      if (disposed) return;
+    // Takes no argument on purpose: what the restore *concluded* is the store's business —
+    // a refusal has already set `saveBlocked` there — and the writers arm either way, so
+    // that naming this project or opening another can turn saving back on.
+    const arm = () => {
+      if (disposed || unsubscribe) return;
+
       unsubscribe = useEditor.subscribe((state, prev) => {
-        // Only the document is worth writing. Reference equality is exact here — every
-        // action replaces these immutably — and it is what keeps the playhead, which moves
-        // sixty times a second during playback, from writing the file sixty times a second.
+        // Only the document is worth writing on sight. Reference equality is exact here —
+        // every action replaces these immutably — and it is what keeps the playhead, which
+        // moves sixty times a second during playback, from writing the file sixty times a
+        // second. Where the user is *looking* is saved too, but it rides along with the next
+        // write and the heartbeat rather than causing one.
         if (
           state.clips === prev.clips &&
           state.assets === prev.assets &&
           state.audioTracks === prev.audioTracks &&
           state.cutPrompts === prev.cutPrompts &&
-          state.cutModes === prev.cutModes
+          state.cutModes === prev.cutModes &&
+          // A render starting or ending changes what is worth recording. Compared by
+          // reference first so the common case costs nothing: `applyGenerationUpdate`
+          // replaces this object on every poll to move a progress bar, and none of that
+          // reaches the file — hence the projection rather than the object.
+          (state.generations === prev.generations ||
+            liveGenerationKey(state.generations) === liveGenerationKey(prev.generations))
         ) {
           return;
         }
         schedule();
       });
+
+      heartbeat = setInterval(() => {
+        const state = useEditor.getState();
+        if (state.saveBlocked || !unsavedChanges(state)) return;
+        flush();
+      }, SAVE_HEARTBEAT_MS);
+
+      // The effect can be torn down before `listen` resolves; drop the handle if so —
+      // otherwise StrictMode leaves two handlers registered, both racing to close.
+      void onWindowClose(async () => {
+        // Bounded: the close is held for this, so a write that never settles would be a
+        // window that never shuts.
+        await Promise.race([
+          flushNow(),
+          new Promise<void>((resolve) => setTimeout(resolve, CLOSE_FLUSH_TIMEOUT_MS)),
+        ]);
+      }).then((off) => (disposed ? off() : unlisten.push(off)));
     };
 
-    if (outcome.current !== null) arm(outcome.current);
-    else void restoreProject().then(arm);
+    if (restore.current === null) restore.current = restoreProject();
+    void restore.current.then(arm);
 
     return () => {
       disposed = true;
       clearTimeout(timer);
+      clearInterval(heartbeat);
       unsubscribe?.();
+      unlisten.forEach((off) => off());
     };
   }, [restoreProject]);
 }

@@ -15,15 +15,28 @@
  * - **`MediaAsset.missing`** is a fact about the disk *right now*, not about the project.
  *   It is recomputed too, by probing the paths after the project is back on screen.
  *
- * Anything belonging to a running session — generations, films, playback, selection,
- * dialogs, toasts — is left out entirely. A generation's job dies with the process, so a
- * restored one would be a card that never finishes.
+ * Most of what belongs to a running session — films, playback, selection, dialogs, toasts
+ * — is still left out entirely. Two things are deliberately kept, and both are about
+ * walking back into the room you left:
+ *
+ * - **Where you were**: the playhead, the zoom and the snap toggle (`view`). Position, not
+ *   document, but a restart that opens at 0:00 and default zoom does not feel like the same
+ *   project.
+ * - **What was rendering** (`generations`): the *record* of a generation that was still in
+ *   flight, and nothing a dead process owned. Its job cannot be resumed — there is no job
+ *   id on disk and no re-attach entry point on the Rust side — so a restored one is stamped
+ *   `failed` with an **Interrupted** error and offers Retry. It never re-sends itself.
  */
 
 import {
+  MAX_PX_PER_SECOND,
   MIN_CLIP_DURATION_MS,
+  MIN_PX_PER_SECOND,
   type AudioTrack,
   type Clip,
+  type Generation,
+  type GenerationError,
+  type GenerationTarget,
   type MediaAsset,
   type MediaKind,
   type TransitionMode,
@@ -31,11 +44,33 @@ import {
 } from '../types/project';
 
 /**
+ * What a restored generation says about itself.
+ *
+ * Without an explicit error the existing cards would read "Generation failed" and "The
+ * photo could not be generated" — both untrue. Nothing failed; the app went away
+ * mid-render. `build` is deliberately unset: no backend reported this, and stamping the
+ * running build would attribute the report to something that never made it.
+ */
+export const INTERRUPTED: GenerationError = {
+  title: 'Interrupted',
+  message:
+    'SolCut closed while this was rendering. Nothing was sent again — Retry to start it over.',
+  retryable: true,
+};
+
+/**
  * The stored schema's version.
  *
  * A file from an *older* version this build no longer understands is refused rather than
  * half-read; a file from a *newer* one turns saving off rather than overwriting work a
  * later build is holding.
+ *
+ * **An additive field is not a new version.** Every reader below keys off a named field and
+ * ignores what it does not know, so a build that predates `view`/`generations` reads a file
+ * carrying them, and this build reads one without them. Bumping for that would be actively
+ * destructive: a lower version is `unreadable` (there is no migration path), and for the
+ * untitled scratch an unreadable read means "starting empty — anything you do now replaces
+ * it", which arms the next edit to overwrite the user's whole project.
  */
 export const PROJECT_VERSION = 1;
 
@@ -49,6 +84,30 @@ export interface SavedAsset {
   durationMs?: number;
 }
 
+/** Where the user was looking, as opposed to what they were looking at. */
+export interface SavedView {
+  playheadMs: number;
+  pxPerSecond: number;
+  snapping: boolean;
+}
+
+/**
+ * One in-flight generation as it is stored: exactly what a later Retry needs, and nothing
+ * that belonged to the process that died.
+ *
+ * `jobId` is the pointed omission. It is a handle on a Higgsfield job nothing can re-attach
+ * to, and writing it down is the one thing that would make a restored record *look*
+ * resumable. `status` and `error` are omitted for a different reason: the only status a
+ * restore is allowed to produce is `failed`, so it is stamped on the way in rather than
+ * read from a file a user can hand-edit into resurrecting a card that never finishes.
+ */
+export interface SavedGeneration {
+  id: string;
+  target: GenerationTarget;
+  prompt: string;
+  modelId: string;
+}
+
 export interface ProjectFile {
   version: number;
   assets: SavedAsset[];
@@ -56,6 +115,10 @@ export interface ProjectFile {
   audioTracks: AudioTrack[];
   cutPrompts: Record<string, string>;
   cutModes: Record<string, TransitionMode>;
+  /** Absent in a project written before there was anywhere to put it. */
+  view?: SavedView;
+  /** Only ever the live ones, and never a film leg. Absent when there were none. */
+  generations?: SavedGeneration[];
 }
 
 /** The slice of the editor that *is* the project — everything else belongs to the session. */
@@ -65,6 +128,8 @@ export interface ProjectDocument {
   audioTracks: AudioTrack[];
   cutPrompts: Record<string, string>;
   cutModes: Record<string, TransitionMode>;
+  view?: SavedView;
+  generations?: Record<string, Generation>;
 }
 
 /**
@@ -83,13 +148,42 @@ export type ProjectRead =
 // ---------------------------------------------------------------- writing
 
 export function toProjectFile(doc: ProjectDocument): ProjectFile {
-  return {
+  const file: ProjectFile = {
     version: PROJECT_VERSION,
     assets: Object.values(doc.assets).map(toSavedAsset),
     clips: doc.clips,
     audioTracks: doc.audioTracks,
     cutPrompts: doc.cutPrompts,
     cutModes: doc.cutModes,
+  };
+  if (doc.view) file.view = { ...doc.view };
+
+  // Only what is still running, and never a film leg. Both halves matter: a finished
+  // generation is already an ordinary clip or an ordinary bin photo, and a film leg would
+  // come back to a film that does not exist. Omitted entirely when there is nothing to
+  // say, so an ordinary project's bytes are exactly what they were before.
+  //
+  // A restored record is `failed`, so it is *not* written again: the interrupted card is a
+  // report about the session that was interrupted rather than a to-do the project carries
+  // around for ever, and once it has been shown the next write lets it go. Nothing is lost
+  // by that — the timeline is untouched and the cut is still one tap from generating.
+  const live = Object.values(doc.generations ?? {}).filter(isPersistable).map(toSavedGeneration);
+  if (live.length > 0) file.generations = live;
+  return file;
+}
+
+/** A generation worth writing down: still running, and with somewhere to come back to. */
+function isPersistable(generation: Generation): boolean {
+  if (generation.target.kind === 'film') return false;
+  return generation.status === 'queued' || generation.status === 'running';
+}
+
+function toSavedGeneration(generation: Generation): SavedGeneration {
+  return {
+    id: generation.id,
+    target: generation.target,
+    prompt: generation.prompt,
+    modelId: generation.modelId,
   };
 }
 
@@ -141,19 +235,40 @@ export function readProjectFile(raw: unknown): ProjectRead {
     .filter((t) => known.has(t.assetId));
 
   const live = new Set(clips.map((c) => c.id));
-  return {
-    kind: 'project',
-    file: {
-      version: PROJECT_VERSION,
-      assets,
-      clips,
-      audioTracks,
-      cutPrompts: prunedCutKeys(record(raw.cutPrompts), live, (v) => str(v)),
-      cutModes: prunedCutKeys(record(raw.cutModes), live, (v) =>
-        v === 'insert' || v === 'replace' ? v : null,
-      ),
-    },
+  const file: ProjectFile = {
+    version: PROJECT_VERSION,
+    assets,
+    clips,
+    audioTracks,
+    cutPrompts: prunedCutKeys(record(raw.cutPrompts), live, (v) => str(v)),
+    cutModes: prunedCutKeys(record(raw.cutModes), live, (v) =>
+      v === 'insert' || v === 'replace' ? v : null,
+    ),
   };
+
+  const view = readView(raw.view);
+  if (view) file.view = view;
+
+  // A record whose clips went with a dropped asset has no chip and no card to be dismissed
+  // from, exactly like a cut prompt for a cut that no longer exists.
+  const generations = array(raw.generations)
+    .map(readGeneration)
+    .filter(isPresent)
+    .filter((g) => generationStands(g, live));
+  if (generations.length > 0) file.generations = generations;
+
+  return { kind: 'project', file };
+}
+
+/** Whether a stored generation still has the clips it would need to be retried onto. */
+function generationStands(saved: SavedGeneration, liveClipIds: ReadonlySet<string>): boolean {
+  // An image is retried from the prompt alone — dangling references are skipped by the
+  // launch itself — so it never depends on the track.
+  if (saved.target.kind !== 'cut') return true;
+  if (saved.target.replacesClipId !== undefined) return liveClipIds.has(saved.target.replacesClipId);
+  return (
+    liveClipIds.has(saved.target.afterClipId) && liveClipIds.has(saved.target.beforeClipId)
+  );
 }
 
 /**
@@ -184,13 +299,42 @@ export function hydrate(
     assets[saved.id] = asset;
   }
 
-  return {
+  const doc: ProjectDocument = {
     assets,
     clips: file.clips,
     audioTracks: file.audioTracks,
     cutPrompts: file.cutPrompts,
     cutModes: file.cutModes,
   };
+  if (file.view) doc.view = file.view;
+  if (file.generations) doc.generations = hydrateGenerations(file.generations);
+  return doc;
+}
+
+/**
+ * A stored generation as a card the user can act on.
+ *
+ * `failed` is the only status a restore may produce, and it is stamped here rather than
+ * read: the job it names is gone, so any other status would be a card that never finishes.
+ * Everything a running one displays — progress, elapsed, slow, the job id — starts empty,
+ * because it described a process that no longer exists.
+ */
+function hydrateGenerations(saved: SavedGeneration[]): Record<string, Generation> {
+  const generations: Record<string, Generation> = {};
+  for (const one of saved) {
+    generations[one.id] = {
+      id: one.id,
+      target: one.target,
+      prompt: one.prompt,
+      modelId: one.modelId,
+      status: 'failed',
+      progress: 0,
+      elapsedSecs: 0,
+      slow: false,
+      error: { ...INTERRUPTED },
+    };
+  }
+  return generations;
 }
 
 /**
@@ -301,6 +445,80 @@ function readTransitionSource(raw: unknown): TransitionSource | null {
   const atMs = num(raw.atMs);
   if (atMs !== null && atMs >= 0) source.atMs = Math.round(atMs);
   return source;
+}
+
+/**
+ * Where the user was looking.
+ *
+ * Clamped rather than trusted: the file is hand-editable, and a zoom outside the slider's
+ * own range would draw a timeline the control that produced it cannot represent. Read whole
+ * or not at all — half a viewport is not a viewport, and the defaults are perfectly good.
+ */
+function readView(raw: unknown): SavedView | null {
+  if (!isRecord(raw)) return null;
+  const playheadMs = num(raw.playheadMs);
+  const pxPerSecond = num(raw.pxPerSecond);
+  if (playheadMs === null || pxPerSecond === null) return null;
+  return {
+    playheadMs: Math.max(0, Math.round(playheadMs)),
+    pxPerSecond: Math.min(MAX_PX_PER_SECOND, Math.max(MIN_PX_PER_SECOND, pxPerSecond)),
+    // Snapping is on unless the file says otherwise, which is also the app's own default.
+    snapping: raw.snapping !== false,
+  };
+}
+
+function readGeneration(raw: unknown): SavedGeneration | null {
+  if (!isRecord(raw)) return null;
+  const id = str(raw.id);
+  const prompt = str(raw.prompt);
+  const modelId = str(raw.modelId);
+  if (!id || prompt === null || !modelId) return null;
+  const target = readGenerationTarget(raw.target);
+  if (!target) return null;
+  return { id, target, prompt, modelId };
+}
+
+/**
+ * What the generation was for — and the one place a **film leg is refused**.
+ *
+ * A film's own state is not part of the project, so a restored leg would be a record no
+ * component renders and whose Retry dismisses the card and then silently does nothing. It
+ * is dropped where it enters, for the same reason a clip whose asset is missing is: the
+ * file survives versions and is hand-editable, so the guarantee belongs at the door.
+ */
+function readGenerationTarget(raw: unknown): GenerationTarget | null {
+  if (!isRecord(raw)) return null;
+
+  if (raw.kind === 'cut') {
+    const afterClipId = str(raw.afterClipId);
+    const beforeClipId = str(raw.beforeClipId);
+    const from = readTransitionSource(raw.from);
+    const to = readTransitionSource(raw.to);
+    if (!afterClipId || !beforeClipId || !from || !to) return null;
+    const target: Extract<GenerationTarget, { kind: 'cut' }> = {
+      kind: 'cut',
+      afterClipId,
+      beforeClipId,
+      from,
+      to,
+    };
+    const replacesClipId = str(raw.replacesClipId);
+    if (replacesClipId) target.replacesClipId = replacesClipId;
+    if (raw.mode === 'insert' || raw.mode === 'replace') target.mode = raw.mode;
+    return target;
+  }
+
+  if (raw.kind === 'image') {
+    const aspect = str(raw.aspect);
+    if (aspect === null) return null;
+    return {
+      kind: 'image',
+      referenceAssetIds: array(raw.referenceAssetIds).map(str).filter(isPresent),
+      aspect,
+    };
+  }
+
+  return null;
 }
 
 function readAudioTrack(raw: unknown): AudioTrack | null {

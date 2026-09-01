@@ -248,3 +248,15 @@ export const MIN_CLIP_DURATION_MS = 100;
  * enough for any real hold, short enough that a runaway drag cannot make the track useless.
  */
 export const MAX_PHOTO_DURATION_MS = 10 * 60 * 1000;
+
+/**
+ * How far the timeline zooms, in pixels per second — the ends of the zoom slider.
+ *
+ * Shared with the saved project rather than left as literals on the slider: a stored zoom
+ * is read back off a hand-editable file, and one outside this range would draw a timeline
+ * the control that produced it cannot represent.
+ */
+export const MIN_PX_PER_SECOND = 12;
+export const MAX_PX_PER_SECOND = 160;
+/** 100% on the zoom readout, and what a project with no stored zoom opens at. */
+export const DEFAULT_PX_PER_SECOND = 46;

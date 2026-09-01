@@ -14,6 +14,7 @@ import {
   AUDIO_EXTS,
   DEFAULT_AUDIO_DURATION_MS,
   DEFAULT_PHOTO_DURATION_MS,
+  DEFAULT_PX_PER_SECOND,
   DEFAULT_TRANSITION_DURATION_MS,
   DEFAULT_TRANSITION_MODE,
   DEFAULT_TRANSITION_PROMPT,
@@ -288,11 +289,22 @@ export interface EditorState {
   /**
    * Why the last autosave failed, or `null` while it is working.
    *
-   * The only thing this feature ever puts on screen. A working autosave shows nothing —
-   * the work simply being there at the next launch is the whole confirmation — but a
-   * *broken* one has to say so, or the user loses everything without ever being told.
+   * One of the four fields the title bar's save state is read from. A *broken* autosave has
+   * to say so, or the user loses everything without ever being told; this is the one that
+   * carries the reason, and the tooltip repeats it verbatim.
    */
   saveError: string | null;
+
+  /** A write is on the wire right now. `Saving…`, and nothing more. */
+  saving: boolean;
+
+  /**
+   * When the last write landed, or `null` when none has this session.
+   *
+   * `null` is why the bar says *nothing* on a fresh launch rather than "Saved": claiming a
+   * save that has not happened is exactly the lie this indicator exists to stop telling.
+   */
+  savedAt: number | null;
 
   /**
    * Where the open project lives, or `null` while it is untitled.
@@ -442,7 +454,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   selection: { kind: 'none' },
   playheadMs: 0,
   playing: false,
-  pxPerSecond: 46,
+  pxPerSecond: DEFAULT_PX_PER_SECOND,
   snapping: true,
 
   generations: {},
@@ -464,6 +476,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   connectionMessage: null,
 
   saveError: null,
+  saving: false,
+  savedAt: null,
   projectPath: null,
   saveBlocked: false,
   pendingSwitch: null,
@@ -1522,12 +1536,20 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (get().saveBlocked) return true;
 
     // Every writer queues here rather than only the autosave hook's, because the hook is no
-    // longer the only one: the switch flushes, Save as… writes, and the debounce still
-    // fires. Two of those aimed at one path would race over a single `.writing` temp file.
+    // longer the only one: the switch flushes, Save as… writes, the close flush writes and
+    // the debounce still fires. Two of those aimed at one path would race over a single
+    // `.writing` temp file.
     const run = writeQueue.then(async () => {
       const path = get().projectPath;
+      // Read once, at the moment the write actually starts rather than when it was queued,
+      // so a queued write always carries the newest state — and so the snapshot recorded
+      // below describes exactly the bytes that went out.
+      const doc = documentOf(get());
+      set({ saving: true });
       try {
-        await backend.saveProject(toProjectFile(get()), path);
+        await backend.saveProject(toProjectFile(doc), path);
+        savedSnapshot = snapshotOf(doc);
+        set({ saving: false, savedAt: Date.now() });
         if (get().saveError) set({ saveError: null });
         return true;
       } catch (error) {
@@ -1536,7 +1558,9 @@ export const useEditor = create<EditorState>((set, get) => ({
         if (!get().saveError) {
           get().pushToast({ tone: 'error', title: 'The project could not be saved', detail: text });
         }
-        set({ saveError: text });
+        // The snapshot is deliberately *not* moved on: the document is still unwritten, so
+        // the heartbeat sees it as dirty and tries again without needing another edit.
+        set({ saving: false, saveError: text });
         return false;
       }
     });
@@ -1794,6 +1818,114 @@ function stillCurrent(epoch: number): boolean {
  */
 let writeQueue: Promise<void> = Promise.resolve();
 
+/**
+ * The document, pulled out of the session it is living in.
+ *
+ * The store *is* the document plus a great deal else, and `toProjectFile` used to be handed
+ * the whole state and left to pick. It cannot pick any more: `view` is three top-level
+ * fields that have to be gathered into one, and `generations` needs the live ones only. One
+ * function decides what the project is, and both the writer and the dirty check read it.
+ */
+function documentOf(s: EditorState): ProjectDocument {
+  return {
+    assets: s.assets,
+    clips: s.clips,
+    audioTracks: s.audioTracks,
+    cutPrompts: s.cutPrompts,
+    cutModes: s.cutModes,
+    view: { playheadMs: s.playheadMs, pxPerSecond: s.pxPerSecond, snapping: s.snapping },
+    generations: s.generations,
+  };
+}
+
+/**
+ * What the last successful write put on disk, as cheaply as it can be compared.
+ *
+ * Five object *references* and one string — not a copy of the document. Every action
+ * replaces those five immutably, so identity is an exact answer to "has this changed", and
+ * the whole snapshot costs a pointer each. The generations line is the one that has to be a
+ * projection rather than a reference: `applyGenerationUpdate` replaces the record on every
+ * poll to move a progress bar, and none of that reaches the file.
+ */
+interface DocumentSnapshot {
+  assets: unknown;
+  clips: unknown;
+  audioTracks: unknown;
+  cutPrompts: unknown;
+  cutModes: unknown;
+  generations: string;
+  view: string;
+}
+
+let savedSnapshot: DocumentSnapshot | null = null;
+
+/**
+ * Forget what is on disk.
+ *
+ * Module state outlives a `setState`, so a suite that puts the editor back to first-run has
+ * to say so here too — otherwise the next test starts believing its (quite different)
+ * document has already been written, and the periodic save sits out the one write it exists
+ * to make.
+ */
+export function forgetSavedSnapshot(): void {
+  savedSnapshot = null;
+}
+
+function snapshotOf(doc: ProjectDocument): DocumentSnapshot {
+  return {
+    assets: doc.assets,
+    clips: doc.clips,
+    audioTracks: doc.audioTracks,
+    cutPrompts: doc.cutPrompts,
+    cutModes: doc.cutModes,
+    generations: liveGenerationKey(doc.generations ?? {}),
+    view: doc.view ? `${doc.view.playheadMs}:${doc.view.pxPerSecond}:${doc.view.snapping}` : '',
+  };
+}
+
+/**
+ * The generations that would be written, as one comparable string.
+ *
+ * Ids alone are enough: everything else a record persists — its target, prompt and model —
+ * is fixed when it is created, so the set changing is the only way the file's contents can.
+ */
+export function liveGenerationKey(generations: Record<string, Generation>): string {
+  return Object.values(generations)
+    .filter((g) => g.target.kind !== 'film' && liveGeneration(g))
+    .map((g) => g.id)
+    .sort()
+    .join(',');
+}
+
+/**
+ * Is there anything on screen that is not on disk?
+ *
+ * What the periodic save asks itself, and the answer to two different problems: a write
+ * that failed and has had no edit since to retry it, and view state — which deliberately
+ * never triggers the debounce, because the playhead moves sixty times a second.
+ *
+ * `playing` is the one exclusion. During playback the playhead changes every frame and
+ * writing the file every few seconds for a value nobody asked to keep would be churn; the
+ * pause is itself a change, so it lands the moment playback stops.
+ */
+export function unsavedChanges(s: EditorState): boolean {
+  const now = snapshotOf(documentOf(s));
+  const before = savedSnapshot;
+  // Nothing has been written, and there is nothing to write. This is the launch that found
+  // no project — and the one that found an unreadable one, which stays on disk until the
+  // user does something, exactly as they were told it would.
+  if (!before) return hasWork(s) || now.generations !== '';
+  return (
+    now.assets !== before.assets ||
+    now.clips !== before.clips ||
+    now.audioTracks !== before.audioTracks ||
+    now.cutPrompts !== before.cutPrompts ||
+    now.cutModes !== before.cutModes ||
+    now.generations !== before.generations ||
+    (!s.playing && now.view !== before.view)
+  );
+}
+
 /** What to call the open project: its file's name, or that it does not have one yet. */
 export function projectLabel(path: string | null): string {
   if (path === null) return 'Untitled project';
@@ -1801,9 +1933,17 @@ export function projectLabel(path: string | null): string {
   return base.replace(/\.solcut$/i, '') || base;
 }
 
-/** A project with nothing in it. */
+/**
+ * A project with nothing in it.
+ *
+ * `generations: {}` is not decoration. It is the *only* way generations reach the store
+ * through an install, which is what keeps a switch from carrying the outgoing project's
+ * records into the incoming one — cards naming clips that no longer exist, wearing a Retry
+ * button that would pay to render against a dead cut. No `view`: a new project does not get
+ * to reach over and change the zoom the user is working at.
+ */
 function emptyDocument(): ProjectDocument {
-  return { assets: {}, clips: [], audioTracks: [], cutPrompts: {}, cutModes: {} };
+  return { assets: {}, clips: [], audioTracks: [], cutPrompts: {}, cutModes: {}, generations: {} };
 }
 
 /**
@@ -1820,6 +1960,9 @@ function freshSession(): Partial<EditorState> {
     selection: { kind: 'none' },
     playheadMs: 0,
     playing: false,
+    // Blanked here and refilled from the document by `installDocument`. Keeping the reset
+    // in this list is what makes a *switch* clear generations while a *restore* preserves
+    // them — the incoming document is the only thing allowed to put any back.
     generations: {},
     film: null,
     filmWizardOpen: false,
@@ -1873,7 +2016,32 @@ function installDocument(
   // steering the playhead in the incoming one.
   resetPreviewSync();
 
-  set({ ...doc, ...freshSession(), projectPath: path, saveBlocked: opts.blocked === true });
+  // Restored records only, and only the ones whose cut still stands: `prunedAfterEdit` is
+  // the same rule an edit applies, so a record with no chip and no card to be dismissed
+  // from is dropped here rather than left as invisible state.
+  const pruned = prunedAfterEdit(doc.clips, doc.generations ?? {}, doc.cutPrompts, doc.cutModes);
+
+  set({
+    ...doc,
+    ...freshSession(),
+    // After `freshSession`, which blanks both — a restore is the one install that has
+    // something to put back, and an empty document supplies `{}` for the rest.
+    ...pruned,
+    ...(doc.view
+      ? {
+          playheadMs: doc.view.playheadMs,
+          pxPerSecond: doc.view.pxPerSecond,
+          snapping: doc.view.snapping,
+        }
+      : {}),
+    projectPath: path,
+    saveBlocked: opts.blocked === true,
+  });
+
+  // What is on screen is exactly what is on disk, so the periodic save has nothing to do
+  // until something changes. Without this a freshly restored project reads as unwritten and
+  // would be written straight back for no reason.
+  savedSnapshot = snapshotOf(documentOf(get()));
 }
 
 /** A remembered project this build must not replace: keep pointing at it, and write nothing. */
@@ -1893,17 +2061,24 @@ function refuseRemembered(
 }
 
 /**
- * Start a switch, asking first only when there is untitled work with nowhere to go.
+ * Start a switch, asking first only when there is work with nowhere to go.
  *
  * A project that has a file is flushed to it and swapped without a word; an empty editor
- * has nothing to lose. It is the untitled project *with work in it* that has to be asked
+ * has nothing to lose. It is work that cannot be written anywhere that has to be asked
  * about, and the question it is asked is the same one the launch restore asks about the
  * editor being in use — clips, or lanes, or anything sitting in the bin.
+ *
+ * **Having a path is not the same as having somewhere to go.** `refuseRemembered` leaves the
+ * path pointing at a project this build must not touch *and* sets `saveBlocked`, and
+ * `persistProject` answers `true` while blocked — so `performSwitch`'s flush reports success
+ * having written nothing, and the switch went through silently. It then wrote the *empty*
+ * document over the untitled scratch on the way out, so a real project on disk died with the
+ * one on screen. A blocked session is precisely the case where the path proves nothing.
  */
 function beginSwitch(set: Setter, get: () => EditorState, action: PendingSwitch['action']): void {
   set({ projectMenuOpen: false });
   const s = get();
-  if (s.projectPath === null && hasWork(s)) {
+  if ((s.projectPath === null || s.saveBlocked) && hasWork(s)) {
     set({ pendingSwitch: { action, saving: false } });
     return;
   }

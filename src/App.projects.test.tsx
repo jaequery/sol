@@ -13,6 +13,7 @@
  * debounce is the real one.
  */
 
+import { StrictMode } from 'react';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -116,9 +117,18 @@ beforeEach(() => {
 
 // ----------------------------------------------------------------------------- helpers
 
-/** Mount the editor and wait for the restore to have answered. */
+/**
+ * Mount the editor and wait for the restore to have answered.
+ *
+ * Under `<StrictMode>`, exactly as `main.tsx` does it — a suite that mounts differently from
+ * the app cannot see a double-mount bug, which is how one shipped.
+ */
 async function mount() {
-  render(<App />);
+  render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
   await waitFor(() => expect(backend.lastProjectPath).toHaveBeenCalled());
 }
 
@@ -401,6 +411,74 @@ describe('the project the app comes back to', () => {
     await new Promise((r) => setTimeout(r, 900));
     expect(disk.has(BEACH)).toBe(false);
     expect(savedClipIds(SCRATCH)).toEqual(['clip_scratch']);
+  });
+
+  /**
+   * The one that quietly destroyed an afternoon.
+   *
+   * `refuseRemembered` leaves the path pointing at the project it would not touch *and* sets
+   * `saveBlocked`, and `persistProject` answers "true" while blocked — nothing failed, there
+   * was simply nothing it was allowed to write. So the question that guards a switch was
+   * skipped (there *is* a path, so the work must have somewhere to go), the flush before the
+   * switch reported success having written nothing, and then the empty document went out
+   * over the untitled scratch on the way in. Two projects, no prompt, no toast.
+   */
+  it('asks before discarding work a blocked session was never able to write', async () => {
+    pointer = BEACH;
+    disk.set(SCRATCH, projectOf('scratch'));
+    await mount();
+    await screen.findByText('The last project could not be opened');
+
+    const writes = vi.mocked(backend.saveProject).mock.calls.length;
+    seed('beach');
+    await new Promise((r) => setTimeout(r, 900));
+    expect(vi.mocked(backend.saveProject).mock.calls).toHaveLength(writes);
+
+    await act(async () => useEditor.getState().requestNewProject());
+
+    // The work is still on screen, behind the question — and so is the scratch on disk.
+    expect(useEditor.getState().pendingSwitch).not.toBeNull();
+    expect(clipIds()).toEqual(['clip_beach']);
+    expect(savedClipIds(SCRATCH)).toEqual(['clip_scratch']);
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeInTheDocument();
+  });
+
+  /**
+   * A record belongs to the project it was started in. Carrying one across a switch would
+   * put a card on screen naming clips the incoming project has never heard of, wearing a
+   * Retry button that would pay to render against a cut that does not exist.
+   */
+  it('does not carry an interrupted render into the project it switches to', async () => {
+    const user = userEvent.setup();
+    // Opened on a project that already has a file, so the switch needs no question first.
+    pointer = BEACH;
+    disk.set(BEACH, projectOf('beach'));
+    disk.set(REEL, projectOf('reel'));
+    await mount();
+    await waitFor(() => expect(clipIds()).toEqual(['clip_beach']));
+    act(() =>
+      useEditor.setState({
+        generations: {
+          gen_1: {
+            id: 'gen_1',
+            target: { kind: 'image', referenceAssetIds: [], aspect: '16:9' },
+            prompt: 'a cliff at dusk',
+            modelId: 'nano_banana_pro',
+            status: 'failed',
+            progress: 0,
+            elapsedSecs: 0,
+            slow: false,
+            error: { title: 'Interrupted', message: 'x', retryable: true },
+          },
+        },
+      }),
+    );
+
+    vi.mocked(backend.pickProjectFile).mockResolvedValue(REEL);
+    await menu(user, 'Open project…');
+
+    await waitFor(() => expect(clipIds()).toEqual(['clip_reel']));
+    expect(useEditor.getState().generations).toEqual({});
   });
 
   it('a blocked session starts saving again the moment the project is given a file', async () => {

@@ -80,12 +80,17 @@ of cents rather than a plan credit. Both live in the same Model selector; see
   in order, badged AI and playable — and the panel offers **Export film**. See
   [the flow](#three-photos-to-an-mp4) below.
 - **MP4 export** of the whole timeline via ffmpeg, audio lanes included.
-- **Your work is still there tomorrow.** The project saves itself as you edit — no save
-  button to remember, nothing on screen while it works — and comes back when the app
-  reopens: the same clips, trims, audio lanes and media bin. It holds paths rather than
-  copies, so a file that moved away since last time comes back visibly **missing** (dimmed
-  in the bin, MEDIA OFFLINE in the preview, and refused by name at export) instead of
-  failing mid-render.
+- **Your work is still there tomorrow.** The project saves itself as you edit, again every
+  few seconds while anything is unwritten, and once more as the window closes — no save
+  button to remember. It comes back when the app reopens: the same clips, trims, audio
+  lanes and media bin, at the same playhead and the same zoom. A write that failed keeps
+  being retried on its own rather than waiting for you to touch something, and the title bar
+  says which state it is in — **Saving…**, **Saved**, or **Not saved** — in one dim word
+  beside the project's name. It holds paths rather than copies, so a file that moved away
+  since last time comes back visibly **missing** (dimmed in the bin, MEDIA OFFLINE in the
+  preview, and refused by name at export) instead of failing mid-render. A render that was
+  still going when the app closed comes back as an **Interrupted** card offering Retry: the
+  job itself cannot be resumed, and nothing is ever re-sent on your behalf.
 - **More than one project.** The title bar's project name is also the menu that changes
   which project it is: **New project**, **Open project…**, **Save as…**. A project you have
   named is an ordinary `.solcut` file wherever you put it, and autosave follows it there; an
@@ -383,12 +388,20 @@ GTK toolchain.
   afterwards updates the film's own record but never lays down a second copy.
 - **Progress is queued-or-rendering.** The job status reports a state, not a percentage,
   so the bar only moves when one is volunteered.
-- **The last half-second of editing can be lost.** The project is written half a second
-  after you stop, so quitting mid-gesture drops that last change. A continuously changing
-  timeline is written at least every five seconds regardless.
-- **A film still rendering when you quit is not resumed.** A leg that had already finished
-  leaves its MP4 on disk unused. A film that fully assembled is on the track by then, and
-  persists like any other clip.
+- **Closing the window flushes; ⌘Q on macOS does not.** The project is written half a
+  second after you stop, at least every five seconds while anything is unwritten, and once
+  more when the window is closed — the close is held for that write. macOS's own Quit
+  terminates the process without ever asking the window to close, so quitting that way falls
+  back on the five-second interval and can drop the last few seconds. Closing the window
+  (or ⌘W) loses nothing.
+- **An interrupted render is reported once, not remembered for ever.** A generation that was
+  in flight comes back as an **Interrupted** card with Retry; it is written down only while
+  it is actually running, so once that card has been shown, the next save lets it go. The
+  timeline is untouched either way and the cut is still one tap from generating.
+- **A film still rendering when you quit is not resumed, and leaves no card.** A film's own
+  state is not part of the project, so a leg in flight has nothing to come back to and is
+  deliberately not recorded. A leg that had already finished leaves its MP4 on disk unused.
+  A film that fully assembled is on the track by then, and persists like any other clip.
 - **A moved file is indistinguishable from a deleted one.** Nothing tracks media identity
   beyond the absolute path, so re-importing is the way back.
 - **A project file is machine-local.** It stores the absolute paths of your media, and

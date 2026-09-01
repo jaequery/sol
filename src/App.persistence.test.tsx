@@ -12,7 +12,8 @@
  * honest rather than mocked out from under it.
  */
 
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { useEditor } from './state/store';
@@ -25,6 +26,14 @@ import type { GenerateInput, GenerationUpdate } from './lib/backend';
 let stored: unknown = null;
 /** Paths the filesystem admits to having, for the restore probe. */
 let onDisk: Set<string> = new Set();
+/**
+ * The close handler the app registered, or `null` before it has armed one.
+ *
+ * Calling it is the window's red X. `null` is an assertion in its own right: until the
+ * restore has answered there is no listener, which is what lets a close during a slow read
+ * go through natively and write nothing.
+ */
+let requestClose: (() => Promise<void>) | null = null;
 const saveProject = vi.fn(async (project: unknown) => {
   stored = project;
 });
@@ -47,6 +56,14 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   exportTimeline: vi.fn(),
   onGenerationUpdate: async (_cb: (u: GenerationUpdate) => void) => () => {},
   onExportProgress: async () => () => {},
+  onWindowClose: async (cb: () => void | Promise<void>) => {
+    requestClose = async () => {
+      await cb();
+    };
+    return () => {
+      requestClose = null;
+    };
+  },
   pickMediaFiles: vi.fn(),
   pickAudioFiles: vi.fn(),
   pickExportPath: vi.fn(),
@@ -86,8 +103,10 @@ function storedProject(over: Partial<ProjectFile> = {}): ProjectFile {
 
 beforeEach(() => {
   stored = null;
+  requestClose = null;
   onDisk = new Set([PHOTO_PATH, SOUND_PATH]);
   saveProject.mockClear();
+  vi.mocked(backend.loadProject).mockClear();
   resetEditor();
 
   vi.mocked(backend.loadProject).mockImplementation(async () => stored);
@@ -103,6 +122,23 @@ beforeEach(() => {
   }));
 });
 
+/**
+ * Mount the editor the way `main.tsx` actually mounts it.
+ *
+ * Under `<StrictMode>` on purpose. Every suite here used to render a bare `<App/>` while the
+ * real entry point wrapped it, and that gap is exactly how a broken double-mount guard
+ * shipped: the restore ran twice, the second run decided the editor had been in use, and
+ * autosave was off for the whole session with nothing but a plausible-looking toast to show
+ * for it.
+ */
+function launch() {
+  render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}
+
 /** The store's document, as an assertion-friendly shape. */
 function timeline() {
   const s = useEditor.getState();
@@ -116,7 +152,7 @@ function timeline() {
 describe('restoring at launch', () => {
   it('puts the last session’s timeline, lanes and media bin back', async () => {
     stored = storedProject();
-    render(<App />);
+    launch();
 
     await waitFor(() => expect(useEditor.getState().clips).toHaveLength(1));
     expect(timeline()).toEqual({
@@ -132,7 +168,7 @@ describe('restoring at launch', () => {
   });
 
   it('starts empty on a fresh install, and says nothing about it', async () => {
-    render(<App />);
+    launch();
     await waitFor(() => expect(backend.loadProject).toHaveBeenCalled());
 
     expect(useEditor.getState().clips).toEqual([]);
@@ -143,7 +179,7 @@ describe('restoring at launch', () => {
   /** A generation's job died with the process, so a restored one would never finish. */
   it('restores no part of the session that made it', async () => {
     stored = { ...storedProject(), generations: { gen_1: { status: 'running' } }, playing: true, film: { id: 'film_1' } };
-    render(<App />);
+    launch();
 
     await waitFor(() => expect(useEditor.getState().clips).toHaveLength(1));
     expect(useEditor.getState().generations).toEqual({});
@@ -160,7 +196,7 @@ describe('media that went missing between sessions', () => {
   });
 
   it('comes back marked, named in one toast, and blocks the export it would break', async () => {
-    render(<App />);
+    launch();
 
     await waitFor(() => expect(useEditor.getState().assets.asset_p?.missing).toBe(true));
     expect(await screen.findByText('1 file is no longer on disk')).toBeInTheDocument();
@@ -181,7 +217,7 @@ describe('media that went missing between sessions', () => {
   /** Only the probe failed. Calling all of it missing would make a working project look broken. */
   it('assumes the media is fine when the probe itself fails', async () => {
     vi.mocked(backend.importPaths).mockRejectedValue(new Error('the disk went away'));
-    render(<App />);
+    launch();
 
     await waitFor(() => expect(useEditor.getState().clips).toHaveLength(1));
     await waitFor(() => expect(backend.importPaths).toHaveBeenCalled());
@@ -191,7 +227,7 @@ describe('media that went missing between sessions', () => {
 
 describe('autosaving as the timeline changes', () => {
   async function launchEmpty() {
-    render(<App />);
+    launch();
     await waitFor(() => expect(backend.loadProject).toHaveBeenCalled());
   }
 
@@ -267,7 +303,7 @@ describe('a stored project this build must not replace', () => {
   /** Overwriting it would destroy work a later build can still open. */
   it('leaves a newer project alone and saves nothing for the rest of the session', async () => {
     stored = { ...storedProject(), version: PROJECT_VERSION + 1 };
-    render(<App />);
+    launch();
 
     expect(await screen.findByText('This project was saved by a newer SolCut')).toBeInTheDocument();
     expect(useEditor.getState().clips).toEqual([]);
@@ -282,7 +318,7 @@ describe('a stored project this build must not replace', () => {
 
   it('saves nothing when the project could not even be read off disk', async () => {
     vi.mocked(backend.loadProject).mockRejectedValue(new Error('permission denied'));
-    render(<App />);
+    launch();
     await waitFor(() => expect(useEditor.getState().saveError).toBe('permission denied'));
 
     act(() => {
@@ -299,12 +335,245 @@ describe('a stored project this build must not replace', () => {
    */
   it('replaces an unreadable project once the user edits, having said so', async () => {
     stored = { version: PROJECT_VERSION - 1, clips: [], assets: [] };
-    render(<App />);
+    launch();
 
     expect(await screen.findByText('The saved project could not be read')).toBeInTheDocument();
     act(() => {
       useEditor.setState({ clips: [{ id: 'clip_x', assetId: 'asset_p', kind: 'photo', name: 'a.png', startMs: 0, durationMs: 5000, trimStartMs: 0 }] });
     });
     await waitFor(() => expect(saveProject).toHaveBeenCalled(), { timeout: 3000 });
+  });
+});
+
+
+/** One photo clip, at a start the assertions can tell apart. */
+function clipAt(startMs: number, id = 'clip_1') {
+  return { id, assetId: 'asset_p', kind: 'photo' as const, name: 'cliff.png', startMs, durationMs: 5000, trimStartMs: 0 };
+}
+
+/** Mount, and wait until the persistence hook has finished arming its writers. */
+async function launchArmed() {
+  launch();
+  await waitFor(() => expect(requestClose).not.toBeNull(), { timeout: 3000 });
+}
+
+describe('a launch that must not restore twice', () => {
+  /**
+   * The bug this is here to stop coming back, and it is worth stating plainly because the
+   * symptom looked exactly like a feature working: the restore ran twice, the second run
+   * found the first run's clips on the timeline, decided the user had got there first, and
+   * turned saving off — for the whole session, behind a toast that reads as a design
+   * decision. Every launch of the dev app with a project in it saved nothing at all.
+   */
+  it('reads the project once, and leaves autosave on', async () => {
+    stored = storedProject();
+    launch();
+
+    await waitFor(() => expect(useEditor.getState().clips).toHaveLength(1));
+    // Long enough for a second restore to have resolved and drawn its conclusion.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(backend.loadProject).toHaveBeenCalledTimes(1);
+    expect(useEditor.getState().saveBlocked).toBe(false);
+    expect(screen.queryByText('The saved project was not restored')).toBeNull();
+
+    act(() => {
+      useEditor.setState({ clips: [...useEditor.getState().clips, clipAt(6000, 'clip_2')] });
+    });
+    await waitFor(() => expect(saveProject).toHaveBeenCalled(), { timeout: 3000 });
+    expect((stored as ProjectFile).clips.map((c) => c.id)).toEqual(['clip_1', 'clip_2']);
+  });
+});
+
+describe('the window closing', () => {
+  /** Quitting does not wait half a second for a debounce, so the flush has to not need one. */
+  it('writes the pending edit before the window is allowed to go', async () => {
+    await launchArmed();
+
+    act(() => useEditor.setState({ clips: [clipAt(0)] }));
+    // Load-bearing: without it this passes even when the flush does nothing and the
+    // ordinary debounce is what saved the work.
+    expect(saveProject).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await requestClose!();
+    });
+
+    expect(saveProject).toHaveBeenCalledTimes(1);
+    expect((stored as ProjectFile).clips.map((c) => c.id)).toEqual(['clip_1']);
+  });
+
+  /**
+   * The rule the whole hook is built on, now that there is more than one writer.
+   *
+   * A project on a spun-down drive takes seconds to read. Close the window in that gap and
+   * an ungated flush would write the empty editor over it — atomically, with no half-written
+   * file left to recover from.
+   */
+  it('writes nothing while the restore is still in flight', async () => {
+    stored = storedProject();
+    const untouched = JSON.stringify(stored);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(backend.loadProject).mockImplementation(async () => {
+      await held;
+      return stored;
+    });
+
+    launch();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // No listener at all yet, so a close goes through natively and writes nothing.
+    expect(requestClose).toBeNull();
+    expect(saveProject).not.toHaveBeenCalled();
+
+    release();
+    await waitFor(() => expect(useEditor.getState().clips).toHaveLength(1));
+    await waitFor(() => expect(requestClose).not.toBeNull(), { timeout: 3000 });
+    expect(JSON.stringify(stored)).toBe(untouched);
+  });
+});
+
+describe('the periodic save', () => {
+  /**
+   * The change stream cannot help here: the write already happened and failed, and there is
+   * no second edit coming. Before this, the work sat unwritten until the user happened to
+   * touch something.
+   */
+  it('retries a write that failed, with no edit to prompt it', async () => {
+    await launchArmed();
+    vi.mocked(backend.saveProject).mockRejectedValue(new Error('the disk is full'));
+
+    act(() => useEditor.setState({ clips: [clipAt(0)] }));
+    expect(await screen.findByText('Not saved', {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(saveProject).not.toHaveBeenCalled();
+
+    // The drive comes back. Nothing else happens — no edit, no click, no quit.
+    vi.mocked(backend.saveProject).mockImplementation(saveProject);
+    await waitFor(() => expect(saveProject).toHaveBeenCalled(), { timeout: 12_000 });
+    expect((stored as ProjectFile).clips.map((c) => c.id)).toEqual(['clip_1']);
+
+    const bar = document.querySelector('.titlebar') as HTMLElement;
+    await waitFor(() => expect(within(bar).getByText('Saved')).toBeInTheDocument(), { timeout: 3000 });
+  }, 20_000);
+
+  /**
+   * Where the user is looking deliberately triggers no write of its own — the playhead moves
+   * sixty times a second — so this interval is the only thing that gets it to disk.
+   */
+  it('writes where the user is looking, which no edit would have carried', async () => {
+    await launchArmed();
+    act(() => useEditor.setState({ clips: [clipAt(0)] }));
+    await waitFor(() => expect(saveProject).toHaveBeenCalledTimes(1), { timeout: 3000 });
+
+    act(() => {
+      useEditor.getState().setPlayhead(2500);
+      useEditor.setState({ pxPerSecond: 80, snapping: false });
+    });
+    // Not on sight: nothing about the viewport is worth interrupting a drag for.
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(saveProject).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => expect(saveProject).toHaveBeenCalledTimes(2), { timeout: 12_000 });
+    expect((stored as ProjectFile).view).toEqual({ playheadMs: 2500, pxPerSecond: 80, snapping: false });
+  }, 20_000);
+});
+
+describe('where the user was looking', () => {
+  it('comes back at the same playhead, zoom and snap', async () => {
+    stored = storedProject({ view: { playheadMs: 3200, pxPerSecond: 64, snapping: false } });
+    launch();
+
+    await waitFor(() => expect(useEditor.getState().clips).toHaveLength(1));
+    const s = useEditor.getState();
+    expect(s.playheadMs).toBe(3200);
+    expect(s.pxPerSecond).toBe(64);
+    expect(s.snapping).toBe(false);
+  });
+
+  /** A project that never stored one does not get to reset the zoom the user is working at. */
+  it('leaves the view alone when the stored project has none', async () => {
+    stored = storedProject();
+    act(() => useEditor.setState({ pxPerSecond: 123 }));
+    launch();
+
+    await waitFor(() => expect(useEditor.getState().clips).toHaveLength(1));
+    expect(useEditor.getState().pxPerSecond).toBe(123);
+  });
+});
+
+describe('a render interrupted by the restart', () => {
+  /** Two adjacent photos, so the pair still forms a cut a record can be retried onto. */
+  function projectMidRender(): ProjectFile {
+    return {
+      ...storedProject(),
+      clips: [clipAt(0), clipAt(5000, 'clip_2')],
+      generations: [
+        {
+          id: 'gen_cut',
+          target: {
+            kind: 'cut',
+            afterClipId: 'clip_1',
+            beforeClipId: 'clip_2',
+            from: { clipId: 'clip_1', assetId: 'asset_p' },
+            to: { clipId: 'clip_2', assetId: 'asset_p' },
+          },
+          prompt: 'a gentle push in',
+          modelId: 'seedance_2_5',
+        },
+        {
+          id: 'gen_img',
+          target: { kind: 'image', referenceAssetIds: [], aspect: '16:9' },
+          prompt: 'a cliff at dusk',
+          modelId: 'nano_banana_pro',
+        },
+      ],
+    };
+  }
+
+  it('comes back as a card that offers Retry, and re-sends nothing by itself', async () => {
+    stored = projectMidRender();
+    launch();
+
+    await waitFor(() => expect(useEditor.getState().clips).toHaveLength(2));
+
+    // The photo's card stands at the top of the bin whatever is selected.
+    expect(await screen.findByText('Interrupted')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry generating a cliff at dusk' })).toBeInTheDocument();
+    // The cut's card is behind its own chip, which says so on the timeline.
+    expect(screen.getByText('✕ FAILED')).toBeInTheDocument();
+
+    const restored = useEditor.getState().generations;
+    expect(restored.gen_cut.status).toBe('failed');
+    expect(restored.gen_cut.error?.retryable).toBe(true);
+    // The handle on a job nothing can re-attach to is deliberately not among them.
+    expect(restored.gen_cut.jobId).toBeUndefined();
+
+    // Nothing was re-submitted, and the bar's live-render count does not claim otherwise.
+    expect(backend.generateAnimation).not.toHaveBeenCalled();
+    expect(backend.generateImage).not.toHaveBeenCalled();
+    const bar = document.querySelector('.titlebar') as HTMLElement;
+    expect(within(bar).getByRole('button', { name: 'Settings' })).toBeInTheDocument();
+    expect(within(bar).queryByText(/rendering/)).toBeNull();
+  });
+
+  /**
+   * The card is a report about the session that was interrupted, not a to-do that follows
+   * the project around for ever. It is written down only while a render is actually in
+   * flight, so once it has been shown the next write lets it go — the timeline it belongs
+   * to is untouched either way, and the cut is still one tap from being generated again.
+   */
+  it('is reported once, and not carried forward into the session after that', async () => {
+    stored = projectMidRender();
+    launch();
+    await waitFor(() => expect(useEditor.getState().clips).toHaveLength(2));
+    expect(await screen.findByText('Interrupted')).toBeInTheDocument();
+
+    act(() => useEditor.setState({ clips: [clipAt(0), clipAt(6000, 'clip_2')] }));
+    await waitFor(() => expect(saveProject).toHaveBeenCalled(), { timeout: 3000 });
+    expect((stored as ProjectFile).generations).toBeUndefined();
+    // The work itself is exactly where it was.
+    expect((stored as ProjectFile).clips.map((c) => c.id)).toEqual(['clip_1', 'clip_2']);
   });
 });

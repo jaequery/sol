@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import capability from '../../src-tauri/capabilities/default.json';
 import {
   AGENT_BACKENDS,
   CUSTOM_MODEL_ID,
@@ -166,5 +167,24 @@ describe('whether a choice can render on this machine', () => {
     expect(renderReady('claude-code', legacy, true)).toBe(false);
     expect(renderReady(DEFAULT_MODEL_ID, legacy, true)).toBe(true);
     expect(readinessHint('claude-code', legacy, true)?.opensSettings).toBe(false);
+  });
+});
+
+
+/**
+ * The one line of Tauri configuration that a broken build would announce by being
+ * unquittable rather than by failing a check.
+ *
+ * `onWindowClose` subscribes to `tauri://close-requested`. Merely *having* that listener
+ * makes Tauri prevent the native close and hand control to the frontend, and the API's own
+ * wrapper then calls `destroy()` once the handler resolves. `destroy` is not in
+ * `core:window`'s default permission set, so without this grant the close is prevented, the
+ * destroy is refused by the ACL, and the window never shuts — with no error anywhere the
+ * user can see. Nothing else in the test suite can reach that, because it lives in the
+ * desktop shell; so it is asserted here as configuration.
+ */
+describe('the desktop shell’s permissions', () => {
+  it('grants the window destroy that the close-flush depends on', () => {
+    expect(capability.permissions).toContain('core:window:allow-destroy');
   });
 });
