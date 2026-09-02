@@ -105,12 +105,16 @@ select:focus-visible {
 .app[data-platform='mac'] .titlebar {
   padding-left: 80px;
 }
+/* No `overflow` here, ever. `.menu` is absolutely positioned inside `.doc__project`, which
+   is a descendant of this element, so an `overflow: hidden` put here to ellipsize the name
+   clips the project menu instead — and the menu hangs entirely below this box, so it is
+   clipped to nothing at all. That shipped once, and it made every project action in the app
+   unreachable while every test went on passing, because jsdom has no layout. The truncation
+   belongs on `.doc__name`, which is the thing that actually gets long. */
 .titlebar .doc {
   font-size: var(--fs-sm);
   color: var(--ink-2);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
 }
 /* The project name is the control: the menu hangs off it rather than off chrome of its
@@ -126,11 +130,20 @@ select:focus-visible {
   color: var(--ink);
   font-size: var(--fs);
   font-weight: 600;
+  /* Long project names ellipsize here rather than on `.doc` — see above. */
+  display: inline-block;
+  max-width: 30ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
 }
-/* A pseudo-element, so the button's accessible name stays the project's name alone. */
+/* A pseudo-element, so the button's accessible name stays the project's name alone.
+   `inherit`, not a token of its own: with its own colour it was the one part of the control
+   that never lit up on hover or while open, which is exactly the half-signal that had people
+   reading the name as a label rather than a button. */
 .titlebar .doc__name::after {
   content: ' \25be';
-  color: var(--ink-3);
+  color: inherit;
 }
 .titlebar .doc__name:hover,
 .titlebar .doc__name[aria-expanded='true'] {
@@ -169,6 +182,51 @@ select:focus-visible {
 .menu > button:hover {
   background: var(--panel-2);
   color: var(--ink);
+}
+/* A remembered project. Same row as any other item in here — what marks it as content
+   rather than a command is the hairline underneath the group, not a treatment of its own.
+   The width ceiling is the menu's, so a long name ellipsizes instead of widening the
+   popover past the window. */
+.menu__recent {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The first action after the list. One hairline, doing the job a gap alone cannot on a flat
+   panel: saying that everything above is a project and everything below is a verb. */
+.menu__first {
+  margin-top: var(--sp-1);
+  padding-top: calc(var(--sp-1) + 2px);
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
+}
+/* Naming a new project. Borrows `.field`'s recipe rather than its class: this is the app's
+   first text box that holds a human name instead of an id, so it takes the reading face
+   back off `--mono`, exactly as `.field select` already does. */
+.menu--new {
+  gap: 5px;
+}
+.menu--new label {
+  padding: 2px 2px 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.menu--new input {
+  width: 100%;
+  height: var(--h-control-md);
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 0 10px;
+  font: 500 var(--fs-sm) / 1.2 var(--font);
+}
+.menu--new .hint {
+  margin: 0;
+  padding: 0 2px;
+}
+.menu--new .btn {
+  margin-top: 3px;
 }
 /*
   One word beside the project name, and nothing else — no dot, no pill, no border. The quiet

@@ -37,7 +37,7 @@ export function TitleBar() {
             type="button"
             className="doc__name"
             aria-expanded={menuOpen}
-            onClick={() => (menuOpen ? closeProjectMenu() : openProjectMenu())}
+            onClick={() => (menuOpen ? closeProjectMenu() : void openProjectMenu())}
           >
             {projectLabel(projectPath)}
           </button>

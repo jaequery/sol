@@ -179,6 +179,22 @@ export interface ExportState {
 export type RestoreOutcome = 'restored' | 'nothing' | 'blocked';
 
 /**
+ * What a switch is switching *to*.
+ *
+ * `open` is the native picker and `openPath` is a row in the project menu — the same
+ * operation with the file already chosen, which is the whole difference between hunting for
+ * a project and clicking its name. `create` carries a path that does not exist yet.
+ *
+ * There is deliberately no `new`: every project the user makes is named when they make it,
+ * so nothing produces an untitled one any more. The scratch survives only as the state a
+ * first launch lands in, before anything has been named.
+ */
+export type SwitchAction =
+  | { kind: 'open' }
+  | { kind: 'openPath'; path: string }
+  | { kind: 'create'; path: string };
+
+/**
  * A switch the user has been asked about, because the project they are in is untitled and
  * has work in it — the one case with nowhere to flush to.
  *
@@ -186,7 +202,7 @@ export type RestoreOutcome = 'restored' | 'nothing' | 'blocked';
  * to start a second one behind it.
  */
 export interface PendingSwitch {
-  action: 'new' | 'open';
+  action: SwitchAction;
   saving: boolean;
 }
 
@@ -332,6 +348,23 @@ export interface EditorState {
   /** Whether the title bar's project menu is showing. */
   projectMenuOpen: boolean;
 
+  /**
+   * The projects the menu offers, newest first — read fresh each time it opens.
+   *
+   * Read rather than kept in step: the alternative is a second copy of a list the Rust side
+   * already owns, updated from every path that changes which project is open. One read on a
+   * menu that opens a few times a day is cheaper than that, and cannot go stale.
+   */
+  recentProjects: string[];
+
+  /**
+   * What is typed in the inline "New project" field, or `null` while it is not showing.
+   *
+   * The empty string is a real state — the field is open and nothing has been typed — which
+   * is why this is not just a string.
+   */
+  newProjectName: string | null;
+
   exportState: ExportState | null;
   /**
    * A render is in flight. Distinct from `exportState`, which is only what the dialog is
@@ -426,9 +459,16 @@ export interface EditorState {
   restoreProject: () => Promise<RestoreOutcome>;
   /** Write the project where it lives. `false` means a write was attempted and failed. */
   persistProject: () => Promise<boolean>;
-  openProjectMenu: () => void;
+  openProjectMenu: () => Promise<void>;
   closeProjectMenu: () => void;
-  requestNewProject: () => void;
+  /** Open a project the menu offered, without going near a file picker. */
+  openRecentProject: (path: string) => void;
+  /** Show the inline name field, or put it away. */
+  startNewProject: () => void;
+  setNewProjectName: (name: string) => void;
+  cancelNewProject: () => void;
+  /** Name the file and switch to it. Refuses rather than replacing an existing project. */
+  createNewProject: () => Promise<void>;
   requestOpenProject: () => void;
   /** Give the project a file. `false` means it still has none. */
   saveProjectAs: () => Promise<boolean>;
@@ -482,6 +522,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   saveBlocked: false,
   pendingSwitch: null,
   projectMenuOpen: false,
+  recentProjects: [],
+  newProjectName: null,
 
   exportState: null,
   exporting: false,
@@ -1571,20 +1613,66 @@ export const useEditor = create<EditorState>((set, get) => ({
     return run;
   },
 
-  openProjectMenu() {
-    set({ projectMenuOpen: true });
+  async openProjectMenu() {
+    set({ projectMenuOpen: true, newProjectName: null });
+    try {
+      set({ recentProjects: await backend.recentProjects() });
+    } catch {
+      // A menu one section short still opens, and the three actions underneath are the
+      // part that has to work. There is no version of "your projects could not be listed"
+      // worth a toast over a control the user just clicked.
+      set({ recentProjects: [] });
+    }
   },
 
   closeProjectMenu() {
-    set({ projectMenuOpen: false });
+    // The draft goes with the menu. A name half-typed into a menu that has been dismissed
+    // is not a name anyone is still thinking about, and finding it again on reopen reads
+    // as the field having failed to close.
+    set({ projectMenuOpen: false, newProjectName: null });
   },
 
-  requestNewProject() {
-    beginSwitch(set, get, 'new');
+  openRecentProject(path) {
+    beginSwitch(set, get, { kind: 'openPath', path });
+  },
+
+  startNewProject() {
+    set({ newProjectName: '' });
+  },
+
+  setNewProjectName(name) {
+    set({ newProjectName: name });
+  },
+
+  cancelNewProject() {
+    set({ newProjectName: null });
+  },
+
+  async createNewProject() {
+    const name = get().newProjectName;
+    if (name === null || name.trim() === '') return;
+
+    // Where it goes is decided before anything is asked or flushed, so a name that cannot
+    // be used costs the user nothing — the same shape as an Open refusing a file it cannot
+    // read. The open project is what a new one is created beside.
+    let path: string;
+    try {
+      path = await backend.newProjectPath(name, get().projectPath);
+    } catch (error) {
+      get().pushToast({
+        tone: 'error',
+        title: 'That project could not be created',
+        detail: message(error),
+      });
+      return;
+    }
+
+    set({ newProjectName: null });
+    beginSwitch(set, get, { kind: 'create', path });
   },
 
   requestOpenProject() {
-    beginSwitch(set, get, 'open');
+    beginSwitch(set, get, { kind: 'open' });
   },
 
   async saveProjectAs() {
@@ -1818,6 +1906,9 @@ function stillCurrent(epoch: number): boolean {
  */
 let writeQueue: Promise<void> = Promise.resolve();
 
+/** Whether a switch is already in flight — see `performSwitch`. */
+let switching = false;
+
 /**
  * The document, pulled out of the session it is living in.
  *
@@ -1976,6 +2067,10 @@ function freshSession(): Partial<EditorState> {
     saveError: null,
     pendingSwitch: null,
     projectMenuOpen: false,
+    // The menu closes with the switch, and a half-typed name closes with it. `recentProjects`
+    // deliberately does *not* reset here — the list belongs to the app, like the settings and
+    // the ffmpeg probe, not to whichever project happens to be open.
+    newProjectName: null,
   };
 }
 
@@ -2075,7 +2170,7 @@ function refuseRemembered(
  * document over the untitled scratch on the way out, so a real project on disk died with the
  * one on screen. A blocked session is precisely the case where the path proves nothing.
  */
-function beginSwitch(set: Setter, get: () => EditorState, action: PendingSwitch['action']): void {
+function beginSwitch(set: Setter, get: () => EditorState, action: SwitchAction): void {
   set({ projectMenuOpen: false });
   const s = get();
   if ((s.projectPath === null || s.saveBlocked) && hasWork(s)) {
@@ -2101,22 +2196,51 @@ function hasWork(s: EditorState): boolean {
 async function performSwitch(
   set: Setter,
   get: () => EditorState,
-  action: PendingSwitch['action'],
+  action: SwitchAction,
   opts: { discard?: boolean } = {},
 ): Promise<void> {
-  let next: { doc: ProjectDocument; path: string | null };
+  // One switch at a time. Both entry points used to be modal — a native picker, or the
+  // confirm dialog — so two could not overlap; a menu of projects makes double-entry one
+  // stray double-click away, and two switches would each pass their read, each flush, and
+  // each install. Released in `finally`, so a refusal never wedges the next one.
+  if (switching) return;
+  switching = true;
+  try {
+    await runSwitch(set, get, action, opts);
+  } finally {
+    switching = false;
+  }
+}
 
-  if (action === 'open') {
+async function runSwitch(
+  set: Setter,
+  get: () => EditorState,
+  action: SwitchAction,
+  opts: { discard?: boolean },
+): Promise<void> {
+  // Every action lands on a real file now, so a switch always has somewhere to go.
+  let next: { doc: ProjectDocument; path: string };
+
+  if (action.kind === 'create') {
+    // Nothing to read — the file does not exist yet. What stands in for the open branch's
+    // "refuse a file we cannot read" is `create` itself, further down: it is the write that
+    // refuses, atomically, if the name has been taken since it was chosen.
+    next = { doc: emptyDocument(), path: action.path };
+  } else {
     let picked: string | null = null;
-    try {
-      picked = await backend.pickProjectFile();
-    } catch (error) {
-      get().pushToast({
-        tone: 'error',
-        title: 'Could not open the file picker',
-        detail: message(error),
-      });
-      return;
+    if (action.kind === 'openPath') {
+      picked = action.path;
+    } else {
+      try {
+        picked = await backend.pickProjectFile();
+      } catch (error) {
+        get().pushToast({
+          tone: 'error',
+          title: 'Could not open the file picker',
+          detail: message(error),
+        });
+        return;
+      }
     }
     if (!picked) return;
     // Already open. Reading it and then flushing over it would write the live timeline to
@@ -2149,22 +2273,17 @@ async function performSwitch(
       return;
     }
     next = { doc: hydrate(read.file, { resolveSrc: backend.assetSrc }), path: picked };
-  } else {
-    next = { doc: emptyDocument(), path: null };
   }
 
   if (opts.discard) {
     // Discarded means discarded. The untitled project also has a copy in the scratch, and
     // clearing only what is in memory would leave that copy on disk for a later New to
     // destroy without ever asking — and would have made the word a lie in the meantime.
-    // A switch to another untitled project clears it by being saved over instead.
-    if (next.path !== null) {
-      try {
-        await backend.saveProject(toProjectFile(emptyDocument()), null);
-      } catch {
-        // The scratch is a convenience, not the user's file. Failing to clear it is not
-        // worth refusing the switch they asked for.
-      }
+    try {
+      await backend.saveProject(toProjectFile(emptyDocument()), null);
+    } catch {
+      // The scratch is a convenience, not the user's file. Failing to clear it is not
+      // worth refusing the switch they asked for.
     }
   } else if (!(await get().persistProject())) {
     // The outgoing project could not be written — an unplugged drive, a full disk. Wiping
@@ -2173,12 +2292,45 @@ async function performSwitch(
     return;
   }
 
+  // The new file is written *before* the document is installed, and the switch is refused
+  // if that write fails. The order is the whole of the safety, for a reason that is not
+  // obvious: `installDocument` stamps `savedSnapshot` with what is on screen, asserting
+  // that screen and disk agree. Install first and that assertion is a lie — `unsavedChanges`
+  // would report the project clean, `App.tsx`'s heartbeat would never retry the creation,
+  // and the user would be left editing a project that does not exist while `current.txt`
+  // still named the old one, which is what the next launch would reopen.
+  //
+  // It is also why this cannot go through `persistProject`: that writes `documentOf(get())`,
+  // which at this moment is still the *outgoing* document, and it reports success without
+  // writing at all while `saveBlocked` is up.
+  if (action.kind === 'create') {
+    const path = next.path;
+    const written = writeQueue.then(() =>
+      backend.createProject(toProjectFile(emptyDocument()), path),
+    );
+    writeQueue = written.then(
+      () => {},
+      () => {},
+    );
+    try {
+      await written;
+    } catch (error) {
+      get().pushToast({
+        tone: 'error',
+        title: 'The project could not be created',
+        detail: message(error),
+      });
+      return;
+    }
+  }
+
   installDocument(set, get, next.doc, next.path);
   const epoch = documentEpoch;
   // One write straight away, so the pointer to the current project follows the switch even
   // if the user quits without touching anything.
   void get().persistProject();
-  if (next.path !== null) void probeRestoredMedia(set, get, epoch);
+  // A project that was just created has no media to have gone missing since.
+  if (action.kind !== 'create') void probeRestoredMedia(set, get, epoch);
 }
 
 /** One accepted import: a clip bound for the visual track, or a sound bound for a lane. */

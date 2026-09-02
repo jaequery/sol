@@ -134,6 +134,8 @@ beforeEach(() => {
     saveBlocked: false,
     pendingSwitch: null,
     projectMenuOpen: false,
+    recentProjects: [],
+    newProjectName: null,
   });
 });
 

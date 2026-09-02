@@ -334,6 +334,9 @@ function useKeyboardShortcuts() {
         if (store.pendingSwitch) void store.resolveSwitch('cancel');
         else if (store.exportState) useEditor.setState({ exportState: null });
         else if (store.settingsOpen) store.closeSettings();
+        // The name field is inside the menu, so it is the inner of the two: one Escape
+        // abandons the name, a second closes the menu it was being typed into.
+        else if (store.newProjectName !== null) store.cancelNewProject();
         // Above the film panel, which it is drawn over and which stays open behind it.
         else if (store.projectMenuOpen) store.closeProjectMenu();
         else if (store.filmWizardOpen) store.closeFilmWizard();
