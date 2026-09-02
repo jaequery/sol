@@ -80,9 +80,14 @@ export function Inspector() {
           <div className="empty-note">
             <Icon name="diamond" size={22} />
             <b>Nothing selected</b>
-            {clips.length === 0 && audioTracks.length === 0
-              ? 'Select a clip once something is on the timeline.'
-              : 'Select a clip, a sound, or the ✦ on a cut to edit it here.'}
+            {clips.length === 0 && audioTracks.length === 0 ? (
+              'Select a clip once something is on the timeline.'
+            ) : (
+              <>
+                Select a clip, a sound, or the <Icon name="sparkle" size={11} className="icon--inline" />{' '}
+                on a cut to edit it here.
+              </>
+            )}
           </div>
         ) : (
           <InspectorBody key={clip.id} clip={clip} />
@@ -280,10 +285,6 @@ function AudioCard({ track }: { track: AudioTrack }) {
           <b>{formatTimecode(track.startMs)}</b>
         </div>
         <DurationRow id="audio-duration" field={duration} />
-        <div className="kv">
-          <span>Type</span>
-          <b>audio</b>
-        </div>
         <Slider
           label="Volume"
           min={0}
@@ -293,19 +294,19 @@ function AudioCard({ track }: { track: AudioTrack }) {
           format={(v) => `${Math.round(v * 100)}%`}
           onChange={(volume) => setAudioVolume(track.id, volume)}
         />
-        <button type="button" className="block-btn" onClick={() => toggleAudioMute(track.id)}>
-          <Icon name={track.muted ? 'volume' : 'volume-off'} size={14} />
-          {track.muted ? 'Unmute track' : 'Mute track'}
-        </button>
         <DurationNote
           id="audio-duration"
           field={duration}
           limit={audioLimitNote(track, assets[track.assetId]?.durationMs)}
         />
-        <p className="hint">
-          Type a length above, or drag the sound along its lane to move it and its edges to
-          trim it. Muted tracks are left out of the export.
-        </p>
+        {/* A toggle, dressed as one: the accent fill is for the actions that render. */}
+        <div className="btn-row">
+          <button type="button" onClick={() => toggleAudioMute(track.id)}>
+            <Icon name={track.muted ? 'volume' : 'volume-off'} size={14} />
+            {track.muted ? 'Unmute track' : 'Mute track'}
+          </button>
+        </div>
+        <p className="hint">Muted tracks are left out of the export.</p>
       </div>
     </div>
   );
@@ -362,8 +363,9 @@ function InspectorBody({ clip }: { clip: Clip }) {
 
           {!clip.transition && (
             <p className="hint">
-              Put another clip beside this one and tap the ✦ on their cut to bridge them with
-              an AI transition.
+              Put another clip beside this one and tap the{' '}
+              <Icon name="sparkle" size={11} className="icon--inline" /> on their cut to bridge
+              them with an AI transition.
             </p>
           )}
         </div>
@@ -423,23 +425,62 @@ function Slider({
   );
 }
 
-function RunningCard({ generation, heading }: { generation: Generation; heading: string }) {
+/** The two clips a render is about, as the rows every other card already uses. */
+function PairRows({ from, to }: { from: string; to: string }) {
+  return (
+    <>
+      <div className="kv">
+        <span>From</span>
+        <b>{from}</b>
+      </div>
+      <div className="kv">
+        <span>To</span>
+        <b>{to}</b>
+      </div>
+    </>
+  );
+}
+
+/**
+ * A render in flight. The head says what is happening in two words; the body names the pair,
+ * the model, the job, and how far along it is — each fact once. The status row went with the
+ * head that already carried it, and the job id keeps to one line with the whole of it a
+ * hover away.
+ */
+function RunningCard({
+  generation,
+  pair,
+  regenerating = false,
+}: {
+  generation: Generation;
+  pair: { from: string; to: string };
+  regenerating?: boolean;
+}) {
   const cancel = useEditor((s) => s.cancelGeneration);
-  const running = generation.status === 'running';
+  const queued = generation.status === 'queued';
+  const title = regenerating
+    ? queued
+      ? 'Queued regeneration'
+      : 'Regenerating transition'
+    : queued
+      ? 'Queued transition'
+      : 'Rendering transition';
+  // The same reading the chip on the cut gives: the queue, a percentage once the backend
+  // volunteers one, or the seconds elapsed until it does.
+  const progress = queued
+    ? 'In queue'
+    : generation.progress > 0
+      ? `${Math.round(generation.progress * 100)}%`
+      : `${Math.round(generation.elapsedSecs)}s`;
 
   return (
     <div className="card card--ai">
       <div className="card__head">
         <Icon name="spinner" size={15} className="icon--spin" />
-        <span className="card__title">
-          {running ? 'Rendering' : 'Queued'} · {heading}
-        </span>
+        <span className="card__title">{title}</span>
       </div>
       <div className="card__body">
-        <div className="kv">
-          <span>Status</span>
-          <b>{generation.status.toUpperCase()}</b>
-        </div>
+        <PairRows from={pair.from} to={pair.to} />
         <div className="kv">
           <span>Model</span>
           <b>{modelLabel(generation.modelId)}</b>
@@ -447,15 +488,16 @@ function RunningCard({ generation, heading }: { generation: Generation; heading:
         {generation.jobId && (
           <div className="kv">
             <span>Job</span>
-            <b>{generation.jobId}</b>
+            <b className="kv__id" title={generation.jobId}>
+              {generation.jobId}
+            </b>
           </div>
         )}
-        <div className="kv">
-          <span>Progress</span>
-          <b>{Math.round(generation.progress * 100)}%</b>
-        </div>
-        <div className="progress">
-          <i style={{ width: `${Math.max(generation.progress * 100, 3)}%` }} />
+        <div className="progress-row" role="status" aria-label={`Progress ${progress}`}>
+          <div className="progress">
+            <i style={{ width: `${Math.max(generation.progress * 100, 3)}%` }} />
+          </div>
+          <b>{progress}</b>
         </div>
 
         {generation.slow && (
@@ -477,7 +519,15 @@ function RunningCard({ generation, heading }: { generation: Generation; heading:
   );
 }
 
-function FailedCard({ generation, heading }: { generation: Generation; heading: string }) {
+function FailedCard({
+  generation,
+  title,
+  pair,
+}: {
+  generation: Generation;
+  title: string;
+  pair: { from: string; to: string };
+}) {
   const dismiss = useEditor((s) => s.dismissGeneration);
   const retry = useEditor((s) => s.retryGeneration);
   const error = generation.error;
@@ -486,9 +536,10 @@ function FailedCard({ generation, heading }: { generation: Generation; heading: 
     <div className="card card--error" role="alert">
       <div className="card__head">
         <Icon name="x" size={15} />
-        <span className="card__title">Generation failed · {heading}</span>
+        <span className="card__title">{title}</span>
       </div>
       <div className="card__body">
+        <PairRows from={pair.from} to={pair.to} />
         <div className="errbox">
           <b>{error?.title ?? 'Generation failed'}</b>
           {error?.message ?? 'The job did not complete.'}
@@ -534,7 +585,7 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
   const startCutGeneration = useEditor((s) => s.startCutGeneration);
   const openSettings = useEditor((s) => s.openSettings);
 
-  const heading = `${a.name} → ${b.name}`;
+  const pair = { from: a.name, to: b.name };
   const generation = Object.values(generations).find(
     (g) =>
       g.target.kind === 'cut' &&
@@ -546,10 +597,10 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
   );
 
   if (generation && (generation.status === 'queued' || generation.status === 'running')) {
-    return <RunningCard generation={generation} heading={heading} />;
+    return <RunningCard generation={generation} pair={pair} />;
   }
   if (generation?.status === 'failed') {
-    return <FailedCard generation={generation} heading={heading} />;
+    return <FailedCard generation={generation} title="Generation failed" pair={pair} />;
   }
 
   const prompt = cutPrompts[`${a.id}:${b.id}`] ?? '';
@@ -574,7 +625,9 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
     <div className="card card--ai">
       <div className="card__head">
         <Icon name="sparkle" size={15} />
-        <span className="card__title">Transition · {heading}</span>
+        {/* The names are in the sentence below, beside the frames they belong to; up here
+            two long filenames only wrapped the head onto three lines. */}
+        <span className="card__title">Transition</span>
       </div>
       <div className="card__body">
         <div className="card__pair" aria-hidden="true">
@@ -651,11 +704,9 @@ function CutCard({ a, b }: { a: Clip; b: Clip }) {
                   : `Keep the photo${bothPhotos ? 's' : ''} on the track instead`}
               </button>
             )}
-            <p className="hint">
-              {offline
-                ? 'A clip on this cut has no media — re-import it first.'
-                : 'No typing needed — leaving this empty uses the default prompt.'}
-            </p>
+            {/* The placeholder already says the box may stay empty; only the refusal
+                needs a sentence. */}
+            {offline && <p className="hint">A clip on this cut has no media — re-import it first.</p>}
           </>
         )}
       </div>
@@ -694,11 +745,12 @@ function TransitionCard({ clip }: { clip: Clip }) {
       g.status !== 'cancelled' &&
       g.status !== 'succeeded',
   );
+  const pair = { from: fromName, to: toName };
   if (generation && (generation.status === 'queued' || generation.status === 'running')) {
-    return <RunningCard generation={generation} heading="Regenerating transition" />;
+    return <RunningCard generation={generation} pair={pair} regenerating />;
   }
   if (generation?.status === 'failed') {
-    return <FailedCard generation={generation} heading="Transition" />;
+    return <FailedCard generation={generation} title="Regeneration failed" pair={pair} />;
   }
 
   const notReady = readinessHint(modelId, settings, ffmpegAvailable);
@@ -706,7 +758,7 @@ function TransitionCard({ clip }: { clip: Clip }) {
   return (
     <div className="card card--ai">
       <div className="card__head">
-        <Thumb asset={assets[clip.assetId]} />
+        <Icon name="sparkle" size={15} />
         <span className="card__title">AI transition</span>
       </div>
       <div className="card__body">

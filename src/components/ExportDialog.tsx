@@ -30,10 +30,8 @@ function ExportModal() {
         <div className="modal__body">
           {failed ? (
             <div className="errbox">
-              {/* Only the ffmpeg case earns a heading of its own — it is a diagnosis rather
-                  than a restatement, and it carries the install block. Everywhere else the
-                  head above has already said it. */}
-              {missingFfmpeg && <b>ffmpeg was not found</b>}
+              {/* The message names the problem itself; only the ffmpeg case earns more — the
+                  install block, which is the fix. */}
               {state.error}
               {missingFfmpeg && (
                 <code>
@@ -43,16 +41,13 @@ function ExportModal() {
             </div>
           ) : (
             <>
-              <div className="stage-list">
-                <div className="stage-row">
-                  <Icon name="spinner" size={14} /> {state.stage}
+              <div className="stage-row">
+                <Icon name="spinner" size={14} /> {state.stage}
+              </div>
+              <div className="progress-row">
+                <div className="progress">
+                  <i style={{ width: `${Math.round(state.fraction * 100)}%` }} />
                 </div>
-              </div>
-              <div className="progress">
-                <i style={{ width: `${Math.round(state.fraction * 100)}%` }} />
-              </div>
-              <div className="kv">
-                <span>Rendering the timeline with ffmpeg</span>
                 <b>{Math.round(state.fraction * 100)}%</b>
               </div>
             </>

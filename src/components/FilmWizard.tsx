@@ -264,7 +264,7 @@ export function FilmWizard() {
               }}
             >
               <b>Drop three photos here</b>
-              The film's transitions run between them, in this order
+              Transitions run between them, in this order
               <button type="button" className="btn btn--ghost" onClick={() => void choosePhotos()}>
                 Choose photos
               </button>
@@ -384,7 +384,7 @@ export function FilmWizard() {
             )}
 
             {short > 0 && (
-              <p className="hint hint--error">
+              <p className="hint">
                 {picks.length} of {FILM_IMAGE_COUNT} photos chosen — add {short} more.
               </p>
             )}

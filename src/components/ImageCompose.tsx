@@ -55,7 +55,7 @@ export function ImageCompose() {
       <div className="compose__row">
         <button
           type="button"
-          className="linklike"
+          className="disclosure"
           aria-expanded={showOptions}
           onClick={() => setShowOptions(!showOptions)}
         >

@@ -1,10 +1,6 @@
 import { referenceEligible, useEditor } from '../state/store';
-import { truncateName } from '../lib/timeline';
 import { ImageCompose } from './ImageCompose';
 import { Icon } from './Icon';
-
-/** How much of a filename the caption under a tile has room for at the bin's width. */
-const TILE_NAME_CHARS = 18;
 
 /** The imported media, its loading skeletons, and anything that failed to import. */
 export function MediaBin() {
@@ -44,11 +40,6 @@ export function MediaBin() {
     <div className="col">
       <div className="panel-head">
         <span className="panel-head__title">Media</span>
-        {list.length > 0 && (
-          <span className="panel-head__count" aria-label={`${list.length} items`}>
-            {list.length}
-          </span>
-        )}
         <div className="panel-head__actions">
           {/* Importing is not a first-run-only affordance: it stays here however full the bin is. */}
           <button
@@ -229,7 +220,10 @@ export function MediaBin() {
                   </button>
                 )}
               </div>
-              <span className="bin__name">{truncateName(asset.name, TILE_NAME_CHARS)}</span>
+              {/* One truncation, the CSS one; the whole name is a hover away. */}
+              <span className="bin__name" title={asset.name}>
+                {asset.name}
+              </span>
             </div>
           );
         })}
