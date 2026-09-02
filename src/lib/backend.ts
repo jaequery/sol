@@ -504,6 +504,42 @@ export async function saveProject(project: unknown, path: string | null = null):
 }
 
 /**
+ * The projects to offer in the title bar's menu, newest first.
+ *
+ * Guarded like `loadProject`: a browser has no list, and an empty menu is the honest answer
+ * rather than something to refuse over. Entries whose file has gone are already dropped on
+ * the Rust side, so what comes back is what can actually be opened.
+ */
+export async function recentProjects(): Promise<string[]> {
+  if (!isDesktop()) return [];
+  return invoke<string[]>('recent_projects');
+}
+
+/**
+ * Where a project called `name` would be created, or a throw saying why it cannot be.
+ *
+ * `near` is the open project, so a new one lands in the folder the last one is organised
+ * in. The extension, the refusal of a name that is really a path, and the choice of folder
+ * all live on the Rust side — `PathBuf` owns separators there, and a regex would own them
+ * badly here.
+ */
+export async function newProjectPath(name: string, near: string | null): Promise<string> {
+  requireDesktop();
+  return invoke<string>('new_project_path', { name, near });
+}
+
+/**
+ * Create a project at `path`, which must not already exist.
+ *
+ * Deliberately not `saveProject`: that one replaces whatever is there, which is what
+ * autosave needs and precisely what creating must never do.
+ */
+export async function createProject(project: unknown, path: string): Promise<void> {
+  requireDesktop();
+  await invoke('create_project', { project, path });
+}
+
+/**
  * Prove the CLI connection: one free, read-only CLI call that checks the binary, the
  * login and the billing workspace, and reports the CLI's own fix when one is missing.
  */

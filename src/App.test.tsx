@@ -68,6 +68,9 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   loadProject: vi.fn(async () => null),
   readProject: vi.fn(async () => null),
   lastProjectPath: vi.fn(async () => null),
+  recentProjects: vi.fn(async () => []),
+  newProjectPath: vi.fn(async (name: string) => `/docs/${name}.solcut`),
+  createProject: vi.fn(async () => {}),
   saveProject: vi.fn(async () => {}),
   pickProjectSavePath: vi.fn(async () => null),
   pickProjectFile: vi.fn(async () => null),
@@ -149,6 +152,8 @@ beforeEach(() => {
     saveBlocked: false,
     pendingSwitch: null,
     projectMenuOpen: false,
+    recentProjects: [],
+    newProjectName: null,
     // 100 px per second makes every drag below exactly 10 ms to the pixel.
     pxPerSecond: 100,
   });

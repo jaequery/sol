@@ -44,6 +44,10 @@ pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("SOLCUT_BUI
 pub struct AppState {
     config_dir: PathBuf,
     media_dir: PathBuf,
+    /// Where a project goes when there is no open one to sit beside. Resolved once at
+    /// launch because finding it needs Tauri, and `project.rs` — which does the naming —
+    /// deliberately has no Tauri dependency.
+    documents_dir: PathBuf,
     cancelled: Mutex<HashSet<String>>,
 }
 
@@ -301,6 +305,47 @@ fn save_project(
         None => project::save(&state.config_dir, &project)?,
     }
     let _ = project::remember(&state.config_dir, path.as_deref());
+    Ok(())
+}
+
+/// The projects to offer in the title bar's menu, most recent first.
+///
+/// `async` for one reason: it stats every path to drop the ones whose file has gone, and a
+/// synchronous command runs on the main thread — so a sleeping external drive would freeze
+/// the window in the moment the menu was opening. The same care `probeRestoredMedia` takes
+/// on the frontend, for the same reason.
+#[tauri::command]
+async fn recent_projects(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    Ok(project::recents(&state.config_dir))
+}
+
+/// Where a project called `name` would go, or why it cannot go anywhere.
+///
+/// Nothing is created except, on a first run, the default folder itself. This answers the
+/// question the inline name field asks as it is typed; `create_project` is what commits.
+#[tauri::command]
+fn new_project_path(
+    name: String,
+    near: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    project::new_project_path(&state.documents_dir, &name, near.as_deref())
+}
+
+/// Create a project at a path that must not already exist, and point the app at it.
+///
+/// Distinct from `save_project` on purpose: that one replaces whatever is there, which is
+/// what autosave needs and exactly what creating must never do.
+#[tauri::command]
+fn create_project(
+    path: String,
+    project: serde_json::Value,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    project::create(Path::new(&path), &project)?;
+    // Best-effort, as in `save_project`: the project exists now, and failing the whole
+    // creation over the pointer would report a loss that did not happen.
+    let _ = project::remember(&state.config_dir, Some(&path));
     Ok(())
 }
 
@@ -900,11 +945,19 @@ pub fn run() {
             // cache purge would turn finished renders into missing media. Nothing outlived
             // a session before projects were saved, which is why this was ever a cache.
             let media_dir = app.path().app_data_dir()?.join("generated");
+            // Not created here, and not failed over either: a box with no documents
+            // directory still has a config directory, and a first project has to land
+            // somewhere. `new_project_path` makes the folder when it actually uses it.
+            let documents_dir = app
+                .path()
+                .document_dir()
+                .unwrap_or_else(|_| config_dir.clone());
             std::fs::create_dir_all(&config_dir)?;
             std::fs::create_dir_all(&media_dir)?;
             app.manage(AppState {
                 config_dir,
                 media_dir,
+                documents_dir,
                 cancelled: Mutex::new(HashSet::new()),
             });
             Ok(())
@@ -916,6 +969,9 @@ pub fn run() {
             read_project,
             last_project_path,
             save_project,
+            recent_projects,
+            new_project_path,
+            create_project,
             test_connection,
             test_api_key,
             import_media,
