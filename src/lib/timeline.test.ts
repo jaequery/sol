@@ -469,13 +469,31 @@ describe('cuts & transitions', () => {
       ]);
     });
 
-    it('a landed transition is never a side of another one, so no chip stands beside it', () => {
-      // Its own pair goes, and — now that a video side is legal — the two boundaries it
-      // just created stay silent too. Bridging a bridge is not a thing to offer.
+    it('a landed transition is a side of the cut on each side of it', () => {
+      // Its own pair's cut is gone — the render stands there now — and the two boundaries
+      // it just made are cuts like any other: a landed render is footage, and running it on
+      // into the next clip is exactly the thing a user may want next.
       const [a, b] = pair();
       const withTransition = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
       expect(withTransition).toHaveLength(3);
-      expect(bridgeableCuts(withTransition)).toEqual([]);
+      const landed = withTransition[1];
+      expect(bridgeableCuts(withTransition)).toEqual([
+        { afterClipId: a.id, beforeClipId: landed.id, timeMs: 2000, gapMs: 0 },
+        { afterClipId: landed.id, beforeClipId: b.id, timeMs: 7000, gapMs: 0 },
+      ]);
+      // Two landings back to back are a cut too — the same rule, no exception to explain.
+      const chained = insertTransitionClip(
+        withTransition,
+        landed.id,
+        withTransition[2].id,
+        generatedBetween(landed, withTransition[2], 'asset_tr2'),
+      );
+      expect(chained).toHaveLength(4);
+      expect(bridgeableCuts(chained).map((c) => [c.afterClipId, c.beforeClipId])).toEqual([
+        [a.id, landed.id],
+        [landed.id, chained[2].id],
+        [chained[2].id, b.id],
+      ]);
     });
 
     it('two halves of one split photo still make a cut — same image on both sides', () => {
@@ -596,9 +614,6 @@ describe('cuts & transitions', () => {
       const generated = generatedBetween(a, b);
 
       expect(insertTransitionClip([b], a.id, b.id, generated)).toEqual([b]);
-      // A landed transition is not a side, so a pair naming one is no cut at all.
-      const landed = insertTransitionClip([a, b], a.id, b.id, generated)[1];
-      expect(insertTransitionClip([a, landed], a.id, landed.id, generated)).toEqual([a, landed]);
       // A third clip between the pair means they are no longer adjacent — nowhere to land.
       const between = photoClip({ id: 'asset_x', name: 'x.jpg' }, 1000, 2000);
       const shifted = { ...b, startMs: 3000 };
@@ -792,11 +807,6 @@ describe('cuts & transitions', () => {
       const generated = { ...generatedBetween(a, b), mode: 'replace' as const };
 
       expect(replacePairWithTransition([b], a.id, b.id, generated)).toEqual([b]);
-      const landed = insertTransitionClip([a, b], a.id, b.id, generated)[1];
-      expect(replacePairWithTransition([a, landed], a.id, landed.id, generated)).toEqual([
-        a,
-        landed,
-      ]);
       // A third clip between the pair means they are no longer adjacent — nothing to replace.
       const between = photoClip({ id: 'asset_x', name: 'x.jpg' }, 1000, 2000);
       const shifted = { ...b, startMs: 3000 };
@@ -900,6 +910,28 @@ describe('cuts & transitions', () => {
         'orphaned',
       );
     });
+
+    it('a regenerated live source is a moved anchor, even at the same time', () => {
+      // A photo beside a video: only the photo is consumed, the video stays on the track as
+      // the live side. Something that keeps its clip id but plays a new file — a transition
+      // regenerated in place — no longer offers the frame this one was rendered from.
+      const v = videoClip({ id: 'asset_v', name: 'v.mp4' }, 2000, 0);
+      const b = photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000, 2000);
+      const clips = replacePairWithTransition([v, b], v.id, b.id, {
+        ...generatedBetween(v, b),
+        from: { clipId: v.id, assetId: v.assetId, atMs: anchorMs(v, 'out') },
+        mode: 'replace',
+      });
+      const t = clips[1];
+      const bin = { asset_v: {}, asset_b: {}, asset_v2: {} };
+      expect(transitionStaleness(clips, t.id, bin)).toBe('fresh');
+
+      const swapped = clips.map((c) => (c.id === v.id ? { ...c, assetId: 'asset_v2' } : c));
+      expect(transitionStaleness(swapped, t.id, bin)).toBe('stale');
+      // And it is the file the clip plays *now* that has to stand in the bin, not the one
+      // its record remembers.
+      expect(transitionStaleness(swapped, t.id, { asset_v: {}, asset_b: {} })).toBe('orphaned');
+    });
   });
 
   describe('setTransitionDuration', () => {
@@ -948,6 +980,121 @@ describe('cuts & transitions', () => {
       // Not a transition at all — there are no sources to compare.
       expect(transitionStaleness([a, t, b], a.id)).toBe('orphaned');
       expect(transitionStaleness([a, t, b], 'nope')).toBe('orphaned');
+    });
+  });
+
+  describe('seams that are continuous by construction', () => {
+    /** Two videos with a kept-frames transition between them: v1(0–2000) t1(2000–7000) v2. */
+    function bridged(): { clips: Clip[]; v1: Clip; t1: Clip; v2: Clip } {
+      const v1 = videoClip({ id: 'asset_v1', name: 'one.mp4' }, 2000, 0);
+      const v2 = videoClip({ id: 'asset_v2', name: 'two.mp4' }, 3000, 2000);
+      const clips = insertTransitionClip([v1, v2], v1.id, v2.id, {
+        ...generatedBetween(v1, v2, 'asset_t1'),
+        from: { clipId: v1.id, assetId: v1.assetId, atMs: anchorMs(v1, 'out') },
+        to: { clipId: v2.id, assetId: v2.assetId, atMs: anchorMs(v2, 'in') },
+      });
+      return { clips, v1: clips[0], t1: clips[1], v2: clips[2] };
+    }
+
+    /** What a render off `a`'s tail into `b`'s head records — the real anchors, as the store sends them. */
+    function rendered(a: Clip, b: Clip, assetId: string, mode?: 'insert' | 'replace'): GeneratedTransition {
+      return {
+        ...generatedBetween(a, b, assetId),
+        from: { clipId: a.id, assetId: a.assetId, atMs: anchorMs(a, 'out') },
+        to: { clipId: b.id, assetId: b.assetId, atMs: anchorMs(b, 'in') },
+        mode,
+      };
+    }
+
+    it('a landing beside a transition continues it — the clip it ran into is now the landing', () => {
+      const { clips, t1, v2 } = bridged();
+      expect(transitionStaleness(clips, t1.id)).toBe('fresh');
+
+      // t2 is rendered out of t1's tail into v2: it opens on the very frame t1 ends on, so
+      // t1 — whose record named v2 as what it ran into — now runs into t2 on that frame.
+      const withT2 = insertTransitionClip(clips, t1.id, v2.id, rendered(t1, v2, 'asset_t2'));
+      const [, t1After, t2] = withT2;
+      expect(t2.transition?.from).toEqual({ clipId: t1.id, assetId: 'asset_t1', atMs: 4967 });
+      expect(t1After.transition?.to).toEqual({ clipId: t2.id, assetId: 'asset_t2', atMs: 0 });
+      expect(transitionStaleness(withT2, t1.id)).toBe('fresh');
+      expect(transitionStaleness(withT2, t2.id)).toBe('fresh');
+      // What is not rendered off it is left alone: v2 was never a transition.
+      expect(withT2[3]).toEqual({ ...v2, startMs: v2.startMs + 5000 });
+    });
+
+    it('a landing that consumed a still continues whatever ran into that still', () => {
+      // [v1][t1][p]: t1 was rendered into p. Bridging t1|p stands t2 in p's place, opening on
+      // p's image — exactly the frame t1 closes on.
+      const v1 = videoClip({ id: 'asset_v1', name: 'one.mp4' }, 2000, 0);
+      const p = photoClip({ id: 'asset_p', name: 'p.jpg' }, 3000, 2000);
+      const clips = insertTransitionClip([v1, p], v1.id, p.id, rendered(v1, p, 'asset_t1'));
+      const [, t1, pAfter] = clips;
+      expect(transitionStaleness(clips, t1.id)).toBe('fresh');
+
+      const replaced = replacePairWithTransition(
+        clips,
+        t1.id,
+        pAfter.id,
+        rendered(t1, pAfter, 'asset_t2', 'replace'),
+      );
+      const [, t1After, t2] = replaced;
+      expect(replaced).toHaveLength(3);
+      expect(t2.transition).toMatchObject({ mode: 'replace', from: { clipId: t1.id } });
+      expect(t1After.transition?.to).toEqual({ clipId: t2.id, assetId: 'asset_t2', atMs: 0 });
+      expect(transitionStaleness(replaced, t1.id)).toBe('fresh');
+      // Symmetric on the left: [p][t3] where t3 ran out of p, and a landing consumes p.
+      const p2 = photoClip({ id: 'asset_p2', name: 'p2.jpg' }, 2000, 0);
+      const v3 = videoClip({ id: 'asset_v3', name: 'three.mp4' }, 2000, 2000);
+      const right = insertTransitionClip([p2, v3], p2.id, v3.id, rendered(p2, v3, 'asset_t3'));
+      const x = videoClip({ id: 'asset_x', name: 'x.mp4' }, 1000, 10_000);
+      const shifted = [{ ...x, startMs: 0 }, ...right.map((c) => ({ ...c, startMs: c.startMs + 1000 }))];
+      const landedLeft = replacePairWithTransition(
+        shifted,
+        x.id,
+        p2.id,
+        rendered(shifted[0], shifted[1], 'asset_t4', 'replace'),
+      );
+      const t4 = landedLeft.find((c) => c.assetId === 'asset_t4')!;
+      const t3After = landedLeft.find((c) => c.assetId === 'asset_t3')!;
+      expect(t3After.transition?.from).toEqual({ clipId: t4.id, assetId: 'asset_t4', atMs: 4967 });
+      expect(transitionStaleness(landedLeft, t3After.id)).toBe('fresh');
+    });
+
+    it('a regenerated live source re-stamps what was rendered off it, so nothing goes stale', () => {
+      const { clips, t1, v2 } = bridged();
+      const withT2 = insertTransitionClip(clips, t1.id, v2.id, rendered(t1, v2, 'asset_t2'));
+      const t2 = withT2[2];
+
+      // t1 is re-rendered — same clip, new file, and a new length: 4 s instead of 5.
+      const again = replaceTransitionClip(withT2, t1.id, {
+        ...rendered(withT2[0], t2, 'asset_t1b'),
+        durationMs: 4000,
+      });
+      const t1b = again[1];
+      expect(t1b.id).toBe(t1.id);
+      expect(t1b.assetId).toBe('asset_t1b');
+      // t2 was rendered off t1's tail, which was re-rendered toward t2's head: still one
+      // seam, so t2's record follows the new file and the new anchor.
+      expect(again[2].transition?.from).toEqual({ clipId: t1.id, assetId: 'asset_t1b', atMs: 3967 });
+      expect(transitionStaleness(again, t1.id)).toBe('fresh');
+      expect(transitionStaleness(again, t2.id)).toBe('fresh');
+
+      // Strictness is intact: a trim after that is a real change.
+      const trimmed = again.map((c) => (c.id === t1.id ? { ...c, durationMs: 3000 } : c));
+      expect(transitionStaleness(trimmed, t2.id)).toBe('stale');
+    });
+
+    it("the probe correcting a source's length moves the record with it", () => {
+      const { clips, t1, v2 } = bridged();
+      const withT2 = insertTransitionClip(clips, t1.id, v2.id, rendered(t1, v2, 'asset_t2'));
+      const t2 = withT2[2];
+      expect(t2.transition?.from.atMs).toBe(4967);
+
+      // The file was really 4.2 s; t2 keeps meeting the tail — now at 4167 into it.
+      const corrected = setTransitionDuration(withT2, t1.id, 4200);
+      expect(corrected[1].durationMs).toBe(4200);
+      expect(corrected[2].transition?.from).toEqual({ clipId: t1.id, assetId: 'asset_t1', atMs: 4167 });
+      expect(transitionStaleness(corrected, t2.id)).toBe('fresh');
     });
   });
 });

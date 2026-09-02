@@ -472,24 +472,17 @@ export interface Cut {
 }
 
 /**
- * Whether a clip is something a transition can be rendered *from*. Anything on the track
- * qualifies — a photo is already a still, a video hands over the frame at its edge — except
- * a transition that has already landed: bridging one would be animating an animation, and
- * every landing would sprout two fresh chips on either side of itself.
- */
-function bridgeable(clip: Clip): boolean {
-  return clip.transition === undefined;
-}
-
-/**
  * Every cut a transition could fill: two clips consecutive in time order, touching or with
  * a gap between them — a gap a user drags open between a pair is exactly where a transition
  * goes, so it keeps the pair's chip rather than losing it.
  *
- * Kind-blind by design. Higgsfield animates between two stills; a photo is one already and
- * a video's frame at the cut is pulled off it (`backend.captureVideoFrame`), so photo→photo,
- * video→video and the mixed pairs are all the same job. What is *not* offered is a boundary
- * touching a landed transition — see `bridgeable`.
+ * Kind-blind by design, and blind to where a clip came from. Higgsfield animates between two
+ * stills; a photo is one already and a video's frame at the cut is pulled off it
+ * (`backend.captureVideoFrame`), so photo→photo, video→video and the mixed pairs are all the
+ * same job — and a transition that has already landed is a video like any other, so the
+ * boundaries on either side of it are cuts too. That stands a chip beside every landing,
+ * which is the point: a render that has landed is footage the user may want to run on into
+ * the next clip. A chip only ever selects, so offering one costs nothing.
  */
 export function bridgeableCuts(clips: Clip[]): Cut[] {
   const placed = layout(clips);
@@ -497,15 +490,13 @@ export function bridgeableCuts(clips: Clip[]): Cut[] {
   for (let i = 0; i < placed.length - 1; i += 1) {
     const a = placed[i];
     const b = placed[i + 1];
-    if (bridgeable(a.clip) && bridgeable(b.clip)) {
-      const gapMs = b.startMs - a.endMs;
-      cuts.push({
-        afterClipId: a.clip.id,
-        beforeClipId: b.clip.id,
-        timeMs: a.endMs + Math.round(gapMs / 2),
-        gapMs,
-      });
-    }
+    const gapMs = b.startMs - a.endMs;
+    cuts.push({
+      afterClipId: a.clip.id,
+      beforeClipId: b.clip.id,
+      timeMs: a.endMs + Math.round(gapMs / 2),
+      gapMs,
+    });
   }
   return cuts;
 }
@@ -596,8 +587,8 @@ function transitionClip(id: string, startMs: number, generated: GeneratedTransit
  * may have been edited while Higgsfield rendered — otherwise this is an identity no-op and
  * the caller explains rather than inserting the clip somewhere wrong.
  *
- * The clip lands right after the left photo and the right photo comes to rest flush
- * against its tail — a transition is continuous film from one still to the other, so a
+ * The clip lands right after the left clip and the right clip comes to rest flush
+ * against its tail — a transition is continuous film from one frame to the other, so a
  * gap the user dragged open for it is consumed rather than left as black. Everything from
  * the right photo onwards shifts by the difference between the render's length and the
  * gap's (right for a touching pair, either way across a gap), so gaps further along keep
@@ -613,14 +604,21 @@ export function insertTransitionClip(
     (c) => c.afterClipId === afterClipId && c.beforeClipId === beforeClipId,
   );
   const after = clips.find((c) => c.id === afterClipId);
-  if (!cut || !after) return clips;
+  const before = clips.find((c) => c.id === beforeClipId);
+  if (!cut || !after || !before) return clips;
 
   const startMs = after.startMs + after.durationMs;
   const clip = transitionClip(makeId('clip'), startMs, generated);
   const delta = clip.durationMs - cut.gapMs;
   const rightStartMs = startMs + cut.gapMs;
   return sortClips([
-    ...clips.map((c) => (c.startMs >= rightStartMs ? { ...c, startMs: c.startMs + delta } : c)),
+    ...restampedAround(
+      clips.map((c) => (c.startMs >= rightStartMs ? { ...c, startMs: c.startMs + delta } : c)),
+      clip,
+      after,
+      before,
+      NOTHING_CONSUMED,
+    ),
     clip,
   ]);
 }
@@ -663,11 +661,78 @@ export function replacePairWithTransition(
   const clip = transitionClip(makeId('clip'), spanStart, generated);
   const delta = clip.durationMs - (spanEnd - spanStart);
   return sortClips([
-    ...clips
-      .filter((c) => !doomed.has(c.id))
-      .map((c) => (c.startMs >= spanEnd ? { ...c, startMs: c.startMs + delta } : c)),
+    ...restampedAround(
+      clips
+        .filter((c) => !doomed.has(c.id))
+        .map((c) => (c.startMs >= spanEnd ? { ...c, startMs: c.startMs + delta } : c)),
+      clip,
+      after,
+      before,
+      doomed,
+    ),
     clip,
   ]);
+}
+
+const NOTHING_CONSUMED: ReadonlySet<string> = new Set();
+
+function sameSource(a: TransitionSource, b: TransitionSource): boolean {
+  return a.clipId === b.clipId && a.assetId === b.assetId && a.atMs === b.atMs;
+}
+
+/**
+ * Bring the transitions around a landing up to date with the seam it made.
+ *
+ * `landed` was rendered out of `after`'s edge and into `before`'s, so it opens on the frame
+ * `after` ends on and closes on the one `before` starts on. A transition that ran into
+ * `after` — the left clip itself, rendered into the right one; or, when the left clip was a
+ * still the landing consumed, whatever ran into that still — now runs into `landed` instead,
+ * on that very frame; and likewise out of it on the right. Their records follow, or the
+ * staleness check — which only compares a record with what stands on the track — would call
+ * a seam that is continuous by construction changed.
+ */
+function restampedAround(
+  clips: Clip[],
+  landed: Clip,
+  after: Clip,
+  before: Clip,
+  consumed: ReadonlySet<string>,
+): Clip[] {
+  const into = transitionSource(landed, 'in');
+  const outOf = transitionSource(landed, 'out');
+  return clips.map((c) => {
+    const t = c.transition;
+    if (!t || c.id === landed.id) return c;
+    const runsInto =
+      (c.id === after.id && t.to.clipId === before.id) ||
+      (consumed.has(after.id) && t.to.clipId === after.id);
+    const runsOutOf =
+      (c.id === before.id && t.from.clipId === after.id) ||
+      (consumed.has(before.id) && t.from.clipId === before.id);
+    if (!runsInto && !runsOutOf) return c;
+    return {
+      ...c,
+      transition: { ...t, from: runsOutOf ? outOf : t.from, to: runsInto ? into : t.to },
+    };
+  });
+}
+
+/**
+ * Bring every transition rendered off `source`'s edges up to date with `source` as it stands
+ * now. Called where the seam is continuous *by construction*: `source` was re-rendered
+ * toward the very frames those transitions meet it on, or the probe corrected its
+ * provisional length — the anchor moves, the frame does not. Either way it plays a new asset
+ * or ends at a new time, and a record that still named the old one would read as a change.
+ */
+function restampedOff(clips: Clip[], source: Clip): Clip[] {
+  return clips.map((c) => {
+    const t = c.transition;
+    if (!t || c.id === source.id) return c;
+    const from = t.from.clipId === source.id ? transitionSource(source, 'out') : t.from;
+    const to = t.to.clipId === source.id ? transitionSource(source, 'in') : t.to;
+    if (sameSource(from, t.from) && sameSource(to, t.to)) return c;
+    return { ...c, transition: { ...t, from, to } };
+  });
 }
 
 /**
@@ -702,8 +767,10 @@ export function removeClipsClosingSpans(clips: Clip[], ids: string[]): Clip[] {
 /**
  * A regeneration swaps the finished render over the existing transition clip, keeping its
  * id (so the selection stays on it) and its start; a change of length ripples everything
- * after its old end by the difference, so what follows keeps its spacing. Identity no-op
- * when the clip is gone or is not a transition.
+ * after its old end by the difference, so what follows keeps its spacing. A transition that
+ * was rendered off the old render's edge still meets the new one — it was re-rendered toward
+ * the same frames — so its record follows the new asset. Identity no-op when the clip is
+ * gone or is not a transition.
  */
 export function replaceTransitionClip(
   clips: Clip[],
@@ -715,17 +782,22 @@ export function replaceTransitionClip(
   const next = transitionClip(old.id, old.startMs, generated);
   const delta = next.durationMs - old.durationMs;
   const oldEnd = old.startMs + old.durationMs;
-  return sortClips(
-    clips.map((c) => {
-      if (c.id === old.id) return next;
-      return delta !== 0 && c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
-    }),
+  return restampedOff(
+    sortClips(
+      clips.map((c) => {
+        if (c.id === old.id) return next;
+        return delta !== 0 && c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
+      }),
+    ),
+    next,
   );
 }
 
 /**
  * Correct a transition's provisional length once the real file has been probed, rippling
- * everything after its old end by the difference so the reel stays exactly as arranged.
+ * everything after its old end by the difference so the reel stays exactly as arranged. A
+ * transition rendered off this one's tail recorded the provisional anchor; the frame it met
+ * is the same, so its record moves with the correction rather than reading as a trim.
  */
 export function setTransitionDuration(clips: Clip[], clipId: string, durationMs: number): Clip[] {
   const clip = clips.find((c) => c.id === clipId);
@@ -734,11 +806,15 @@ export function setTransitionDuration(clips: Clip[], clipId: string, durationMs:
   const delta = next - clip.durationMs;
   if (delta === 0) return clips;
   const oldEnd = clip.startMs + clip.durationMs;
-  return sortClips(
-    clips.map((c) => {
-      if (c.id === clipId) return { ...c, durationMs: next };
-      return c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
-    }),
+  const measured = { ...clip, durationMs: next };
+  return restampedOff(
+    sortClips(
+      clips.map((c) => {
+        if (c.id === clipId) return measured;
+        return c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
+      }),
+    ),
+    measured,
   );
 }
 
@@ -755,7 +831,14 @@ export type TransitionStaleness = 'fresh' | 'stale' | 'orphaned';
  * those say nothing and it is `fresh` for as long as their assets stand in the bin
  * (`assets`), `orphaned` once one is gone or missing. What it does still watch is a side it
  * did **not** consume: a video keeps its place on the track, and trimming it moves the very
- * frame the motion was rendered from.
+ * frame the motion was rendered from — as does regenerating it, when that side is itself a
+ * transition: same clip, new file.
+ *
+ * Strict on purpose — a record either matches what stands there or it does not. The seams
+ * that are continuous by construction (a landing beside a transition, a source regenerated
+ * toward its neighbours, a probe correcting a length) are kept honest at the source, by
+ * re-stamping the records they touch (`restampedAround`, `restampedOff`), not by teaching
+ * this check to guess.
  */
 export function transitionStaleness(
   clips: Clip[],
@@ -769,9 +852,13 @@ export function transitionStaleness(
   const { from, to } = clip.transition;
 
   if (clip.transition.mode === 'replace') {
+    // A side still on the track is judged by the asset it plays *now*; only a consumed one
+    // has nothing but its record.
+    const assetIdOf = (source: TransitionSource) =>
+      clips.find((c) => c.id === source.clipId)?.assetId ?? source.assetId;
     const gone = (assetId: string) =>
       assets !== undefined && (!assets[assetId] || assets[assetId].missing);
-    if (gone(from.assetId) || gone(to.assetId)) return 'orphaned';
+    if (gone(assetIdOf(from)) || gone(assetIdOf(to))) return 'orphaned';
     return anchorMoved(clips, from, 'out') || anchorMoved(clips, to, 'in') ? 'stale' : 'fresh';
   }
 
@@ -787,12 +874,16 @@ export function transitionStaleness(
 
 /**
  * Whether the clip a source names is still on the track *and* no longer offers the frame
- * that was rendered from it. A source whose clip is gone — every photo a replace landing
- * consumed — has moved nowhere; it is judged by its asset instead.
+ * that was rendered from it — trimmed to a different anchor, or playing a different file
+ * altogether. A source whose clip is gone — every photo a replace landing consumed — has
+ * moved nowhere; it is judged by its asset instead.
  */
 function anchorMoved(clips: Clip[], source: TransitionSource, edge: 'out' | 'in'): boolean {
   const live = clips.find((c) => c.id === source.clipId);
-  return live !== undefined && anchorMs(live, edge) !== source.atMs;
+  return (
+    live !== undefined &&
+    (live.assetId !== source.assetId || anchorMs(live, edge) !== source.atMs)
+  );
 }
 
 export function formatTimecode(ms: number): string {

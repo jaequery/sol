@@ -46,8 +46,8 @@ of cents rather than a plan credit. Both live in the same Model selector; see
   its volume or its mute in the inspector. Audible lanes are mixed under the film on export; a sound that
   outlasts the last clip is cut at the film's end, never padded.
 - **Prompt-driven AI transitions.** A ✦ chip stands on every cut between two clips —
-  photo to photo, video to video, or one of each; touching, or across a gap dragged open
-  between them. Select it, describe the motion (or leave the default), and each side gives
+  photo to photo, video to video, or one of each, a landed transition included; touching,
+  or across a gap dragged open between them. Select it, describe the motion (or leave the default), and each side gives
   up the frame at the cut: a photo *is* that frame, and a video's is pulled off the file at
   the exact point it runs out or begins, trims and all. The two go to Higgsfield as the
   first and last frame of the generation, so nothing else needs setting up. A **Model**

@@ -985,16 +985,18 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     if (clip.transition.mode === 'replace') {
       const { from, to } = clip.transition;
-      const assetA = s.assets[from.assetId];
-      const assetB = s.assets[to.assetId];
-      if (!assetA || !assetB || assetA.missing || assetB.missing) return;
-      const prompt = clip.transition.prompt.trim() || DEFAULT_TRANSITION_PROMPT;
       // A consumed still is re-rendered from its asset in the bin. A side the landing did
       // *not* consume — a video keeps its footage — is still on the track and may have been
       // trimmed since, so it is re-read from the clip as it stands rather than from the
-      // frame that was recorded. That is exactly what makes its Regenerate worth pressing.
+      // frame that was recorded — its asset included, because a transition on that side
+      // that was regenerated since kept its clip id and took a new file. That is exactly
+      // what makes its Regenerate worth pressing.
       const liveA = s.clips.find((c) => c.id === from.clipId);
       const liveB = s.clips.find((c) => c.id === to.clipId);
+      const assetA = s.assets[liveA?.assetId ?? from.assetId];
+      const assetB = s.assets[liveB?.assetId ?? to.assetId];
+      if (!assetA || !assetB || assetA.missing || assetB.missing) return;
+      const prompt = clip.transition.prompt.trim() || DEFAULT_TRANSITION_PROMPT;
       const target: GenerationTarget = {
         kind: 'cut',
         afterClipId: from.clipId,
@@ -1016,9 +1018,9 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     const left = placedClips[at - 1];
     const right = placedClips[at + 1];
-    // Any media on both sides will do, but not another transition: the chip refuses to
-    // bridge one, and regenerating between two would do exactly what the chip forbids.
-    if (!left || !right || left.transition !== undefined || right.transition !== undefined) return;
+    // Whatever stands on each side will do — a photo, footage, or another transition, which
+    // is footage like any other: the chip offers the cut beside one, and Regenerate reads it.
+    if (!left || !right) return;
     const assetA = s.assets[left.assetId];
     const assetB = s.assets[right.assetId];
     if (!assetA || !assetB || assetA.missing || assetB.missing) return;
@@ -2532,8 +2534,8 @@ function liveGeneration(g: Generation): boolean {
 
 /**
  * Whether this cut could start a generation right now: the pair still forms a cut (side by
- * side, touching or across a gap, neither of them a landed transition), both sources on
- * hand, and no job already running for it. Settings are checked separately — an
+ * side, touching or across a gap — whatever the two clips are), both sources on hand, and
+ * no job already running for it. Settings are checked separately — an
  * unconfigured app changes what the UI says, not what a cut is.
  */
 export function cutEligible(
