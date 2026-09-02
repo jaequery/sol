@@ -57,6 +57,9 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   loadProject: vi.fn(async () => null),
   readProject: vi.fn(async () => null),
   lastProjectPath: vi.fn(async () => null),
+  recentProjects: vi.fn(async () => []),
+  newProjectPath: vi.fn(async (name: string) => `/docs/${name}.solcut`),
+  createProject: vi.fn(async () => {}),
   saveProject: vi.fn(async () => {}),
   pickProjectSavePath: vi.fn(async () => null),
   pickProjectFile: vi.fn(async () => null),
@@ -244,7 +247,7 @@ describe('the project menu', () => {
     await user.click(name);
     const menu = screen.getByRole('group', { name: 'Project' });
     expect(name).toHaveAttribute('aria-expanded', 'true');
-    expect(within(menu).getByRole('button', { name: 'New project' })).toBeEnabled();
+    expect(within(menu).getByRole('button', { name: 'New project…' })).toBeEnabled();
     expect(within(menu).getByRole('button', { name: 'Open project…' })).toBeEnabled();
     expect(within(menu).getByRole('button', { name: 'Save as…' })).toBeEnabled();
   });
@@ -291,7 +294,10 @@ describe('the switch confirmation', () => {
     await screen.findByRole('button', { name: 'sunset.jpg photo clip' });
 
     await user.click(screen.getByRole('button', { name: 'Untitled project' }));
-    await user.click(screen.getByRole('button', { name: 'New project' }));
+    await user.click(screen.getByRole('button', { name: 'New project…' }));
+    // Naming it is what starts the switch now: a project is created with a name or not at all.
+    await user.type(await screen.findByLabelText('New project'), 'reel');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
     return screen.findByRole('dialog', { name: 'Save this project first?' });
   }
 

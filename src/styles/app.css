@@ -109,6 +109,12 @@ select:focus-visible {
 .app[data-platform='mac'] .titlebar {
   padding-left: 80px;
 }
+/* No `overflow` here, ever. `.menu` is absolutely positioned inside `.doc__project`, which
+   is a descendant of this element, so an `overflow: hidden` put here to ellipsize the name
+   clips the project menu instead — and the menu hangs entirely below this box, so it is
+   clipped to nothing at all. That shipped once, and it made every project action in the app
+   unreachable while every test went on passing, because jsdom has no layout. The truncation
+   belongs on `.doc__name`, which is the thing that actually gets long. */
 .titlebar .doc {
   display: flex;
   align-items: baseline;
@@ -117,9 +123,6 @@ select:focus-visible {
   color: var(--ink-2);
   white-space: nowrap;
   min-width: 0;
-  /* Never `overflow: hidden` here: the project menu is positioned inside this slot, and
-     clipping the slot clipped the menu with it — three actions nobody could reach. The
-     label below is the one thing that gives way. */
 }
 /* The project name is the control: the menu hangs off it rather than off chrome of its
    own, so three rarely-used actions cost the bar nothing while they are not being used. */
@@ -140,18 +143,24 @@ select:focus-visible {
   font-size: var(--fs);
   font-weight: 600;
 }
+/* Long project names ellipsize here — see above. Capped at a sentence's worth, and shrunk
+   further when the bar itself runs out of room, so the actions on the right never move. */
 .titlebar .doc__label {
   min-width: 0;
+  max-width: 30ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* A pseudo-element, so the button's accessible name stays the project's name alone. */
+/* A pseudo-element, so the button's accessible name stays the project's name alone.
+   `inherit`, not a token of its own: with its own colour it was the one part of the control
+   that never lit up on hover or while open, which is exactly the half-signal that had people
+   reading the name as a label rather than a button. */
 .titlebar .doc__name::after {
   content: '\25be';
   /* The glyph carries its own side bearing; a half step is all it needs. */
   margin-left: var(--sp-05);
-  color: var(--ink-3);
+  color: inherit;
   flex: 0 0 auto;
 }
 .titlebar .doc__name:hover,
@@ -178,19 +187,69 @@ select:focus-visible {
   border-radius: var(--r);
   box-shadow: var(--shadow-pop);
 }
-.menu > button {
+/* The rows. `:not(.btn)` keeps this off the naming form's Create button, which is a real
+   button and keeps its fill — without it the row rule out-specified `.btn--primary` and
+   left the form's one action drawn as plain text. */
+.menu > button:not(.btn) {
   padding: var(--sp-2) var(--sp-3);
   border: 0;
   border-radius: var(--r-sm);
   background: none;
   color: var(--ink-2);
   font-size: var(--fs);
+  /* A flex button centres its label; a menu row starts it at the left like the rest. */
+  justify-content: flex-start;
   text-align: left;
   white-space: nowrap;
 }
-.menu > button:hover {
+.menu > button:not(.btn):hover {
   background: var(--panel-2);
   color: var(--ink);
+}
+/* A remembered project. Same row as any other item in here — what marks it as content
+   rather than a command is the hairline underneath the group, not a treatment of its own.
+   The width ceiling is the menu's, so a long name ellipsizes instead of widening the
+   popover past the window. */
+.menu__recent {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The first action after the list. One hairline, doing the job a gap alone cannot on a flat
+   panel: saying that everything above is a project and everything below is a verb. */
+.menu__first {
+  margin-top: var(--sp-1);
+  padding-top: calc(var(--sp-1) + var(--sp-05));
+  border-top: 1px solid var(--line);
+  border-radius: 0 0 var(--r-sm) var(--r-sm);
+}
+/* Naming a new project. Borrows `.field`'s recipe rather than its class: this is the app's
+   first text box that holds a human name instead of an id, so it takes the reading face
+   back off `--mono`, exactly as `.field select` already does. */
+.menu--new {
+  gap: var(--sp-1);
+}
+.menu--new label {
+  padding: var(--sp-05) var(--sp-05) 0;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.menu--new input {
+  width: 100%;
+  height: var(--h-control-md);
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 0 var(--sp-3);
+  font: 500 var(--fs-sm) / 1.2 var(--font);
+}
+.menu--new .hint {
+  margin: 0;
+  padding: 0 var(--sp-05);
+}
+.menu--new .btn {
+  margin-top: var(--sp-1);
 }
 /*
   One word beside the project name, and nothing else — no dot, no pill, no border. The quiet
