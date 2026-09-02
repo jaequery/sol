@@ -39,7 +39,6 @@ export function App() {
         <div className="col">
           <div className="panel-head">
             <span className="panel-head__title">Preview</span>
-            <span className="right">1920 × 1080 · 30 fps</span>
           </div>
           <Preview />
           <Transport />

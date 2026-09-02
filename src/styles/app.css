@@ -31,7 +31,7 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--sp-2);
   white-space: nowrap;
   transition:
     background-color var(--dur) var(--ease),
@@ -61,18 +61,22 @@ textarea:focus-visible,
 select:focus-visible {
   outline: none;
   border-color: var(--accent-2) !important;
-  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.25);
+  box-shadow: var(--focus-halo);
 }
 .icon {
   flex: 0 0 auto;
   display: block;
+}
+/* An icon set into a sentence sits on the text's baseline like a glyph would. */
+.icon.icon--inline {
+  display: inline-block;
+  vertical-align: -1px;
 }
 /* Timecodes and counters keep their width as they tick. */
 .tc,
 .clip__dur,
 .audio-clip__dur,
 .ruler span,
-.canvas__hud,
 .kv b,
 .kv .num input,
 .timeline__zoom {
@@ -96,7 +100,7 @@ select:focus-visible {
   align-items: center;
   gap: var(--sp-3);
   padding: 0 var(--sp-3);
-  background: linear-gradient(180deg, #171a28, #101220);
+  background: var(--chrome);
   border-bottom: 1px solid var(--line);
 }
 /* Under macOS the window's own title bar is hidden and the traffic lights are drawn over
@@ -106,20 +110,29 @@ select:focus-visible {
   padding-left: 80px;
 }
 .titlebar .doc {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-1);
   font-size: var(--fs-sm);
   color: var(--ink-2);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
+  /* Never `overflow: hidden` here: the project menu is positioned inside this slot, and
+     clipping the slot clipped the menu with it — three actions nobody could reach. The
+     label below is the one thing that gives way. */
 }
 /* The project name is the control: the menu hangs off it rather than off chrome of its
    own, so three rarely-used actions cost the bar nothing while they are not being used. */
 .titlebar .doc__project {
   position: relative;
-  display: inline-block;
+  display: flex;
+  min-width: 0;
 }
 .titlebar .doc__name {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  max-width: 100%;
   padding: 0;
   border: 0;
   background: none;
@@ -127,10 +140,19 @@ select:focus-visible {
   font-size: var(--fs);
   font-weight: 600;
 }
+.titlebar .doc__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* A pseudo-element, so the button's accessible name stays the project's name alone. */
 .titlebar .doc__name::after {
-  content: ' \25be';
+  content: '\25be';
+  /* The glyph carries its own side bearing; a half step is all it needs. */
+  margin-left: var(--sp-05);
   color: var(--ink-3);
+  flex: 0 0 auto;
 }
 .titlebar .doc__name:hover,
 .titlebar .doc__name[aria-expanded='true'] {
@@ -157,7 +179,7 @@ select:focus-visible {
   box-shadow: var(--shadow-pop);
 }
 .menu > button {
-  padding: 6px 10px;
+  padding: var(--sp-2) var(--sp-3);
   border: 0;
   border-radius: var(--r-sm);
   background: none;
@@ -176,8 +198,9 @@ select:focus-visible {
   ambient rather than as a message; only the states that need acting on take a colour.
 */
 .titlebar .doc__save {
-  margin-left: var(--sp-2);
+  margin-left: var(--sp-1);
   color: var(--ink-3);
+  flex: 0 0 auto;
 }
 .titlebar .doc__save--problem {
   color: var(--err);
@@ -210,13 +233,13 @@ select:focus-visible {
   transform: translateY(1px);
 }
 .btn--primary {
-  background: linear-gradient(180deg, var(--accent), var(--accent-solid));
-  border-color: var(--accent-border);
-  color: #fff;
+  background: var(--accent-solid);
+  border-color: var(--accent-solid);
+  color: var(--on-accent);
 }
 .btn--primary:hover:not(:disabled) {
-  background: linear-gradient(180deg, #8a6dff, #7455ea);
-  border-color: #9d84ff;
+  background: var(--accent-solid-hover);
+  border-color: var(--accent-solid-hover);
 }
 .btn--ghost {
   background: transparent;
@@ -225,9 +248,13 @@ select:focus-visible {
   background: var(--panel-2);
 }
 .btn--danger {
-  background: linear-gradient(180deg, #e05570, #c33a56);
-  border-color: #ff7d96;
-  color: #fff;
+  background: var(--err-solid);
+  border-color: var(--err-solid);
+  color: var(--on-accent);
+}
+.btn--danger:hover:not(:disabled) {
+  background: var(--err-solid-hover);
+  border-color: var(--err-solid-hover);
 }
 .btn:disabled {
   opacity: 0.42;
@@ -236,13 +263,13 @@ select:focus-visible {
 .chip-run {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   height: var(--h-control-xs);
   font: 600 var(--fs-xs) / 1 var(--mono);
   color: var(--accent-2);
   border: 1px solid var(--accent-line);
   background: var(--accent-wash);
-  padding: 0 10px;
+  padding: 0 var(--sp-3);
   border-radius: 99px;
 }
 .chip-run .icon {
@@ -291,25 +318,6 @@ select:focus-visible {
   text-overflow: ellipsis;
   min-width: 0;
 }
-.panel-head .right {
-  margin-left: auto;
-  text-transform: none;
-  letter-spacing: 0;
-  font-weight: 500;
-  color: var(--ink-3);
-}
-.panel-head__count {
-  font: 600 var(--fs-2xs) / 1 var(--mono);
-  color: var(--ink-3);
-  letter-spacing: 0;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 99px;
-  border: 1px solid var(--line);
-  display: inline-grid;
-  place-items: center;
-}
 .panel-head__actions {
   margin-left: auto;
   display: flex;
@@ -324,9 +332,9 @@ select:focus-visible {
   color: var(--ink-2);
   font: 600 var(--fs-xs) / 1 var(--font);
   letter-spacing: 0;
-  padding: 0 9px;
+  padding: 0 var(--sp-2);
   text-transform: none;
-  gap: 5px;
+  gap: var(--sp-1);
   flex: 0 0 auto;
 }
 .panel-head__action:hover:not(:disabled) {
@@ -389,8 +397,8 @@ select:focus-visible {
 }
 .bin__name {
   display: block;
-  margin-top: 5px;
-  padding: 0 2px;
+  margin-top: var(--sp-1);
+  padding: 0 var(--sp-05);
   font: 500 var(--fs-xs) / 1.3 var(--font);
   color: var(--ink-2);
   overflow: hidden;
@@ -414,7 +422,7 @@ select:focus-visible {
   cursor: default;
 }
 .bin__tile--missing .bin__thumb {
-  background: repeating-linear-gradient(135deg, #16151c 0 8px, #1f1c26 8px 16px);
+  background: var(--hatch);
   border-color: var(--warn-line);
 }
 .bin__tile--missing .bin__thumb::after {
@@ -423,7 +431,7 @@ select:focus-visible {
   inset: 0;
   display: grid;
   place-items: center;
-  font: 700 var(--fs-2xs) / 1 var(--mono);
+  font: 600 var(--fs-2xs) / 1 var(--mono);
   letter-spacing: 0.12em;
   color: var(--warn);
 }
@@ -438,31 +446,31 @@ select:focus-visible {
    go unbadged; a sound and a video say so. */
 .bin__thumb .kind {
   position: absolute;
-  left: 6px;
-  top: 6px;
+  left: var(--sp-2);
+  top: var(--sp-2);
   height: 18px;
-  padding: 0 5px;
+  padding: 0 var(--sp-1);
   border-radius: var(--r-xs);
-  background: rgba(6, 7, 12, 0.78);
-  color: #e6e9f6;
+  background: var(--overlay);
+  color: var(--ink);
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font: 700 var(--fs-2xs) / 1 var(--mono);
+  gap: var(--sp-1);
+  font: 600 var(--fs-2xs) / 1 var(--mono);
   letter-spacing: 0.06em;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--overlay-line);
 }
 .bin__remove {
   position: absolute;
-  right: 5px;
-  top: 5px;
+  right: var(--sp-2);
+  top: var(--sp-2);
   width: var(--h-control-xs);
   height: var(--h-control-xs);
   padding: 0;
   border-radius: var(--r-sm);
-  background: rgba(6, 7, 12, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #e6e9f6;
+  background: var(--overlay-strong);
+  border: 1px solid var(--overlay-line);
+  color: var(--ink);
   /* A destructive control on every tile is noise; it appears for the tile under the
      pointer, or the one with focus, and is otherwise out of the way. */
   opacity: 0;
@@ -475,23 +483,22 @@ select:focus-visible {
 .bin__remove:hover {
   background: var(--err);
   border-color: var(--err);
-  color: #2a1220;
+  color: var(--err-wash);
 }
 .bin__audio {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  color: #7fd7ab;
-  background:
-    repeating-linear-gradient(90deg, rgba(94, 202, 154, 0.14) 0 3px, transparent 3px 7px),
-    rgba(46, 92, 71, 0.35);
+  color: var(--audio);
+  background: var(--audio-stripes), var(--audio-wash);
 }
+/* The one moving gradient: it is the loading state, not a finish. */
 .bin__skeleton {
   aspect-ratio: 16 / 10;
   border-radius: var(--r);
   border: 1px solid var(--line);
-  background: linear-gradient(100deg, #171a27 30%, #22263a 50%, #171a27 70%);
+  background: linear-gradient(100deg, var(--panel-2) 30%, var(--panel-3) 50%, var(--panel-2) 70%);
   background-size: 300% 100%;
   animation: shimmer 1.4s linear infinite;
 }
@@ -503,7 +510,7 @@ select:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .bin__skeleton {
     animation: none;
-    background: #1c2032;
+    background: var(--panel-2);
   }
   .chip-run .icon,
   .cutchip--run .icon {
@@ -520,7 +527,7 @@ select:focus-visible {
   line-height: 1.6;
 }
 .bin__empty {
-  border: 1.5px dashed var(--line);
+  border: 1px dashed var(--line);
   color: var(--ink-3);
 }
 .bin__empty b {
@@ -532,6 +539,8 @@ select:focus-visible {
 .bin__empty .linklike {
   display: inline;
   margin: 0;
+  /* Inline in a sentence: no side padding, or the full stop after it drifts away. */
+  padding: 0;
   font-size: inherit;
   color: var(--ink-2);
 }
@@ -545,11 +554,11 @@ select:focus-visible {
 .bin__problem b {
   display: block;
   color: var(--err);
-  font-weight: 650;
-  margin-bottom: 2px;
+  font-weight: 600;
+  margin-bottom: var(--sp-05);
 }
 .bin__problem button {
-  margin-top: 6px;
+  margin-top: var(--sp-2);
   background: none;
   border: 0;
   color: var(--err-ink);
@@ -582,7 +591,8 @@ select:focus-visible {
 /* Both already carry their own top margin for the contexts they were written for. */
 .compose .hint,
 .compose .block-btn,
-.compose .linklike {
+.compose .linklike,
+.compose .disclosure {
   margin-top: 0;
 }
 .compose .linklike {
@@ -597,7 +607,7 @@ select:focus-visible {
 .compose__row .linklike {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-1);
   margin: 0;
 }
 /* While the panel is open the tiles are its reference picker; the ones it cannot use
@@ -628,17 +638,17 @@ select:focus-visible {
 }
 .bin__pick-n {
   position: absolute;
-  right: 5px;
-  top: 5px;
+  right: var(--sp-2);
+  top: var(--sp-2);
   min-width: 20px;
   height: 20px;
-  padding: 0 5px;
+  padding: 0 var(--sp-1);
   border-radius: var(--r-xs);
-  background: var(--accent);
-  color: #fff;
+  background: var(--accent-solid);
+  color: var(--on-accent);
   display: grid;
   place-items: center;
-  font: 700 var(--fs-2xs) / 1 var(--mono);
+  font: 600 var(--fs-2xs) / 1 var(--mono);
 }
 
 /* A photo on its way: the import skeleton, marked as generated and stoppable. */
@@ -647,8 +657,8 @@ select:focus-visible {
 }
 .bin__gen-mark {
   position: absolute;
-  left: 8px;
-  top: 8px;
+  left: var(--sp-2);
+  top: var(--sp-2);
   color: var(--accent-2);
   display: inline-flex;
 }
@@ -663,7 +673,7 @@ select:focus-visible {
   min-height: 0;
   display: grid;
   place-items: center;
-  background: radial-gradient(120% 90% at 50% 0%, #151827, #0a0b12);
+  background: var(--bg);
   padding: var(--sp-4);
   /* The canvas measures itself against this box, so it can fill whichever dimension is
      the tighter one without a resize observer. */
@@ -677,9 +687,10 @@ select:focus-visible {
   border-radius: var(--r-md);
   position: relative;
   overflow: hidden;
-  border: 1px solid #2c3149;
-  box-shadow: var(--shadow);
-  background: #000;
+  /* A hairline is what marks the frame's edge against the stage; a shadow only said
+     "picture" under a picture. */
+  border: 1px solid var(--line-strong);
+  background: var(--video-black);
 }
 .canvas img,
 .canvas video {
@@ -695,39 +706,21 @@ select:focus-visible {
   opacity: 0;
   pointer-events: none;
 }
-.canvas__hud {
-  position: absolute;
-  left: 12px;
-  top: 12px;
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  background: rgba(8, 9, 16, 0.74);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: var(--r-sm);
-  padding: 0 9px;
-  height: var(--h-control-xs);
-  font: 600 var(--fs-xs) / 1 var(--mono);
-  color: #cfd5ee;
-}
-.canvas__hud .icon {
-  color: var(--playhead);
-}
 .canvas__ai {
   position: absolute;
-  right: 12px;
-  top: 12px;
+  right: var(--sp-3);
+  top: var(--sp-3);
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-1);
   height: var(--h-control-xs);
-  background: rgba(124, 92, 255, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: var(--accent-solid);
+  border: 1px solid var(--overlay-line);
   border-radius: 99px;
-  padding: 0 10px;
-  font: 700 var(--fs-2xs) / 1 var(--mono);
+  padding: 0 var(--sp-3);
+  font: 600 var(--fs-2xs) / 1 var(--mono);
   letter-spacing: 0.08em;
-  color: #fff;
+  color: var(--on-accent);
 }
 /* A gap between clips: black, exactly what the export writes there. */
 .canvas__gap {
@@ -735,20 +728,28 @@ select:focus-visible {
   inset: 0;
   display: grid;
   place-items: center;
-  background: #000;
-  color: rgba(255, 255, 255, 0.3);
-  font: 700 var(--fs-2xs) / 1 var(--mono);
+  background: var(--video-black);
+  color: var(--ink-3);
+  font: 600 var(--fs-2xs) / 1 var(--mono);
   letter-spacing: 0.22em;
 }
+/* Two lines, together: a grid put each child in a row of its own and spread them over
+   the whole frame. */
 .canvas__offline {
   position: absolute;
   inset: 0;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
   text-align: center;
-  background: repeating-linear-gradient(135deg, #16151c 0 10px, #1c1a24 10px 20px);
+  background: var(--hatch);
   color: var(--warn);
-  font: 600 var(--fs-xs) / 1.6 var(--mono);
+  font: 600 var(--fs-xs) / 1.4 var(--mono);
+}
+.canvas__offline b {
+  font-weight: 600;
 }
 .canvas__offline span {
   opacity: 0.75;
@@ -823,8 +824,8 @@ select:focus-visible {
   border-radius: var(--r);
 }
 .tbtn--play:hover:not(:disabled) {
-  background: #fff;
-  border-color: #fff;
+  background: var(--on-accent);
+  border-color: var(--on-accent);
   color: var(--bg);
 }
 
@@ -848,7 +849,7 @@ select:focus-visible {
   flex: 0 0 auto;
 }
 .card--ai {
-  border-color: #3a2f6b;
+  border-color: var(--line);
 }
 .card--error {
   border-color: var(--err-line);
@@ -870,7 +871,7 @@ select:focus-visible {
 }
 .card--ai .card__head {
   background: var(--accent-wash);
-  border-color: #3a2f6b;
+  border-color: var(--line);
 }
 .card--ai .card__head .icon {
   color: var(--accent-2);
@@ -907,6 +908,17 @@ select:focus-visible {
 .card__body {
   padding: var(--sp-3);
 }
+/* A field after a prompt or its chips stands off them like every other row does. */
+.card__body .field {
+  margin-top: var(--sp-3);
+}
+/* An error card is already the error frame: the box inside it drops its own. */
+.card--error .errbox {
+  border: 0;
+  background: none;
+  padding: 0;
+  margin-top: var(--sp-2);
+}
 .field-row {
   display: flex;
   align-items: center;
@@ -926,6 +938,7 @@ select:focus-visible {
 }
 .field-row .value {
   font: 600 var(--fs-xs) / 1 var(--mono);
+  color: var(--ink-2);
   background: var(--sunken);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
@@ -933,7 +946,7 @@ select:focus-visible {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  padding: 0 8px;
+  padding: 0 var(--sp-2);
   min-width: 56px;
   flex: 0 0 auto;
 }
@@ -946,7 +959,16 @@ select:focus-visible {
   font-size: var(--fs-xs);
   color: var(--ink-3);
   min-height: var(--h-control-xs);
-  padding: 2px 0;
+  padding: var(--sp-05) 0;
+}
+/* An identifier: one line, the whole of it on hover, and selectable to copy. */
+.kv .kv__id {
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
 }
 .kv b {
   font: 600 var(--fs-xs) / 1.3 var(--mono);
@@ -971,26 +993,38 @@ select:focus-visible {
   color: var(--accent-3);
 }
 /* A `.kv` value that is typed rather than read: the box is dressed as the `<b>` it stands
-   in for, so the card's rhythm does not change when a row becomes editable. */
+   in for, so the card's rhythm does not change when a row becomes editable. The unit sits
+   inside the box, so the box ends where every other value in the column ends. */
 .kv .num {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
-  color: var(--ink-3);
-}
-.kv .num input {
-  font: 600 var(--fs-xs) / 1 var(--mono);
-  color: var(--ink-2);
+  gap: var(--sp-1);
+  height: var(--h-control-xs);
+  padding: 0 var(--sp-2);
   background: var(--sunken);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
-  height: var(--h-control-xs);
-  padding: 0 7px;
-  width: 64px;
+  color: var(--ink-3);
+  font: 600 var(--fs-xs) / 1 var(--mono);
+}
+.kv .num input {
+  width: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--ink-2);
   text-align: right;
 }
-.kv .num input:focus {
+/* The ring belongs to the box, not the bare input inside it. */
+.kv .num input:focus-visible {
+  border: 0 !important;
+  box-shadow: none;
   color: var(--ink);
+}
+.kv .num:focus-within {
+  border-color: var(--accent-2);
+  box-shadow: var(--focus-halo);
 }
 
 .prompt {
@@ -999,9 +1033,9 @@ select:focus-visible {
   max-height: 160px;
   resize: vertical;
   background: var(--sunken);
-  border: 1px solid #33305e;
+  border: 1px solid var(--line-strong);
   border-radius: var(--r);
-  padding: var(--sp-2) 10px;
+  padding: var(--sp-2) var(--sp-3);
   font-family: var(--font);
   font-size: var(--fs-sm);
   line-height: 1.5;
@@ -1012,7 +1046,7 @@ select:focus-visible {
 .chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: var(--sp-1);
   margin-top: var(--sp-2);
 }
 .chip {
@@ -1022,7 +1056,7 @@ select:focus-visible {
   border: 1px solid var(--line);
   background: var(--sunken);
   border-radius: 99px;
-  padding: 0 10px;
+  padding: 0 var(--sp-3);
 }
 .chip:hover {
   border-color: var(--accent-line);
@@ -1046,6 +1080,22 @@ select:focus-visible {
 .linklike:hover {
   color: var(--accent-2);
 }
+/* A disclosure opens something below it; it is not a link and does not dress as one. */
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-height: var(--h-control-xs);
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.disclosure:hover {
+  color: var(--ink);
+}
 
 .block-btn {
   width: 100%;
@@ -1053,15 +1103,15 @@ select:focus-visible {
   margin-top: var(--sp-3);
   padding: 0 var(--sp-3);
   border-radius: var(--r);
-  border: 1px solid var(--accent-border);
-  color: #fff;
-  font-weight: 650;
+  border: 1px solid var(--accent-solid);
+  color: var(--on-accent);
+  font-weight: 600;
   font-size: var(--fs-sm);
-  background: linear-gradient(180deg, var(--accent), var(--accent-solid));
+  background: var(--accent-solid);
 }
 .block-btn:hover:not(:disabled) {
-  background: linear-gradient(180deg, #8a6dff, #7455ea);
-  border-color: #9d84ff;
+  background: var(--accent-solid-hover);
+  border-color: var(--accent-solid-hover);
 }
 .block-btn:active:not(:disabled) {
   transform: translateY(1px);
@@ -1087,21 +1137,8 @@ select:focus-visible {
   background: var(--sunken);
   border: 1px solid var(--line);
   border-radius: var(--r-xs);
-  padding: 1px 4px;
+  padding: 0 var(--sp-1);
   user-select: text;
-}
-.hint--error {
-  color: #ffb3c2;
-}
-/* A short line of keys, for the tooltips and the toolbar legend. */
-kbd {
-  font: 600 var(--fs-2xs) / 1 var(--mono);
-  color: var(--ink-2);
-  background: var(--sunken);
-  border: 1px solid var(--line);
-  border-bottom-width: 2px;
-  border-radius: var(--r-xs);
-  padding: 2px 5px;
 }
 .callout {
   border: 1px solid var(--warn-line);
@@ -1119,17 +1156,17 @@ kbd {
 .callout b {
   display: block;
   color: var(--warn);
-  margin-bottom: 3px;
+  margin-bottom: var(--sp-1);
 }
 /* A command to paste, on its own line so it can be selected without catching the sentence
-   around it. No new colour: it borrows the callout's own, one shade dimmer. */
+   around it. */
 .callout__cmd {
   display: block;
-  margin-top: 6px;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: #ffd489;
+  margin-top: var(--sp-2);
+  font: 500 var(--fs-xs) / 1.4 var(--mono);
+  color: var(--warn-ink);
   word-break: break-all;
+  user-select: text;
 }
 .callout button {
   margin-top: var(--sp-2);
@@ -1138,12 +1175,12 @@ kbd {
   color: var(--warn);
   border-radius: var(--r-sm);
   height: var(--h-control-xs);
-  padding: 0 10px;
+  padding: 0 var(--sp-3);
   font-weight: 600;
   font-size: var(--fs-xs);
 }
 .callout button:hover {
-  background: rgba(251, 191, 36, 0.08);
+  background: var(--warn-wash);
   border-color: var(--warn);
 }
 .errbox {
@@ -1158,18 +1195,18 @@ kbd {
 .errbox b {
   display: block;
   color: var(--err);
-  margin-bottom: 4px;
-  font-weight: 650;
+  margin-bottom: var(--sp-1);
+  font-weight: 600;
 }
 .errbox code {
   display: block;
   margin-top: var(--sp-2);
   font: 500 var(--fs-2xs) / 1.5 var(--mono);
-  background: #170a11;
-  border: 1px solid #40182a;
-  border-radius: 5px;
+  background: var(--sunken);
+  border: 1px solid var(--err-line);
+  border-radius: var(--r-sm);
   padding: var(--sp-2);
-  color: #ffa8bb;
+  color: var(--err-ink);
   white-space: pre-wrap;
   user-select: text;
 }
@@ -1193,13 +1230,17 @@ kbd {
   background: var(--panel-3);
 }
 .btn-row > button.primary {
-  border-color: var(--accent-border);
-  background: linear-gradient(180deg, var(--accent), var(--accent-solid));
-  color: #fff;
+  border-color: var(--accent-solid);
+  background: var(--accent-solid);
+  color: var(--on-accent);
+}
+.btn-row > button.primary:hover:not(:disabled) {
+  border-color: var(--accent-solid-hover);
+  background: var(--accent-solid-hover);
 }
 .progress {
   height: 4px;
-  border-radius: 3px;
+  border-radius: 99px;
   background: var(--sunken);
   border: 1px solid var(--line);
   position: relative;
@@ -1211,9 +1252,27 @@ kbd {
   left: 0;
   top: 0;
   bottom: 0;
-  background: linear-gradient(90deg, #5b40d6, var(--accent-2));
-  border-radius: 3px;
+  background: var(--accent);
+  border-radius: 99px;
   transition: width 0.25s ease;
+}
+/* The bar and its reading on one line — one fact, drawn once. */
+.progress-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.progress-row .progress {
+  flex: 1;
+  margin-top: 0;
+}
+.progress-row > b {
+  flex: 0 0 auto;
+  min-width: 40px;
+  text-align: right;
+  font: 600 var(--fs-xs) / 1 var(--mono);
+  color: var(--ink-2);
 }
 .empty-note {
   margin: auto;
@@ -1239,7 +1298,7 @@ kbd {
 
 .timeline {
   border-top: 1px solid var(--line);
-  background: #0d0f18;
+  background: var(--sunken);
   flex: 0 0 auto;
   /* A grid item's automatic minimum is its content, and the strip below is film-long:
      without this the row would widen the shell instead of scrolling inside it. */
@@ -1262,14 +1321,14 @@ kbd {
 .tool {
   height: var(--h-control-sm);
   min-width: var(--h-control-sm);
-  padding: 0 7px;
+  padding: 0 var(--sp-2);
   border-radius: var(--r-sm);
   border: 1px solid var(--line);
   background: var(--panel-2);
   font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--ink-2);
-  gap: 5px;
+  gap: var(--sp-1);
 }
 .tool:hover:not(:disabled) {
   border-color: var(--line-strong);
@@ -1288,26 +1347,27 @@ kbd {
 .tool--on:hover:not(:disabled) {
   background: var(--accent-dim);
   border-color: var(--accent-2);
-  color: #fff;
+  color: var(--ink);
+}
+/* The one paid batch action: an accent so it can be found, no fill so it does not read as
+   a toggle that is on. `tool--on` is for `aria-pressed` alone. */
+.tool--accent {
+  border-color: var(--accent-line);
+  color: var(--accent-2);
+}
+.tool--accent:hover:not(:disabled) {
+  border-color: var(--accent-2);
+  background: var(--accent-wash);
+  color: var(--accent-3);
 }
 .tool--wide {
-  padding: 0 10px;
-}
-.timeline__legend {
-  margin-left: var(--sp-3);
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: var(--fs-2xs);
-  color: var(--ink-3);
-  white-space: nowrap;
-  overflow: hidden;
+  padding: 0 var(--sp-3);
 }
 .timeline__zoom {
   margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-2);
   color: var(--ink-3);
   font: 600 var(--fs-2xs) / 1 var(--mono);
   letter-spacing: 0.04em;
@@ -1320,7 +1380,7 @@ kbd {
 .timeline__zoom .tool {
   min-width: 0;
   height: var(--h-control-xs);
-  padding: 0 6px;
+  padding: 0 var(--sp-2);
   font: 600 var(--fs-2xs) / 1 var(--mono);
   color: var(--ink-3);
   letter-spacing: 0;
@@ -1344,7 +1404,7 @@ kbd {
   height: var(--h-ruler);
   position: relative;
   border-bottom: 1px solid var(--line);
-  background: #0a0c14;
+  background: var(--bg);
   overflow: hidden;
   cursor: pointer;
   user-select: none;
@@ -1364,10 +1424,10 @@ kbd {
 }
 .ruler span {
   position: absolute;
-  top: 5px;
+  top: var(--sp-1);
   font: 600 var(--fs-2xs) / 1 var(--mono);
   color: var(--ink-3);
-  padding-left: 4px;
+  padding-left: var(--sp-1);
   white-space: nowrap;
 }
 .ruler i {
@@ -1386,16 +1446,17 @@ kbd {
 }
 .track {
   position: relative;
-  padding: 14px var(--sp-3) 8px;
+  /* The gutter above the band is where the cut chips stand, clear of the clip names. */
+  padding: var(--h-cut-gutter) var(--sp-3) var(--sp-2);
   /* The empty track holds only an absolutely placed dropzone; it keeps the band's height. */
-  min-height: calc(var(--h-track) + 22px);
+  min-height: calc(var(--h-track) + var(--h-cut-gutter) + var(--sp-2));
 }
 .track__clips {
   position: relative;
   height: var(--h-track);
 }
 .track--drop-target {
-  background: rgba(124, 92, 255, 0.08);
+  background: var(--accent-tint);
 }
 
 .clip {
@@ -1404,7 +1465,7 @@ kbd {
   bottom: 0;
   border-radius: var(--r);
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--edge-line);
   background: var(--panel-2);
   padding: 0;
   text-align: left;
@@ -1414,7 +1475,7 @@ kbd {
   transition: box-shadow var(--dur) var(--ease);
 }
 .clip:hover {
-  border-color: rgba(255, 255, 255, 0.3);
+  border-color: var(--edge-line-hover);
 }
 .clip__face {
   position: absolute;
@@ -1439,40 +1500,41 @@ kbd {
   object-fit: cover;
   opacity: 0.92;
 }
-/* A gradient under the name keeps it legible over any thumbnail. */
+/* A gradient under the name keeps it legible over any thumbnail — the one gradient that
+   does a job. */
 .clip__face::after {
   content: '';
   position: absolute;
   left: 0;
   right: 0;
   top: 0;
-  height: 26px;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent);
+  height: 28px;
+  background: var(--name-scrim);
   pointer-events: none;
 }
 .clip__name {
   position: absolute;
-  left: 8px;
-  top: 6px;
-  right: 8px;
+  left: var(--sp-2);
+  top: var(--sp-2);
+  right: var(--sp-2);
   z-index: 1;
   font: 600 var(--fs-xs) / 1 var(--font);
-  color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  color: var(--on-accent);
+  text-shadow: var(--text-shadow);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .clip__dur {
   position: absolute;
-  right: 6px;
-  bottom: 5px;
+  right: var(--sp-2);
+  bottom: var(--sp-2);
   z-index: 1;
   font: 600 var(--fs-2xs) / 1 var(--mono);
-  color: #fff;
-  background: rgba(6, 7, 12, 0.7);
+  color: var(--on-accent);
+  background: var(--overlay);
   border-radius: var(--r-xs);
-  padding: 3px 5px;
+  padding: var(--sp-05) var(--sp-1);
 }
 .clip--selected {
   border-color: var(--accent-2);
@@ -1495,18 +1557,18 @@ kbd {
 }
 .clip__ai-tag {
   position: absolute;
-  left: 6px;
-  bottom: 5px;
+  left: var(--sp-2);
+  bottom: var(--sp-2);
   z-index: 1;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  font: 700 var(--fs-2xs) / 1 var(--mono);
+  gap: var(--sp-05);
+  font: 600 var(--fs-2xs) / 1 var(--mono);
   letter-spacing: 0.08em;
-  background: rgba(124, 92, 255, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  color: #fff;
-  padding: 3px 5px;
+  background: var(--accent-solid);
+  border: 1px solid var(--overlay-line);
+  color: var(--on-accent);
+  padding: var(--sp-05) var(--sp-1);
   border-radius: var(--r-xs);
 }
 /* A replace-mode transition's face: its two sources side by side — start left, end right —
@@ -1532,15 +1594,15 @@ kbd {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  width: 22px;
-  height: 22px;
+  width: var(--h-control-xs);
+  height: var(--h-control-xs);
   border-radius: 99px;
-  background: rgba(6, 7, 12, 0.75);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: var(--overlay);
+  border: 1px solid var(--overlay-line);
   display: grid;
   place-items: center;
   font-style: normal;
-  color: #fff;
+  color: var(--on-accent);
 }
 /* The two grab bars on a clip's edges. Wide enough to hit, quiet until the clip is hovered. */
 .clip__handle {
@@ -1561,11 +1623,12 @@ kbd {
   position: absolute;
   top: 26%;
   bottom: 26%;
-  left: 5px;
+  /* Centred in the handle whichever edge it is on. */
+  left: calc(50% - 2px);
   width: 4px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.85);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.65);
+  border-radius: 99px;
+  background: var(--overlay-ink);
+  box-shadow: var(--shadow-chip);
   opacity: 0;
   transition: opacity var(--dur) var(--ease);
 }
@@ -1574,10 +1637,6 @@ kbd {
 }
 .clip__handle--end {
   right: 0;
-}
-.clip__handle--end::before {
-  left: auto;
-  right: 5px;
 }
 .clip:hover .clip__handle::before,
 .clip--selected .clip__handle::before,
@@ -1610,7 +1669,7 @@ kbd {
 
 .clip--offline {
   border-color: var(--warn-line);
-  background: repeating-linear-gradient(135deg, #16151c 0 9px, #1f1c26 9px 18px);
+  background: var(--hatch);
 }
 .clip__offline-tag {
   position: absolute;
@@ -1618,7 +1677,7 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: var(--sp-1);
   font: 600 var(--fs-2xs) / 1 var(--mono);
   letter-spacing: 0.06em;
   color: var(--warn);
@@ -1626,22 +1685,22 @@ kbd {
 
 /* ---- cut chips */
 
-/* The ✦ button on a cut between two clips. It rides the top seam of the cut — half above
-   the clip band — so the edge handles beside it keep their whole grab height; clicking it
-   only ever selects the cut. */
+/* The ✦ button on a cut between two clips. It stands in the gutter above the clip band,
+   its foot two pixels into the seam — so the clip names beside it stay whole and the edge
+   handles keep their full grab height. Clicking it only ever selects the cut. */
 .cutchip {
   position: absolute;
-  top: 0;
-  transform: translate(-50%, -55%);
+  bottom: 100%;
+  margin-bottom: calc(-1 * var(--sp-05));
+  transform: translateX(-50%);
   z-index: 4;
-  width: 26px;
-  height: 26px;
+  width: var(--h-control-xs);
+  height: var(--h-control-xs);
   padding: 0;
   border-radius: 99px;
-  background: #1b1738;
+  background: var(--accent-wash);
   border: 1px solid var(--accent-line);
   color: var(--accent-2);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55);
 }
 .cutchip:hover:not(:disabled) {
   border-color: var(--accent-2);
@@ -1662,8 +1721,7 @@ kbd {
 .cutchip--compact {
   width: 12px;
   height: 12px;
-  transform: translate(-50%, -50%);
-  box-shadow: none;
+  margin-bottom: calc(-1 * var(--sp-1));
 }
 .cutchip--compact .icon,
 .cutchip--compact .cutchip__label {
@@ -1674,11 +1732,11 @@ kbd {
 .cutchip--run,
 .cutchip--fail {
   width: auto;
-  height: 24px;
-  padding: 0 9px;
-  gap: 5px;
-  border: 1.5px dashed #6f5bd6;
-  background: #1b1738;
+  height: var(--h-control-xs);
+  padding: 0 var(--sp-2);
+  gap: var(--sp-1);
+  border: 1px dashed var(--accent-line);
+  background: var(--accent-wash);
   color: var(--accent-3);
   font: 600 var(--fs-2xs) / 1 var(--mono);
   white-space: nowrap;
@@ -1687,13 +1745,13 @@ kbd {
   animation: spin 1.2s linear infinite;
 }
 .cutchip--slow {
-  border-color: #8a6a1c;
+  border-color: var(--warn-line);
   color: var(--warn-ink);
 }
 .cutchip--fail {
-  border-color: #a13a55;
-  background: #241019;
-  color: #ffb3c2;
+  border-color: var(--err-line);
+  background: var(--err-wash);
+  color: var(--err-ink);
 }
 /* Mid-drag the boundaries are in motion; the chips step aside until the clip is let go. */
 .track--dragging .cutchip {
@@ -1703,18 +1761,18 @@ kbd {
 /* A finished transition whose neighbours changed wears the fact, and nothing more. */
 .clip__stale-tag {
   position: absolute;
-  right: 6px;
-  top: 5px;
+  right: var(--sp-2);
+  top: var(--sp-2);
   z-index: 1;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font: 700 var(--fs-2xs) / 1 var(--mono);
+  gap: var(--sp-1);
+  font: 600 var(--fs-2xs) / 1 var(--mono);
   letter-spacing: 0.06em;
-  background: rgba(36, 28, 6, 0.92);
+  background: var(--warn-wash);
   border: 1px solid var(--warn-line);
   color: var(--warn);
-  padding: 3px 5px;
+  padding: var(--sp-05) var(--sp-1);
   border-radius: var(--r-xs);
   white-space: nowrap;
 }
@@ -1751,8 +1809,8 @@ kbd {
 }
 .audio-lane {
   position: relative;
-  height: 32px;
-  margin-top: 6px;
+  height: var(--h-control-md);
+  margin-top: var(--sp-2);
 }
 .audio-clip {
   position: absolute;
@@ -1766,7 +1824,7 @@ kbd {
   touch-action: none;
 }
 .audio-clip:hover {
-  border-color: rgba(94, 202, 154, 0.6);
+  border-color: var(--audio);
 }
 .audio-clip__body {
   position: absolute;
@@ -1774,8 +1832,10 @@ kbd {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 6px;
-  padding: 0 10px;
+  gap: var(--sp-2);
+  /* The right inset leaves the mute button its own ground on that edge, whether or not
+     the length is showing. */
+  padding: 0 calc(var(--h-control-xs) + var(--sp-2)) 0 var(--sp-3);
   background: none;
   border: 0;
   border-radius: 0;
@@ -1797,14 +1857,12 @@ kbd {
 }
 .audio-clip__dur {
   margin-left: auto;
-  /* Leave room for the mute button sitting on the same edge. */
-  padding-right: 24px;
   font: 600 var(--fs-2xs) / 1 var(--mono);
-  color: rgba(191, 232, 212, 0.85);
+  color: var(--audio-ink);
 }
 .audio-clip__mute {
   position: absolute;
-  right: 3px;
+  right: var(--sp-1);
   top: 50%;
   transform: translateY(-50%);
   width: var(--h-control-xs);
@@ -1812,13 +1870,13 @@ kbd {
   padding: 0;
   border: 0;
   border-radius: var(--r-sm);
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--shade);
   color: var(--audio-ink);
   z-index: 2;
 }
 .audio-clip__mute:hover {
-  background: rgba(0, 0, 0, 0.6);
-  color: #fff;
+  background: var(--shade-strong);
+  color: var(--ink);
 }
 .audio-clip--selected {
   border-color: var(--accent-2);
@@ -1835,17 +1893,17 @@ kbd {
   box-shadow: var(--shadow-lift);
 }
 .audio-clip--offline {
-  border-color: rgba(255, 107, 107, 0.5);
-  background: rgba(92, 46, 46, 0.45);
+  border-color: var(--err-line);
+  background: var(--err-wash);
 }
 .audio-clip--offline .audio-clip__body {
-  color: #ffb4b4;
+  color: var(--err-ink);
 }
 
 .dropzone {
   position: absolute;
-  inset: 14px var(--sp-3) 8px;
-  border: 1.5px dashed var(--line);
+  inset: var(--h-cut-gutter) var(--sp-3) var(--sp-2);
+  border: 1px dashed var(--line);
   border-radius: var(--r-md);
   display: grid;
   place-items: center;
@@ -1861,25 +1919,26 @@ kbd {
   display: block;
   color: var(--ink-2);
   font-size: var(--fs-sm);
-  margin-bottom: 3px;
+  margin-bottom: var(--sp-1);
 }
 .dropzone--hot {
   border-color: var(--accent);
-  background: rgba(124, 92, 255, 0.1);
+  background: var(--accent-tint);
   color: var(--accent-3);
 }
 .dropzone--hot b {
-  color: #fff;
+  color: var(--ink);
 }
+/* Where a drop will land. The glow is what keeps a 3px line visible over a thumbnail. */
 .insert-marker {
   position: absolute;
-  top: 10px;
-  bottom: 4px;
+  top: calc(var(--h-cut-gutter) - var(--sp-1));
+  bottom: var(--sp-1);
   width: 3px;
   margin-left: -1px;
   background: var(--accent);
-  border-radius: 2px;
-  box-shadow: 0 0 12px rgba(124, 92, 255, 0.9);
+  border-radius: 99px;
+  box-shadow: 0 0 12px var(--accent-glow);
   pointer-events: none;
   z-index: 7;
 }
@@ -1889,7 +1948,7 @@ kbd {
 .scrim {
   position: fixed;
   inset: 0;
-  background: rgba(4, 5, 10, 0.72);
+  background: var(--scrim);
   display: grid;
   place-items: center;
   z-index: 50;
@@ -1911,7 +1970,7 @@ kbd {
   padding: 0 var(--sp-4);
   border-bottom: 1px solid var(--line);
   font-size: var(--fs-md);
-  font-weight: 650;
+  font-weight: 600;
 }
 .modal__head .icon {
   color: var(--err);
@@ -1921,7 +1980,9 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  max-height: 62vh;
+  /* Whatever the window leaves after the head, the foot and a margin — so a body that
+     fits the window is never made to scroll by a fixed fraction of it. */
+  max-height: calc(100vh - var(--h-dialoghead) - var(--h-dialogfoot) - 2 * var(--sp-6));
   overflow-y: auto;
 }
 .modal__body > .hint:first-child {
@@ -1939,7 +2000,7 @@ kbd {
   display: block;
   font-size: var(--fs-xs);
   color: var(--ink-2);
-  margin-bottom: 5px;
+  margin-bottom: var(--sp-1);
   font-weight: 600;
 }
 .field input,
@@ -1949,7 +2010,7 @@ kbd {
   background: var(--sunken);
   border: 1px solid var(--line);
   border-radius: var(--r);
-  padding: 0 10px;
+  padding: 0 var(--sp-3);
   font: 500 var(--fs-sm) / 1.2 var(--mono);
 }
 .field select {
@@ -1958,10 +2019,10 @@ kbd {
   font-weight: 500;
   appearance: none;
   -webkit-appearance: none;
-  padding-right: 30px;
+  padding-right: var(--sp-6);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a3a9c4' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 9px center;
+  background-position: right var(--sp-2) center;
   cursor: pointer;
 }
 .field select:hover {
@@ -1972,7 +2033,7 @@ kbd {
   color: var(--ink);
 }
 .field .hint {
-  margin-top: 6px;
+  margin-top: var(--sp-2);
 }
 .field__actions {
   display: flex;
@@ -1992,15 +2053,10 @@ kbd {
 .okbox b {
   display: block;
   color: var(--ok);
-  font-weight: 650;
-  margin-bottom: 4px;
+  font-weight: 600;
+  margin-bottom: var(--sp-1);
 }
 
-.stage-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-}
 .stage-row {
   display: flex;
   align-items: center;
@@ -2024,16 +2080,16 @@ kbd {
   max-height: calc(100vh - var(--sp-6));
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 2px;
+  padding: var(--sp-05);
 }
 .toast {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-3);
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
-  padding: 10px var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
   box-shadow: var(--shadow-pop);
   width: 360px;
   max-width: calc(100vw - 2 * var(--sp-4));
@@ -2051,9 +2107,9 @@ kbd {
   }
 }
 .toast__icon {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
+  width: var(--h-control-xs);
+  height: var(--h-control-xs);
+  border-radius: var(--r-sm);
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -2077,8 +2133,8 @@ kbd {
 .toast__text b {
   display: block;
   font-size: var(--fs-sm);
-  font-weight: 650;
-  margin-bottom: 2px;
+  font-weight: 600;
+  margin-bottom: var(--sp-05);
 }
 .toast__text span {
   color: var(--ink-3);
@@ -2092,7 +2148,7 @@ kbd {
   margin-left: auto;
   height: var(--h-control-sm);
   min-width: var(--h-control-sm);
-  padding: 0 10px;
+  padding: 0 var(--sp-3);
   font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--accent-2);
@@ -2105,7 +2161,9 @@ kbd {
   border-color: var(--accent-2);
   color: var(--accent-3);
 }
-.toast__dismiss {
+/* Scoped under `.toast` so it out-specifies `.toast button` above; the ✕ used to wear that
+   rule's accent border. */
+.toast .toast__dismiss {
   padding: 0;
   color: var(--ink-2);
   border-color: transparent;
@@ -2117,7 +2175,7 @@ kbd {
 .toasts__clear {
   align-self: flex-end;
   height: var(--h-control-xs);
-  padding: 0 10px;
+  padding: 0 var(--sp-3);
   font-size: var(--fs-2xs);
   font-weight: 600;
   color: var(--ink-2);
@@ -2168,7 +2226,7 @@ kbd {
   padding: 0 var(--sp-3) 0 var(--sp-4);
   border-bottom: 1px solid var(--line);
   font-size: var(--fs-md);
-  font-weight: 650;
+  font-weight: 600;
 }
 .filmwiz__head > span {
   flex: 1;
@@ -2206,7 +2264,7 @@ kbd {
 }
 
 .filmwiz__drop {
-  border: 1.5px dashed var(--line);
+  border: 1px dashed var(--line);
   border-radius: var(--r-md);
   padding: var(--sp-4);
   text-align: center;
@@ -2218,7 +2276,7 @@ kbd {
   display: block;
   color: var(--ink-2);
   font-size: var(--fs-sm);
-  margin-bottom: 3px;
+  margin-bottom: var(--sp-1);
 }
 .filmwiz__drop .btn {
   display: flex;
@@ -2226,7 +2284,7 @@ kbd {
 }
 .filmwiz__drop--hot {
   border-color: var(--accent);
-  background: rgba(124, 92, 255, 0.1);
+  background: var(--accent-tint);
   color: var(--accent-3);
 }
 
@@ -2235,7 +2293,7 @@ kbd {
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
   margin: 0;
   padding: 0;
 }
@@ -2246,7 +2304,7 @@ kbd {
   background: var(--panel-2);
   border: 1px solid var(--line-soft);
   border-radius: var(--r);
-  padding: 5px 7px;
+  padding: var(--sp-1) var(--sp-2);
 }
 .filmwiz__slot img {
   width: 44px;
@@ -2264,7 +2322,7 @@ kbd {
 .filmwiz__n {
   width: 16px;
   text-align: center;
-  font: 650 var(--fs-xs) / 1 var(--mono);
+  font: 600 var(--fs-xs) / 1 var(--mono);
   color: var(--accent-2);
 }
 .filmwiz__name {
@@ -2295,7 +2353,7 @@ kbd {
 /* The chosen photos, in order, as a reminder of what is being rendered. */
 .filmwiz__strip {
   display: flex;
-  gap: 4px;
+  gap: var(--sp-1);
 }
 .filmwiz__strip img {
   flex: 1;
@@ -2349,8 +2407,4 @@ kbd {
     animation: none;
   }
 }
-@media (max-width: 1240px) {
-  .timeline__legend {
-    display: none;
-  }
-}
+

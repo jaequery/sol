@@ -580,7 +580,7 @@ export function Timeline() {
           // the click that does nothing.
           <button
             type="button"
-            className={`tool tool--wide${ready ? ' tool--on' : ''}`}
+            className={`tool tool--wide${ready ? ' tool--accent' : ''}`}
             aria-label="Animate all cuts"
             title={
               ready
@@ -609,11 +609,6 @@ export function Timeline() {
         >
           <Icon name="magnet" size={14} /> Snap
         </button>
-        <span className="timeline__legend" aria-hidden="true">
-          <kbd>Space</kbd> play · <kbd>S</kbd> split · <kbd>⌫</kbd> delete · <kbd>←</kbd>
-          <kbd>→</kbd> step
-        </span>
-
         <div className="timeline__zoom">
           ZOOM
           <input
@@ -854,6 +849,8 @@ function AudioLane({
   const offline = !asset || asset.missing === true;
   const moving = drag !== null && drag.kind === 'move' && drag.moved;
   const roomy = width > 70;
+  /** Room for the length as well: the name outranks it, so it is the first thing to go. */
+  const spacious = width > 150;
 
   const classes = [
     'audio-clip',
@@ -890,7 +887,7 @@ function AudioLane({
           ) : (
             <span className="audio-clip__name">{truncateName(track.name, 24)}</span>
           )}
-          {roomy && <span className="audio-clip__dur">{formatDuration(track.durationMs)}</span>}
+          {spacious && <span className="audio-clip__dur">{formatDuration(track.durationMs)}</span>}
         </button>
 
         {roomy && (

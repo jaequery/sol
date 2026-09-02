@@ -49,6 +49,33 @@
   --audio-line: rgba(94, 202, 154, 0.35);
   --playhead: #ff4d6d;
 
+  /* the one fill. Flat, and dark enough that white text clears AA on it (5.7:1; the hover
+     shade is darker still, 6.7:1). --accent itself is for text, rings and lines, never a
+     fill under white. */
+  --on-accent: #ffffff;
+  --accent-solid-hover: #5b40d6;
+  --err-solid: #c33a56;
+  --err-solid-hover: #a8304a;
+  --video-black: #000000;
+
+  /* overlays — the few translucent colours the app draws over pictures. Named here so a
+     badge, a scrim and a hatch are each one thing everywhere they appear. */
+  --overlay: rgba(6, 7, 12, 0.72);
+  --overlay-strong: rgba(6, 7, 12, 0.82);
+  --overlay-line: rgba(255, 255, 255, 0.14);
+  --overlay-ink: rgba(255, 255, 255, 0.85);
+  --edge-line: rgba(255, 255, 255, 0.12);
+  --edge-line-hover: rgba(255, 255, 255, 0.3);
+  --accent-tint: rgba(124, 92, 255, 0.1);
+  --accent-glow: rgba(124, 92, 255, 0.9);
+  --shade: rgba(0, 0, 0, 0.35);
+  --shade-strong: rgba(0, 0, 0, 0.6);
+  --text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  --hatch: repeating-linear-gradient(135deg, #16151c 0 10px, #1c1a24 10px 20px);
+  --scrim: rgba(4, 5, 10, 0.72);
+  --audio-stripes: repeating-linear-gradient(90deg, rgba(94, 202, 154, 0.14) 0 3px, transparent 3px 7px);
+  --name-scrim: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent);
+
   /* geometry */
   --r-xs: 4px;
   --r-sm: 6px;
@@ -88,19 +115,28 @@
   --h-titlebar: 38px;
   --h-panelhead: 40px;
   --h-dialoghead: 44px;
+  --h-dialogfoot: 52px;
   --h-transport: 48px;
   --h-toolbar: 40px;
   --h-ruler: 24px;
   --h-track: 72px;
+  /* The gutter above the clip band where the cut chips stand: tall enough for a 24px
+     chip to clear the clip names entirely, plus the 2px it overlaps the seam by. */
+  --h-cut-gutter: 28px;
   --w-bin: 280px;
   --w-inspector: 300px;
 
   /* focus, selection, elevation */
   --focus-ring: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent-2);
-  --shadow-selected: 0 0 0 1px var(--accent-2), 0 6px 22px rgba(124, 92, 255, 0.35);
+  --focus-halo: 0 0 0 3px rgba(167, 139, 250, 0.25);
+  /* Selection is a ring, not a glow: the ring says "this one", a glow only said "look". */
+  --shadow-selected: 0 0 0 1px var(--accent-2);
+  /* Elevation, for the layers that float over another: menu, dialogs, toasts, the film
+     panel, a clip mid-drag. Nothing that sits in the layout casts one. */
   --shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
   --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.6);
   --shadow-lift: 0 10px 28px rgba(0, 0, 0, 0.6);
+  --shadow-chip: 0 2px 10px rgba(0, 0, 0, 0.55);
 
   /* motion — one duration, one curve; reduced-motion zeroes the duration */
   --dur: 120ms;

@@ -1,6 +1,6 @@
 import { useCallback, useEffect } from 'react';
 import { useEditor } from '../state/store';
-import { clipAt, formatTimecode } from '../lib/timeline';
+import { clipAt } from '../lib/timeline';
 import {
   eachMedia,
   registerMedia,
@@ -76,15 +76,13 @@ export function Preview() {
 
         {clip && missing && (
           <div className="canvas__offline">
-            MEDIA OFFLINE
-            <br />
+            <b>MEDIA OFFLINE</b>
             <span>{clip.name} is no longer available</span>
           </div>
         )}
 
-        <div className="canvas__hud">
-          <Icon name="diamond" size={9} /> {formatTimecode(playheadMs)}
-        </div>
+        {/* No timecode here: the transport directly below is the timecode, and a second
+            copy of the same number on the frame was the one thing the frame did not need. */}
         {clip?.ai && (
           <div className="canvas__ai">
             <Icon name="sparkle" size={11} /> AI GENERATED

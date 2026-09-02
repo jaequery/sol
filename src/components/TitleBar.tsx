@@ -39,7 +39,9 @@ export function TitleBar() {
             aria-expanded={menuOpen}
             onClick={() => (menuOpen ? closeProjectMenu() : openProjectMenu())}
           >
-            {projectLabel(projectPath)}
+            {/* The label is the one thing that may ellipsize: the bar used to clip the whole
+                document slot, and the menu hanging off this button was clipped with it. */}
+            <span className="doc__label">{projectLabel(projectPath)}</span>
           </button>
           {menuOpen && <ProjectMenu />}
         </span>

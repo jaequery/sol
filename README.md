@@ -279,6 +279,7 @@ rather than writing half a file.
 ```bash
 pnpm typecheck                                        # tsc --noEmit
 pnpm lint                                             # eslint
+pnpm audit:css                                        # app.css uses only tokens.css colours and the 4px spacing scale
 pnpm test                                             # vitest — timeline logic + acceptance flow
 cargo test -p solcut-agent -p solcut-higgsfield -p solcut-render
 cargo clippy -p solcut-agent -p solcut-higgsfield -p solcut-render --all-targets -- -D warnings
@@ -363,7 +364,7 @@ in a plain `cargo test` run.
 | `Tab` onto the ruler, then `←` / `→` / `Home` / `End` | Scrub without a mouse |
 
 Every button in the app is reachable by `Tab` and answers to `Space` and `Enter`; the
-dialogs keep focus inside themselves while they are open. The toolbar shows the main keys.
+dialogs keep focus inside themselves while they are open. Each button's tooltip names its key.
 
 ## Layout
 

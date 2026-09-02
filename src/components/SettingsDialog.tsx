@@ -153,12 +153,10 @@ function ConnectionForm() {
                 <>The stored key is removed on <b>Save</b>. Type a new one to keep a key.</>
               ) : (
                 <>
-                  Optional, and separate from the CLI above — a Cloud credential from
-                  cloud.higgsfield.ai, in two halves. It is <b>not</b> what renders, so it
-                  is kept and proved here, nothing more. Both halves are held by the
-                  desktop backend in an owner-only file that never reaches this window;
-                  pasting the whole <code>key_id:key_secret</code> string into the ID box
-                  works too.
+                  Optional. A Cloud credential from cloud.higgsfield.ai, separate from the CLI
+                  above — kept and proved here, <b>not</b> what renders. Both halves stay in
+                  an owner-only file on the desktop side; pasting the whole{' '}
+                  <code>key_id:key_secret</code> string into the ID box works too.
                 </>
               )}
             </p>
@@ -197,9 +195,8 @@ function ConnectionForm() {
               onChange={(e) => setCustomModel(e.target.value)}
             />
             <p className="hint">
-              Optional. Appears as the Model picker's <b>Custom</b> entry, so any model the
-              CLI's catalog offers can be rendered with — without a new build. Blank hides
-              the entry.
+              Optional. Adds a <b>Custom</b> entry to the Model picker for any model id the
+              CLI's catalog offers. Blank hides it.
             </p>
           </div>
 
