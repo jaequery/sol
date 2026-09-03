@@ -1,5 +1,6 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, type CSSProperties } from 'react';
 import { useEditor } from '../state/store';
+import { ASPECT_RATIOS, aspectRatio } from '../lib/aspect';
 import { clipAt } from '../lib/timeline';
 import {
   eachMedia,
@@ -14,7 +15,9 @@ import { Icon } from './Icon';
 /**
  * The preview.
  *
- * A photo is drawn covering the frame, exactly as the export renders it. A video element
+ * A photo is drawn covering the frame and a video is fitted inside it, exactly as the
+ * export renders each (`photo_filter` crops, `video_filter` pads — footage is never thrown
+ * away). The frame's own shape is the project's aspect ratio. A video element
  * owns the clock while its clip plays — the playhead follows its `currentTime` (see
  * `lib/preview-sync`), so the frame on screen and the timecode cannot disagree. The next
  * video clip on the track stays mounted invisibly, primed to its in-point, so crossing a
@@ -25,6 +28,7 @@ export function Preview() {
   const clips = useEditor((s) => s.clips);
   const assets = useEditor((s) => s.assets);
   const playheadMs = useEditor((s) => s.playheadMs);
+  const frame = useEditor((s) => s.aspectRatio);
 
   const syncNow = usePreviewSync();
 
@@ -34,7 +38,7 @@ export function Preview() {
 
   if (clips.length === 0) {
     return (
-      <div className="stage">
+      <div className="stage" style={frameStyle(frame)}>
         <div className="stage__empty">
           <Icon name="film" size={36} />
           <b>Nothing to preview yet</b>
@@ -52,8 +56,8 @@ export function Preview() {
   });
 
   return (
-    <div className="stage">
-      <div className="canvas" data-testid="preview-canvas">
+    <div className="stage" style={frameStyle(frame)}>
+      <div className="canvas" data-testid="preview-canvas" data-aspect={frame}>
         {pool.map(({ clip: c, src }) => (
           <PreviewVideo
             key={c.id}
@@ -173,4 +177,53 @@ function usePreviewSync(): () => void {
   }, [syncNow]);
 
   return syncNow;
+}
+
+/**
+ * The frame's shape, handed to CSS.
+ *
+ * A custom property rather than a rule per ratio, so `lib/aspect` stays the only place
+ * that knows which shapes exist: `16 / 9` serves both the `aspect-ratio` and the
+ * `calc(100cqh * …)` that keeps a tall frame inside a short stage.
+ */
+function frameStyle(id: string): CSSProperties {
+  const { w, h } = aspectRatio(id);
+  return { '--frame-ratio': `${w} / ${h}` } as CSSProperties;
+}
+
+/**
+ * The frame's shape, as a control.
+ *
+ * It lives in the preview's panel head rather than in Settings because it is a property of
+ * *this project* and its whole effect is visible right below it — you pick 9:16 and the
+ * frame turns on its side while you watch. Settings is for the machine (credentials,
+ * models); the frame is the edit.
+ */
+export function AspectRatioPicker() {
+  const value = useEditor((s) => s.aspectRatio);
+  const setAspectRatio = useEditor((s) => s.setAspectRatio);
+
+  return (
+    <div className="aspect-pick">
+      <Icon name="crop" size={13} />
+      {/* "Frame aspect ratio", not "Aspect ratio": the create sheet's own aspect control
+          can be on screen at the same time, over this very panel, and two controls with
+          one name is how you pick the wrong one. This is the project's frame. */}
+      <label className="visually-hidden" htmlFor="frame-aspect">
+        Frame aspect ratio
+      </label>
+      <select
+        id="frame-aspect"
+        value={value}
+        title="The shape of the frame — what the preview draws and the export writes"
+        onChange={(e) => setAspectRatio(e.target.value)}
+      >
+        {ASPECT_RATIOS.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.id} · {a.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
 }

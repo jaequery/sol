@@ -12,6 +12,7 @@
  */
 
 import { useRef, useState } from 'react';
+import { frameSize } from '../lib/aspect';
 import * as backend from '../lib/backend';
 import {
   defaultFilmPrompt,
@@ -55,6 +56,9 @@ export function FilmWizard() {
   const cancelFilm = useEditor((s) => s.cancelFilm);
   const dismissFilm = useEditor((s) => s.dismissFilm);
   const runExport = useEditor((s) => s.runExport);
+  const aspect = useEditor((s) => s.aspectRatio);
+  // The pixel frame the export will actually write — the project's ratio, not a constant.
+  const frame = frameSize(aspect);
 
   const [picks, setPicks] = useState<Pick[]>([]);
   const [rejected, setRejected] = useState<ImportProblem[]>([]);
@@ -227,7 +231,8 @@ export function FilmWizard() {
                   {filmClips.length === 1 ? 'transition' : 'transitions'} ·{' '}
                   {formatDuration(filmClips.reduce((sum, c) => sum + c.durationMs, 0))}
                 </b>
-                Export writes the timeline as one MP4 — H.264, 1920 × 1080, 30 fps.
+                Export writes the timeline as one MP4 — H.264, {frame.width} ×{' '}
+                {frame.height}, 30 fps.
               </div>
             )}
 

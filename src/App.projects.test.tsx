@@ -21,6 +21,7 @@ import { App } from './App';
 import { useEditor } from './state/store';
 import { resetEditor } from './test/harness';
 import * as backend from './lib/backend';
+import { DEFAULT_ASPECT_RATIO } from './lib/aspect';
 import { PROJECT_VERSION, type ProjectFile } from './lib/project';
 import type { GenerateInput, GenerationUpdate } from './lib/backend';
 
@@ -83,6 +84,7 @@ vi.mock('./lib/frames', () => ({
 function projectOf(name: string): ProjectFile {
   return {
     version: PROJECT_VERSION,
+    aspectRatio: DEFAULT_ASPECT_RATIO,
     assets: [{ id: `asset_${name}`, name: `${name}.png`, kind: 'photo', path: `/media/${name}.png`, sizeBytes: 2048 }],
     clips: [
       {

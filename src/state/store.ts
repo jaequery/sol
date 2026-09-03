@@ -7,6 +7,7 @@
  */
 
 import { create } from 'zustand';
+import { DEFAULT_ASPECT_RATIO, frameSize, isAspectRatio, stillSize, type FrameSize } from '../lib/aspect';
 import * as backend from '../lib/backend';
 import { probeAudioDurationMs, probeVideoDurationMs, renderPhotoJpeg } from '../lib/frames';
 import { resetPreviewSync } from '../lib/preview-sync';
@@ -301,6 +302,12 @@ export interface EditorState {
   pxPerSecond: number;
   /** The snapping aid on the track: drags still land anywhere, they just like edges. */
   snapping: boolean;
+  /**
+   * The shape of the project's frame — an `ASPECT_RATIOS` id. Part of the *document*, not
+   * of the view: it decides what the export writes and what shape an AI transition is
+   * generated in, so it travels with the project rather than with the window.
+   */
+  aspectRatio: string;
 
   generations: Record<string, Generation>;
   /**
@@ -447,6 +454,8 @@ export interface EditorState {
   resizeClip: (clipId: string, edge: ClipEdge, deltaMs: number) => void;
   setClipDuration: (clipId: string, durationMs: number) => number | null;
   toggleSnapping: () => void;
+  /** Reshape the project's frame. An id this build does not offer is ignored. */
+  setAspectRatio: (id: string) => void;
 
   // ---- playback
   setPlayhead: (ms: number) => void;
@@ -551,6 +560,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   playing: false,
   pxPerSecond: DEFAULT_PX_PER_SECOND,
   snapping: true,
+  aspectRatio: DEFAULT_ASPECT_RATIO,
 
   generations: {},
   modelId: backend.DEFAULT_MODEL_ID,
@@ -924,6 +934,10 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
+
+  // Refused rather than stored when this build does not know the id: the frame is what
+  // every other size is derived from, and one nothing can resolve would export nothing.
+  setAspectRatio: (id) => set(isAspectRatio(id) ? { aspectRatio: id } : {}),
 
   // ------------------------------------------------------------------ playback
 
@@ -1899,7 +1913,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   async runExport() {
-    const { clips, audioTracks, assets, pushToast, exporting } = get();
+    const { clips, audioTracks, assets, aspectRatio, pushToast, exporting } = get();
     if (clips.length === 0) return;
     // One render at a time. The dialog can be dismissed while ffmpeg runs, so `exportState`
     // is no evidence either way — without this a second click starts a second save dialog
@@ -1942,7 +1956,10 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     set({ exporting: true, exportState: { stage: 'Starting…', fraction: 0, status: 'running' } });
     try {
-      const written = await backend.exportTimeline(buildExportSpec(clips, assets, audioTracks), outPath);
+      const written = await backend.exportTimeline(
+        buildExportSpec(clips, assets, audioTracks, aspectRatio),
+        outPath,
+      );
       // Only clear the dialog if it is still *this* run's. Dismissing mid-render and
       // starting another must not have the first one close the second one's progress.
       set((s) => ({ exporting: false, exportState: s.exportState?.status === 'running' ? null : s.exportState }));
@@ -2032,6 +2049,7 @@ function documentOf(s: EditorState): ProjectDocument {
     audioTracks: s.audioTracks,
     cutPrompts: s.cutPrompts,
     cutModes: s.cutModes,
+    aspectRatio: s.aspectRatio,
     view: { playheadMs: s.playheadMs, pxPerSecond: s.pxPerSecond, snapping: s.snapping },
     generations: s.generations,
   };
@@ -2052,6 +2070,7 @@ interface DocumentSnapshot {
   audioTracks: unknown;
   cutPrompts: unknown;
   cutModes: unknown;
+  aspectRatio: string;
   generations: string;
   view: string;
 }
@@ -2077,6 +2096,7 @@ function snapshotOf(doc: ProjectDocument): DocumentSnapshot {
     audioTracks: doc.audioTracks,
     cutPrompts: doc.cutPrompts,
     cutModes: doc.cutModes,
+    aspectRatio: doc.aspectRatio,
     generations: liveGenerationKey(doc.generations ?? {}),
     view: doc.view ? `${doc.view.playheadMs}:${doc.view.pxPerSecond}:${doc.view.snapping}` : '',
   };
@@ -2142,7 +2162,17 @@ export function projectLabel(path: string | null): string {
  * to reach over and change the zoom the user is working at.
  */
 function emptyDocument(): ProjectDocument {
-  return { assets: {}, clips: [], audioTracks: [], cutPrompts: {}, cutModes: {}, generations: {} };
+  return {
+    assets: {},
+    clips: [],
+    audioTracks: [],
+    cutPrompts: {},
+    cutModes: {},
+    // A new project is 16:9, whatever the last one was: the frame belongs to the project,
+    // so carrying the outgoing one's shape into it would be the document leaking.
+    aspectRatio: DEFAULT_ASPECT_RATIO,
+    generations: {},
+  };
 }
 
 /**
@@ -2879,11 +2909,17 @@ function frameOfSource(asset: MediaAsset, source: TransitionSource): FrameSource
     : { kind: 'photo', src: asset.src };
 }
 
-/** One still, whichever kind of source it came from, as the data URL the backend takes. */
-async function renderFrame(source: FrameSource): Promise<string> {
+/**
+ * One still, whichever kind of source it came from, as the data URL the backend takes.
+ *
+ * `size` is the project's frame, scaled down: the two stills are the *ends of one motion*,
+ * so they have to be the same shape as each other and as the frame the result will be shown
+ * in — a 16:9 anchor animated into a 9:16 project comes back as a letterboxed strip.
+ */
+async function renderFrame(source: FrameSource, size: FrameSize): Promise<string> {
   return source.kind === 'photo'
-    ? renderPhotoJpeg(source.src)
-    : backend.captureVideoFrame(source.path, source.atMs);
+    ? renderPhotoJpeg(source.src, size.width, size.height)
+    : backend.captureVideoFrame(source.path, source.atMs, size.width, size.height);
 }
 
 /**
@@ -2969,8 +3005,11 @@ function launchGeneration(
           provider === 'higgsfield'
             ? backend.modelJob(modelId, get().settings?.customModel)
             : undefined;
-        const startFrame = await renderFrame(submission.from);
-        const endFrame = await renderFrame(submission.to);
+        // Read at launch, not at record time: the frame is what the user is looking at
+        // when they press the button, and a reshape between the two would be a lie.
+        const still = stillSize(get().aspectRatio);
+        const startFrame = await renderFrame(submission.from, still);
+        const endFrame = await renderFrame(submission.to, still);
         await backend.generateAnimation({
           generationId,
           prompt,
@@ -3367,15 +3406,24 @@ function message(error: unknown): string {
   return typeof error === 'string' ? error : JSON.stringify(error);
 }
 
-/** Shape expected by `solcut_render::ExportSpec`. */
+/**
+ * Shape expected by `solcut_render::ExportSpec`.
+ *
+ * The frame comes from the project's own ratio rather than a constant. Everything inside it
+ * is unchanged by that: a photo still fills the frame and is cropped to it, a video still
+ * fits inside it and is letterboxed — see `photo_filter`/`video_filter` on the Rust side —
+ * so turning the frame on its side never silently throws footage away.
+ */
 export function buildExportSpec(
   clips: Clip[],
   assets: Record<string, MediaAsset>,
   audioTracks: AudioTrack[] = [],
+  aspectRatio: string = DEFAULT_ASPECT_RATIO,
 ) {
+  const frame = frameSize(aspectRatio);
   return {
-    width: 1920,
-    height: 1080,
+    width: frame.width,
+    height: frame.height,
     fps: 30,
     // Muted lanes stay out of the spec entirely — the exporter never needs to know.
     audio: audioTracks

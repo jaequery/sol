@@ -650,9 +650,26 @@ export async function generateVideo(input: GenerateVideoInput): Promise<void> {
  * transition *involving video* needs ffmpeg on `PATH` — photo-to-photo ones still need
  * nothing but the CLI, and the failure names itself when it is missing.
  */
-export async function captureVideoFrame(path: string, atMs: number): Promise<string> {
+/**
+ * One frame out of a video on disk, cover-cropped to `width`x`height`.
+ *
+ * The size is the caller's because it is the *project's*: an anchor still has to be the
+ * same shape as the frame the generated motion will be shown in. Omitted, it falls back to
+ * the Rust side's own 16:9 default.
+ */
+export async function captureVideoFrame(
+  path: string,
+  atMs: number,
+  width?: number,
+  height?: number,
+): Promise<string> {
   requireDesktop();
-  return invoke<string>('capture_video_frame', { path, atMs: Math.max(0, Math.round(atMs)) });
+  return invoke<string>('capture_video_frame', {
+    path,
+    atMs: Math.max(0, Math.round(atMs)),
+    width,
+    height,
+  });
 }
 
 export async function cancelGeneration(id: string): Promise<void> {

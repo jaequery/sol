@@ -38,7 +38,8 @@ export type IconName =
   | 'spinner'
   | 'minus'
   | 'folder'
-  | 'diamond';
+  | 'diamond'
+  | 'crop';
 
 /** Lucide-style 24-unit paths; `fill` marks the few solid glyphs (transport). */
 const PATHS: Record<IconName, { d: string[]; fill?: boolean }> = {
@@ -124,6 +125,7 @@ const PATHS: Record<IconName, { d: string[]; fill?: boolean }> = {
   minus: { d: ['M5 12h14'] },
   folder: { d: ['M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z'] },
   diamond: { d: ['M12 3l9 9-9 9-9-9z'], fill: true },
+  crop: { d: ['M6 2v14a2 2 0 0 0 2 2h14', 'M18 22V8a2 2 0 0 0-2-2H2'] },
 };
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'name'> {

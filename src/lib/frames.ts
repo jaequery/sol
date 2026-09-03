@@ -6,6 +6,11 @@
  * scaled to cover the frame — done once onto a canvas.
  */
 
+/**
+ * The still size a 16:9 project draws at — the shape every project had before the frame
+ * could be reshaped, and still the default when no size is asked for. `lib/aspect`'s
+ * `stillSize` is what actually decides it now, and returns exactly this for 16:9.
+ */
 export const FRAME_WIDTH = 1280;
 export const FRAME_HEIGHT = 720;
 
