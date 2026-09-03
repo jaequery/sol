@@ -14,6 +14,7 @@ import {
   bridgeableCuts,
   photoClip,
   resizeClipInList,
+  transitionStaleness,
   videoClip,
 } from '../lib/timeline';
 import { assembleFilm, defaultFilmPrompt, FILM_SEGMENT_DURATION_MS } from '../lib/film';
@@ -851,6 +852,158 @@ describe('transitions that involve video', () => {
       afterClipId: a.id,
       beforeClipId: b.id,
     });
+  });
+});
+
+describe('a transition as a side of a cut', () => {
+  function videoAsset(id: string): MediaAsset {
+    return {
+      id,
+      name: `${id}.mp4`,
+      kind: 'video',
+      path: `/footage/${id}.mp4`,
+      src: `asset:///footage/${id}.mp4`,
+      sizeBytes: 4096,
+      durationMs: 12_000,
+    };
+  }
+
+  function succeed(id: string, outputPath: string) {
+    emit({ generationId: id, status: 'succeeded', progress: 1, elapsedSecs: 60, slow: false, outputPath });
+  }
+
+  /**
+   * Two photos animated in the default landing, with `rest` laid after them: one 5 s render
+   * standing in both photos' place from 0, and whatever followed starting at 5000.
+   */
+  async function landedThen(...rest: Clip[]): Promise<Clip> {
+    const a = photoClip({ id: 'asset_a', name: 'asset_a.jpg' }, 2000, 0);
+    const b = photoClip({ id: 'asset_b', name: 'asset_b.jpg' }, 3000, 2000);
+    useEditor.setState({ clips: [a, b, ...rest] });
+    const id = useEditor.getState().startCutGeneration(a.id, b.id);
+    await submitted(1);
+    succeed(id!, '/cache/first.mp4');
+    generateAnimation.mockClear();
+    return useEditor.getState().clips.find((c) => c.transition)!;
+  }
+
+  it('beside a photo: the cut stands, replace is the default, and only the photo leaves', async () => {
+    const c = photoClip({ id: 'asset_c', name: 'asset_c.jpg' }, 4000, 5000);
+    const t1 = await landedThen(c);
+    // [t1 0–5000][c 5000–9000]: the boundary is a cut like any other.
+    expect(bridgeableCuts(useEditor.getState().clips)).toEqual([
+      { afterClipId: t1.id, beforeClipId: c.id, timeMs: 5000, gapMs: 0 },
+    ]);
+
+    const id = useEditor.getState().startCutGeneration(t1.id, c.id);
+    await submitted(1);
+    // The render's last frame is grabbed off its file, as any video's is; the photo is the
+    // still it always was. And the moment is on the record, for a regeneration later.
+    const sent = generateAnimation.mock.calls[0][0];
+    expect(sent.startFrame).toBe('data:image/jpeg;base64,grab-of-/cache/first.mp4@4967');
+    expect(sent.endFrame).toBe('data:image/jpeg;base64,still-of-asset:///photos/asset_c.jpg');
+    expect(useEditor.getState().generations[id!].target).toMatchObject({
+      mode: 'replace',
+      from: { clipId: t1.id, assetId: t1.assetId, atMs: 4967 },
+      to: { clipId: c.id, assetId: 'asset_c' },
+    });
+
+    succeed(id!, '/cache/second.mp4');
+    const s = useEditor.getState();
+    // Only the photo gave up its span; the first render is footage and keeps its own.
+    expect(s.clips.map((x) => [x.id, x.startMs, x.durationMs])).toEqual([
+      [t1.id, 0, 5000],
+      [s.clips[1].id, 5000, 5000],
+    ]);
+    expect(s.clips[1].transition).toMatchObject({ mode: 'replace', from: { clipId: t1.id } });
+    expect(s.assets.asset_c).toBeDefined();
+  });
+
+  it('beside a video: no replace to pick, the out-edge is recorded, and it lands between them', async () => {
+    useEditor.setState({ assets: { ...useEditor.getState().assets, asset_v: videoAsset('asset_v') } });
+    const v = videoClip({ id: 'asset_v', name: 'asset_v.mp4' }, 2000, 5000);
+    const t1 = await landedThen(v);
+
+    // Two videos — one of them a render — have no still between them.
+    useEditor.setState({ selection: { kind: 'cut', afterClipId: t1.id, beforeClipId: v.id } });
+    useEditor.getState().setCutMode('replace');
+    expect(useEditor.getState().cutModes[`${t1.id}:${v.id}`]).toBeUndefined();
+
+    const id = useEditor.getState().startCutGeneration(t1.id, v.id, 'replace');
+    await submitted(1);
+    expect(useEditor.getState().generations[id!].target).toMatchObject({
+      mode: 'insert',
+      from: { clipId: t1.id, atMs: 4967 },
+      to: { clipId: v.id, assetId: 'asset_v', atMs: 0 },
+    });
+
+    succeed(id!, '/cache/second.mp4');
+    const s = useEditor.getState();
+    expect(s.clips.map((x) => [x.id, x.startMs])).toEqual([
+      [t1.id, 0],
+      [s.clips[1].id, 5000],
+      [v.id, 10_000],
+    ]);
+    expect(s.clips[1].transition).toMatchObject({ mode: 'insert', from: { clipId: t1.id } });
+  });
+
+  it('Regenerate on a kept-frames clip reads a transition neighbour like any other clip', async () => {
+    useEditor.setState({ assets: { ...useEditor.getState().assets, asset_v: videoAsset('asset_v') } });
+    const v = videoClip({ id: 'asset_v', name: 'asset_v.mp4' }, 2000, 5000);
+    const t1 = await landedThen(v);
+    const id = useEditor.getState().startCutGeneration(t1.id, v.id);
+    await submitted(1);
+    succeed(id!, '/cache/second.mp4');
+    const t2 = useEditor.getState().clips[1];
+    expect(transitionStaleness(useEditor.getState().clips, t2.id)).toBe('fresh');
+
+    // Used to return without a word because its left neighbour was a transition.
+    generateAnimation.mockClear();
+    useEditor.getState().regenerateTransition(t2.id);
+    await submitted(1);
+    const sent = generateAnimation.mock.calls[0][0];
+    expect(sent.startFrame).toBe('data:image/jpeg;base64,grab-of-/cache/first.mp4@4967');
+    expect(sent.endFrame).toBe('data:image/jpeg;base64,grab-of-/footage/asset_v.mp4@0');
+  });
+
+  it('regenerated live source: the dependent keeps meeting it, and regenerates from its new file', async () => {
+    const c = photoClip({ id: 'asset_c', name: 'asset_c.jpg' }, 4000, 5000);
+    const t1 = await landedThen(c);
+    const id = useEditor.getState().startCutGeneration(t1.id, c.id);
+    await submitted(1);
+    succeed(id!, '/cache/second.mp4');
+    const t2 = useEditor.getState().clips[1];
+    expect(t2.transition).toMatchObject({ mode: 'replace', from: { clipId: t1.id, assetId: t1.assetId } });
+
+    // t1 is re-rendered in place: same clip, new file.
+    generateAnimation.mockClear();
+    useEditor.getState().regenerateTransition(t1.id);
+    await submitted(1);
+    const again = Object.values(useEditor.getState().generations).find(
+      (g) => g.target.kind === 'cut' && g.target.replacesClipId === t1.id,
+    )!;
+    succeed(again.id, '/cache/first-again.mp4');
+    const s = useEditor.getState();
+    const t1b = s.clips[0];
+    expect(t1b.id).toBe(t1.id);
+    expect(t1b.assetId).not.toBe(t1.assetId);
+    // t2 was rendered off t1's tail, which was re-rendered toward the same frame: the seam
+    // holds, its record names the new file, and nothing wears SOURCES CHANGED.
+    expect(s.clips[1].transition?.from).toEqual({ clipId: t1.id, assetId: t1b.assetId, atMs: 4967 });
+    expect(transitionStaleness(s.clips, t2.id, s.assets)).toBe('fresh');
+
+    // And t2's own Regenerate grabs its frame off the file t1 plays now, not the one it
+    // remembered.
+    generateAnimation.mockClear();
+    useEditor.getState().regenerateTransition(t2.id);
+    await submitted(1);
+    expect(generateAnimation.mock.calls[0][0].startFrame).toBe(
+      'data:image/jpeg;base64,grab-of-/cache/first-again.mp4@4967',
+    );
+
+    // Strictness is intact: trimming the regenerated source is a real change.
+    useEditor.getState().setClipDuration(t1.id, 3000);
+    expect(transitionStaleness(useEditor.getState().clips, t2.id, useEditor.getState().assets)).toBe('stale');
   });
 });
 

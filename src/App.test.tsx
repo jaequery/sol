@@ -520,11 +520,12 @@ describe('AI transitions between photos', () => {
     expect(screen.queryByRole('button', { name: /photo clip/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Remove a.jpg' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Remove d.jpg' })).toBeInTheDocument();
-    // Each clip wears its pair face; no cut chips remain anywhere.
+    // Each clip wears its pair face; the two seams between the landings are cuts like any
+    // other — a chip on each, and nothing spent.
     for (const clip of s.clips) {
       expect(screen.getByTestId(`clip-pair-${clip.id}`)).toBeInTheDocument();
     }
-    expect(screen.queryByRole('button', { name: /Select the cut between/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /Select the cut between/ })).toHaveLength(2);
     expect(await screen.findByText('3 transitions — pure motion')).toBeInTheDocument();
   });
 
@@ -793,7 +794,7 @@ describe('transitions where a video is one of the two sides', () => {
     expect(face.querySelector('img')!.getAttribute('src')).toBe(srcOf('cliff.png'));
   });
 
-  it('no chip ever stands beside a transition that has already landed', async () => {
+  it('a chip stands on each side of a landed transition, and its cut can be bridged', async () => {
     const user = userEvent.setup();
     render(<App />);
     await dropVideoPair();
@@ -804,10 +805,51 @@ describe('transitions where a video is one of the two sides', () => {
     await waitFor(() => expect(generateAnimation).toHaveBeenCalled());
     await succeed(Object.keys(useEditor.getState().generations)[0]);
 
-    // Three clips, two boundaries, and both of them touch the animation — bridging a
-    // bridge is not on offer, so the reel goes quiet again rather than sprouting chips.
-    expect(useEditor.getState().clips).toHaveLength(3);
-    expect(screen.queryAllByRole('button', { name: /^Select the cut between/ })).toHaveLength(0);
+    // Three clips, two boundaries — and both are cuts: the landing is footage now, and the
+    // reel may want to run on from it.
+    const [, landed, dive] = useEditor.getState().clips;
+    expect(landed.transition).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /^Select the cut between/ })).toHaveLength(2);
+    expect(
+      screen.getByRole('button', { name: `Select the cut between surf.mp4 and ${landed.name}` }),
+    ).toBeInTheDocument();
+
+    // The layout the ticket showed: the clip after the landing dragged 2 s away opens a
+    // gap, and the chip stands in it as it would between any other pair.
+    await act(async () => {
+      useEditor.getState().moveClipTo(dive.id, landed.startMs + landed.durationMs + 2000);
+    });
+    await user.click(
+      screen.getByRole('button', { name: `Select the cut between ${landed.name} and dive.mp4` }),
+    );
+    expect(await screen.findByRole('button', { name: /generate transition/i })).toBeEnabled();
+    // No still on either side, so no landing pick; the render fills the gap.
+    expect(
+      screen.queryByRole('button', { name: /Keep the photos? on the track instead/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/filling the 2\.0s gap/)).toBeInTheDocument();
+
+    generateAnimation.mockClear();
+    await user.click(screen.getByRole('button', { name: /generate transition/i }));
+    await waitFor(() => expect(generateAnimation).toHaveBeenCalledTimes(1));
+    // The landing's last frame is grabbed off its file, as any video's would be.
+    expect(generateAnimation.mock.calls[0][0].startFrame).toContain('@4967');
+    await succeed(
+      Object.keys(useEditor.getState().generations)[1],
+      '/home/u/.cache/solcut/generated/onward.mp4',
+    );
+
+    // The new render starts where the landing ends, consumes the gap, and dive.mp4 comes to
+    // rest flush against its tail.
+    const clips = useEditor.getState().clips;
+    expect(clips.map((c) => [c.name, c.startMs])).toEqual([
+      ['surf.mp4', 0],
+      [landed.name, 5000],
+      [clips[2].name, 10_000],
+      ['dive.mp4', 15_000],
+    ]);
+    expect(clips[2].transition).toMatchObject({ mode: 'insert', from: { clipId: landed.id } });
+    expect(screen.getAllByRole('button', { name: /^Select the cut between/ })).toHaveLength(3);
   });
 });
 
