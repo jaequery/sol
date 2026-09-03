@@ -31,6 +31,7 @@ import {
   resizeAudio,
   resizeClip,
   resizeClipInList,
+  retimeClip,
   snapStartMs,
   snapTargets,
   startOfIndex,
@@ -667,17 +668,19 @@ describe('cuts & transitions', () => {
   describe('replacePairWithTransition', () => {
     it('removes both photos and stands the clip where the left one started', () => {
       const [a, b] = pair();
-      // A later photo with a deliberate 1s gap after b — the gap must survive.
+      // A later photo with a 1 s gap after b — the render stands where b stood, so that
+      // black is now against the render and closes.
       const d = photoClip({ id: 'asset_d', name: 'd.jpg' }, 1000, 6000);
       const result = replacePairWithTransition([a, b, d], a.id, b.id, {
         ...generatedBetween(a, b),
         mode: 'replace',
       });
 
-      // The 5 s render covers the pair's 5 s span exactly, so d does not move.
+      // The 5 s render covers the pair's 5 s span exactly; d comes up against its tail
+      // rather than leaving a second of black beside the motion.
       expect(result.map((c) => [c.kind, c.startMs])).toEqual([
         ['video', 0],
-        ['photo', 6000],
+        ['photo', 5000],
       ]);
       expect(result.find((c) => c.id === a.id)).toBeUndefined();
       expect(result.find((c) => c.id === b.id)).toBeUndefined();
@@ -707,11 +710,12 @@ describe('cuts & transitions', () => {
       });
 
       // The video is untouched — same id, same span, same trim — and the 3 s render stands
-      // exactly where the photo held, so d keeps the gap the user left it.
+      // exactly where the photo held; d comes up against it rather than staying behind
+      // black the photo used to hold back.
       expect(result.map((c) => [c.kind, c.startMs, c.durationMs])).toEqual([
         ['video', 0, 2000],
         ['video', 2000, 3000],
-        ['photo', 6000, 1000],
+        ['photo', 5000, 1000],
       ]);
       expect(result[0].id).toBe(v.id);
       expect(result[0].trimStartMs).toBe(800);
@@ -764,10 +768,11 @@ describe('cuts & transitions', () => {
         mode: 'replace',
       });
 
-      // A 3 s render over a 5 s span: everything after comes back 2 s, gap shape kept.
+      // A 3 s render over a 5 s span: everything after comes back, and d comes all the way
+      // back — nothing black is left standing against the render.
       expect(result.map((c) => [c.kind, c.startMs])).toEqual([
         ['video', 0],
-        ['photo', 4000],
+        ['photo', 3000],
       ]);
     });
 
@@ -780,10 +785,10 @@ describe('cuts & transitions', () => {
         mode: 'replace',
       });
 
-      // The 5 s render replaces the 7 s span, gap included; d keeps its 1 s of spacing.
+      // The 5 s render replaces the 7 s span, gap included; d comes up flush behind it.
       expect(result.map((c) => [c.kind, c.startMs])).toEqual([
         ['video', 0],
-        ['photo', 6000],
+        ['photo', 5000],
       ]);
     });
 
@@ -931,6 +936,261 @@ describe('cuts & transitions', () => {
       // And it is the file the clip plays *now* that has to stand in the bin, not the one
       // its record remembers.
       expect(transitionStaleness(swapped, t.id, { asset_v: {}, asset_b: {} })).toBe('orphaned');
+    });
+  });
+
+  describe('retimeClip', () => {
+    /** Three clips laid end to end at the provisional length a drop guesses. */
+    function guessed(): Clip[] {
+      return [
+        videoClip({ id: 'asset_a', name: 'a.mp4' }, 5000, 0),
+        videoClip({ id: 'asset_b', name: 'b.mp4' }, 5000, 5000),
+        videoClip({ id: 'asset_c', name: 'c.mp4' }, 5000, 10_000),
+      ];
+    }
+
+    it('closes up behind a file shorter than the guess', () => {
+      const clips = guessed();
+      const result = retimeClip(clips, clips[0].id, 3000);
+      expect(result.map((c) => [c.startMs, c.durationMs])).toEqual([
+        [0, 3000],
+        [3000, 5000],
+        [8000, 5000],
+      ]);
+    });
+
+    it('makes room for a file longer than the guess rather than stacking two on one instant', () => {
+      const clips = guessed();
+      const result = retimeClip(clips, clips[0].id, 8000);
+      expect(result.map((c) => [c.startMs, c.durationMs])).toEqual([
+        [0, 8000],
+        [8000, 5000],
+        [13_000, 5000],
+      ]);
+    });
+
+    it('keeps a gap further along in shape — it moves with the reel, it does not close', () => {
+      const clips = [
+        videoClip({ id: 'asset_a', name: 'a.mp4' }, 5000, 0),
+        videoClip({ id: 'asset_b', name: 'b.mp4' }, 5000, 5000),
+        // A second of black the user left after b.
+        videoClip({ id: 'asset_d', name: 'd.mp4' }, 1000, 11_000),
+      ];
+      const result = retimeClip(clips, clips[0].id, 3000);
+      expect(result.map((c) => c.startMs)).toEqual([0, 3000, 9000]);
+    });
+
+    it('is the same reel back when the guess was right, or the clip is not there', () => {
+      const clips = guessed();
+      expect(retimeClip(clips, clips[0].id, 5000)).toBe(clips);
+      expect(retimeClip(clips, 'nope', 3000)).toBe(clips);
+    });
+
+    it('never lets a correction shrink a clip below the minimum', () => {
+      const clips = guessed();
+      expect(retimeClip(clips, clips[0].id, 5)[0].durationMs).toBe(MIN_CLIP_DURATION_MS);
+    });
+
+    it('commutes: probes settling in any order leave the same reel', () => {
+      const start = guessed();
+      const [a, b, c] = start.map((x) => x.id);
+      const orders = [
+        [a, b, c],
+        [c, b, a],
+        [b, a, c],
+        [b, c, a],
+      ];
+      const reels = orders.map((order) =>
+        order
+          .reduce((clips, id) => retimeClip(clips, id, 3000), start)
+          .map((x) => [x.startMs, x.durationMs]),
+      );
+      for (const reel of reels) expect(reel).toEqual(reels[0]);
+      expect(reels[0]).toEqual([
+        [0, 3000],
+        [3000, 3000],
+        [6000, 3000],
+      ]);
+    });
+  });
+
+  describe('no black touches a render', () => {
+    it('pulls what follows up against a landing that stood in a still\'s place', () => {
+      const [a, b] = pair();
+      // A second of black after b, which the render now stands in front of.
+      const d = photoClip({ id: 'asset_d', name: 'd.jpg' }, 1000, 6000);
+      const result = replacePairWithTransition([a, b, d], a.id, b.id, {
+        ...generatedBetween(a, b),
+        mode: 'replace',
+      });
+      expect(result.map((c) => [c.kind, c.startMs])).toEqual([
+        ['video', 0],
+        ['photo', 5000],
+      ]);
+    });
+
+    it('brings the render back to meet the clip in front of it', () => {
+      // Two seconds of black between z and the pair the render stands in for.
+      const z = photoClip({ id: 'asset_z', name: 'z.jpg' }, 1000, 0);
+      const a = photoClip({ id: 'asset_a', name: 'a.jpg' }, 2000, 3000);
+      const b = photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000, 5000);
+      const result = replacePairWithTransition([z, a, b], a.id, b.id, {
+        ...generatedBetween(a, b),
+        mode: 'replace',
+      });
+      expect(result.map((c) => [c.kind, c.startMs, c.durationMs])).toEqual([
+        ['photo', 0, 1000],
+        ['video', 1000, 5000],
+      ]);
+    });
+
+    it('leaves the head and the tail of the reel alone — black with no clip beside it is not a seam', () => {
+      // The film opens on two seconds of black, and the pair is all there is.
+      const a = photoClip({ id: 'asset_a', name: 'a.jpg' }, 2000, 2000);
+      const b = photoClip({ id: 'asset_b', name: 'b.jpg' }, 3000, 4000);
+      const result = replacePairWithTransition([a, b], a.id, b.id, {
+        ...generatedBetween(a, b),
+        mode: 'replace',
+      });
+      expect(result.map((c) => [c.startMs, c.durationMs])).toEqual([[2000, 5000]]);
+    });
+
+    it('is nothing to do for an insert landing, which is already flush on both sides', () => {
+      const [a, b] = pair();
+      const d = photoClip({ id: 'asset_d', name: 'd.jpg' }, 1000, 6000);
+      const result = insertTransitionClip([a, b, d], a.id, b.id, generatedBetween(a, b));
+      // a | render | b are back to back, and d keeps the second of black it had after b —
+      // that boundary is not the render's, so it is still the user's.
+      expect(result.map((c) => [c.kind, c.startMs])).toEqual([
+        ['photo', 0],
+        ['video', 2000],
+        ['photo', 7000],
+        ['photo', 11_000],
+      ]);
+    });
+
+    it('a regenerated render closes its seams too', () => {
+      const [a, b] = pair();
+      const clips = insertTransitionClip([a, b], a.id, b.id, generatedBetween(a, b));
+      const t = clips[1];
+      // The user drags the clip behind the render away, then regenerates.
+      const pulled = clips.map((c) => (c.id === clips[2].id ? { ...c, startMs: c.startMs + 2000 } : c));
+      const again = replaceTransitionClip(pulled, t.id, {
+        ...generatedBetween(a, b),
+        durationMs: 4000,
+      });
+      expect(again.map((c) => [c.kind, c.startMs, c.durationMs])).toEqual([
+        ['photo', 0, 2000],
+        ['video', 2000, 4000],
+        ['photo', 6000, 3000],
+      ]);
+    });
+  });
+
+  /**
+   * The rule as an invariant rather than as examples: over a couple of thousand landings on
+   * randomly shaped tracks — both kinds, landed transitions among them, gaps of every size,
+   * every cut, both modes, and the probe correcting the length underneath afterwards — a
+   * reel may never overlap, may never leave black standing against a render, and may never
+   * come out carrying more black than it went in with. Seeded, so a failure repeats.
+   */
+  describe('no reel gains black, whatever the landing', () => {
+    let seed = 12_345;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)];
+
+    function madeUpClip(i: number, kind: 'photo' | 'video', startMs: number, durationMs: number, isRender: boolean): Clip {
+      const clip: Clip = {
+        id: `c${i}`, assetId: `a${i}`, kind, name: `n${i}`, startMs, durationMs, trimStartMs: 0,
+      };
+      if (isRender) {
+        clip.ai = { prompt: 'p', sourceAssetId: 'a0' };
+        clip.transition = {
+          prompt: 'p',
+          from: { clipId: 'x', assetId: 'ax' },
+          to: { clipId: 'y', assetId: 'ay' },
+        };
+      }
+      return clip;
+    }
+
+    /** A track of two to five clips, with gaps — and the odd overlap — thrown in. */
+    function madeUpTrack(): Clip[] {
+      const clips: Clip[] = [];
+      let cursor = Math.floor(rnd() * 3) * 1000;
+      for (let i = 0; i < 2 + Math.floor(rnd() * 4); i += 1) {
+        const kind = pick(['photo', 'video'] as const);
+        const durationMs = pick([1000, 2000, 3400, 5000, 8000]);
+        clips.push(madeUpClip(i, kind, cursor, durationMs, kind === 'video' && rnd() < 0.3));
+        cursor += durationMs + pick([0, 0, 0, 500, 2000, 8000]);
+      }
+      return clips;
+    }
+
+    const render = (durationMs: number, mode?: 'insert' | 'replace') => ({
+      assetId: 'asset_tr', name: 't.mp4', prompt: 'p', durationMs,
+      from: { clipId: 'c0', assetId: 'a0' }, to: { clipId: 'c1', assetId: 'a1' }, mode,
+    });
+
+    const blackIn = (clips: Clip[]) => {
+      const placed = layout(clips);
+      return placed
+        .slice(1)
+        .reduce((sum, p, i) => sum + Math.max(0, p.startMs - placed[i].endMs), 0);
+    };
+
+    function holds(before: Clip[], after: Clip[], renderId: string | undefined, what: string) {
+      const placed = layout(after);
+      for (let i = 0; i < placed.length - 1; i += 1) {
+        expect(placed[i + 1].startMs - placed[i].endMs, `${what}: two clips on one instant`)
+          .toBeGreaterThanOrEqual(0);
+      }
+      expect(after.every((c) => c.startMs >= 0), `${what}: started before the reel`).toBe(true);
+      expect(blackIn(after), `${what}: came out with more black`).toBeLessThanOrEqual(blackIn(before));
+      if (renderId === undefined) return;
+      const at = placed.findIndex((p) => p.clip.id === renderId);
+      if (at === -1) return;
+      if (placed[at - 1]) {
+        expect(placed[at].startMs - placed[at - 1].endMs, `${what}: black in front of the render`).toBe(0);
+      }
+      if (placed[at + 1]) {
+        expect(placed[at + 1].startMs - placed[at].endMs, `${what}: black behind the render`).toBe(0);
+      }
+    }
+
+    it('holds over two thousand landings, before and after the probe corrects the length', () => {
+      let landings = 0;
+      for (let trial = 0; trial < 2000; trial += 1) {
+        const clips = madeUpTrack();
+        const cuts = bridgeableCuts(clips);
+        if (cuts.length === 0) continue;
+        const cut = pick(cuts);
+        const mode = pick(['insert', 'replace'] as const);
+        const landed =
+          mode === 'insert'
+            ? insertTransitionClip(clips, cut.afterClipId, cut.beforeClipId, render(pick([100, 1000, 3400, 5000, 12_000])))
+            : replacePairWithTransition(clips, cut.afterClipId, cut.beforeClipId, render(pick([100, 1000, 3400, 5000, 12_000]), 'replace'));
+        if (landed === clips) continue;
+        landings += 1;
+        const t = landed.find((c) => c.assetId === 'asset_tr');
+        holds(clips, landed, t?.id, `trial ${trial} ${mode}`);
+        holds(landed, retimeClip(landed, t!.id, pick([500, 3400, 9000])), undefined, `trial ${trial} ${mode} retimed`);
+      }
+      expect(landings).toBeGreaterThan(1500);
+    });
+
+    it('holds over six hundred regenerations', () => {
+      let regenerations = 0;
+      for (let trial = 0; trial < 600; trial += 1) {
+        const clips = madeUpTrack();
+        const t = clips.find((c) => c.transition);
+        if (!t) continue;
+        const again = replaceTransitionClip(clips, t.id, render(pick([500, 3400, 9000])));
+        if (again === clips) continue;
+        regenerations += 1;
+        holds(clips, again, t.id, `regeneration ${trial}`);
+      }
+      expect(regenerations).toBeGreaterThan(100);
     });
   });
 
