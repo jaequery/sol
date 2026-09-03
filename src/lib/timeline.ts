@@ -458,7 +458,8 @@ export function timelineEndMs(clips: Clip[], tracks: AudioTrack[]): number {
 /**
  * A cut: two clips next to each other — the place a transition can fill. Their edges may
  * touch, or the user may have dragged one away to leave a gap; either way the pair can be
- * bridged, and a render into a gap consumes it.
+ * bridged, and a render into a gap consumes it — as it consumes any black left standing
+ * against it once it lands (`closedSeamsAround`).
  */
 export interface Cut {
   /** The clip on the left; the transition lands right after it. */
@@ -583,6 +584,71 @@ function transitionClip(id: string, startMs: number, generated: GeneratedTransit
 }
 
 /**
+ * Correct a clip's length to what its file really is, closing up behind it: everything
+ * that started at or after its old end moves by the difference, so the reel keeps the
+ * shape it was arranged in.
+ *
+ * This is only ever the app correcting its own guess. A clip lands at a provisional
+ * length the moment it is dropped — decoding it first would make the import feel broken —
+ * and the real number arrives a beat later. Writing that number in place would leave
+ * black the user never asked for when the file is shorter than the guess, and two clips
+ * on one instant when it is longer, so the number and the reel move together.
+ *
+ * A length the user *drags or types* is a different thing entirely and goes through
+ * `resizeClipInList`, which pushes rather than pulls and leaves the gap it makes: that
+ * gap is theirs.
+ */
+export function retimeClip(clips: Clip[], clipId: string, durationMs: number): Clip[] {
+  const clip = clips.find((c) => c.id === clipId);
+  if (!clip) return clips;
+  const next = Math.max(MIN_CLIP_DURATION_MS, Math.round(durationMs));
+  const delta = next - clip.durationMs;
+  if (delta === 0) return clips;
+  const oldEnd = clip.startMs + clip.durationMs;
+  // Clips never overlap, so everything at or after the old end is exactly the run behind
+  // this clip — which is what makes this commute: several probes landing in any order
+  // leave the same reel.
+  return sortClips(
+    clips.map((c) => {
+      if (c.id === clipId) return { ...c, durationMs: next };
+      return c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
+    }),
+  );
+}
+
+/**
+ * Close the black on either side of a render.
+ *
+ * A transition is continuous film from the frame on one side of the cut to the frame on
+ * the other, so empty track touching it is the one thing it was bought to remove. The
+ * clip behind it comes to rest against its tail — everything past that one moving with
+ * it, so their own spacing is kept — and the render comes back to meet the clip in front.
+ *
+ * Black with no clip on the far side of it is not a seam: the head of the reel and the
+ * tail are left exactly as they are. So is every other boundary on the track — a gap the
+ * user dragged open somewhere else is still theirs.
+ */
+function closedSeamsAround(clips: Clip[], clipId: string): Clip[] {
+  let out = clips;
+  // The head first, then the tail: closing the head moves the render itself, so the tail
+  // has to be measured from where it ends up rather than where it landed.
+  for (const side of ['head', 'tail'] as const) {
+    const placed = layout(out);
+    const at = placed.findIndex((p) => p.clip.id === clipId);
+    if (at === -1) return out;
+    const neighbour = side === 'head' ? placed[at - 1] : placed[at + 1];
+    if (!neighbour) continue;
+    const black =
+      side === 'head' ? placed[at].startMs - neighbour.endMs : neighbour.startMs - placed[at].endMs;
+    if (black <= 0) continue;
+    // Walking the render back closes the head; walking what follows back closes the tail.
+    const from = side === 'head' ? placed[at].startMs : neighbour.startMs;
+    out = out.map((c) => (c.startMs >= from ? { ...c, startMs: c.startMs - black } : c));
+  }
+  return sortClips(out);
+}
+
+/**
  * Put a finished transition into its cut. The pair must still form a cut — the timeline
  * may have been edited while Higgsfield rendered — otherwise this is an identity no-op and
  * the caller explains rather than inserting the clip somewhere wrong.
@@ -592,7 +658,8 @@ function transitionClip(id: string, startMs: number, generated: GeneratedTransit
  * gap the user dragged open for it is consumed rather than left as black. Everything from
  * the right photo onwards shifts by the difference between the render's length and the
  * gap's (right for a touching pair, either way across a gap), so gaps further along keep
- * their shape.
+ * their shape. An insert landing is already flush on both sides by construction, so
+ * `closedSeamsAround` has nothing to do here; it is the replace landing it earns its keep on.
  */
 export function insertTransitionClip(
   clips: Clip[],
@@ -611,16 +678,19 @@ export function insertTransitionClip(
   const clip = transitionClip(makeId('clip'), startMs, generated);
   const delta = clip.durationMs - cut.gapMs;
   const rightStartMs = startMs + cut.gapMs;
-  return sortClips([
-    ...restampedAround(
-      clips.map((c) => (c.startMs >= rightStartMs ? { ...c, startMs: c.startMs + delta } : c)),
+  return closedSeamsAround(
+    sortClips([
+      ...restampedAround(
+        clips.map((c) => (c.startMs >= rightStartMs ? { ...c, startMs: c.startMs + delta } : c)),
+        clip,
+        after,
+        before,
+        NOTHING_CONSUMED,
+      ),
       clip,
-      after,
-      before,
-      NOTHING_CONSUMED,
-    ),
-    clip,
-  ]);
+    ]),
+    clip.id,
+  );
 }
 
 /**
@@ -639,7 +709,10 @@ export function insertTransitionClip(
  * never offered there in the first place.
  *
  * Everything from the consumed span's end shifts by the difference between the render's
- * length and that span, so gaps further along keep their shape.
+ * length and that span, so gaps further along keep their shape — and `closedSeamsAround`
+ * sees to it that no black is left touching the render on either side. That matters most
+ * here: the stills a replace landing consumes may have been holding black back, and the
+ * motion stands in their place, black and all.
  */
 export function replacePairWithTransition(
   clips: Clip[],
@@ -660,18 +733,21 @@ export function replacePairWithTransition(
 
   const clip = transitionClip(makeId('clip'), spanStart, generated);
   const delta = clip.durationMs - (spanEnd - spanStart);
-  return sortClips([
-    ...restampedAround(
-      clips
-        .filter((c) => !doomed.has(c.id))
-        .map((c) => (c.startMs >= spanEnd ? { ...c, startMs: c.startMs + delta } : c)),
+  return closedSeamsAround(
+    sortClips([
+      ...restampedAround(
+        clips
+          .filter((c) => !doomed.has(c.id))
+          .map((c) => (c.startMs >= spanEnd ? { ...c, startMs: c.startMs + delta } : c)),
+        clip,
+        after,
+        before,
+        doomed,
+      ),
       clip,
-      after,
-      before,
-      doomed,
-    ),
-    clip,
-  ]);
+    ]),
+    clip.id,
+  );
 }
 
 const NOTHING_CONSUMED: ReadonlySet<string> = new Set();
@@ -771,6 +847,9 @@ export function removeClipsClosingSpans(clips: Clip[], ids: string[]): Clip[] {
  * was rendered off the old render's edge still meets the new one — it was re-rendered toward
  * the same frames — so its record follows the new asset. Identity no-op when the clip is
  * gone or is not a transition.
+ *
+ * The new file is a render like any other, so it closes its seams like any other: a fresh
+ * one may not have black against it just because the one it replaced did.
  */
 export function replaceTransitionClip(
   clips: Clip[],
@@ -783,39 +862,36 @@ export function replaceTransitionClip(
   const delta = next.durationMs - old.durationMs;
   const oldEnd = old.startMs + old.durationMs;
   return restampedOff(
-    sortClips(
-      clips.map((c) => {
-        if (c.id === old.id) return next;
-        return delta !== 0 && c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
-      }),
+    closedSeamsAround(
+      sortClips(
+        clips.map((c) => {
+          if (c.id === old.id) return next;
+          return delta !== 0 && c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
+        }),
+      ),
+      next.id,
     ),
     next,
   );
 }
 
 /**
- * Correct a transition's provisional length once the real file has been probed, rippling
- * everything after its old end by the difference so the reel stays exactly as arranged. A
- * transition rendered off this one's tail recorded the provisional anchor; the frame it met
- * is the same, so its record moves with the correction rather than reading as a trim.
+ * Correct a transition's provisional length once the real file has been probed — the same
+ * `retimeClip` every other measured length goes through, so the reel stays exactly as
+ * arranged. A transition rendered off this one's tail recorded the provisional anchor; the
+ * frame it met is the same, so its record moves with the correction rather than reading as
+ * a trim.
+ *
+ * It corrects a length and nothing else: the seams were closed when the clip landed, and
+ * a gap the user has dragged open in the seconds since is theirs to keep.
  */
 export function setTransitionDuration(clips: Clip[], clipId: string, durationMs: number): Clip[] {
   const clip = clips.find((c) => c.id === clipId);
   if (!clip?.transition) return clips;
-  const next = Math.max(MIN_CLIP_DURATION_MS, Math.round(durationMs));
-  const delta = next - clip.durationMs;
-  if (delta === 0) return clips;
-  const oldEnd = clip.startMs + clip.durationMs;
-  const measured = { ...clip, durationMs: next };
-  return restampedOff(
-    sortClips(
-      clips.map((c) => {
-        if (c.id === clipId) return measured;
-        return c.startMs >= oldEnd ? { ...c, startMs: c.startMs + delta } : c;
-      }),
-    ),
-    measured,
-  );
+  const retimed = retimeClip(clips, clipId, durationMs);
+  if (retimed === clips) return clips;
+  const measured = retimed.find((c) => c.id === clipId)!;
+  return restampedOff(retimed, measured);
 }
 
 export type TransitionStaleness = 'fresh' | 'stale' | 'orphaned';

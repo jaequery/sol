@@ -51,7 +51,17 @@ vi.mock('../lib/backend', async (importOriginal) => ({
   saveSettings: vi.fn(),
   testConnection: vi.fn(),
   testApiKey: vi.fn(),
-  importPaths: vi.fn(async () => ({ imported: [], rejected: [] })),
+  // Every path handed in comes back as media of the kind its extension names — the stat
+  // the desktop does, without a filesystem. Suites that want an empty import pass none.
+  importPaths: vi.fn(async (paths: string[]) => ({
+    imported: paths.map((path) => ({
+      path,
+      name: path.split('/').pop() ?? path,
+      kind: /\.(mp4|mov|webm)$/i.test(path) ? 'video' : /\.(mp3|wav|m4a)$/i.test(path) ? 'audio' : 'photo',
+      sizeBytes: 1024,
+    })),
+    rejected: [],
+  })),
   // Persistence is desktop-only and every suite starts from a fresh, empty project.
   loadProject: vi.fn(async () => null),
   readProject: vi.fn(async () => null),
@@ -75,13 +85,19 @@ vi.mock('../lib/backend', async (importOriginal) => ({
   revealPath: vi.fn(),
 }));
 
+// What a probe of a real file comes back with. `null` means "whatever was guessed", which
+// is what every suite below the retiming ones wants: a length that never moves keeps their
+// expectations about the reel. The suites that are *about* the correction set a real number.
+let probedDurationMs: number | null = null;
+
 // The stub keeps each photo's still identifiable, which is the whole point of a cross-asset
 // request: the two frames have to come from two *different* files.
 vi.mock('../lib/frames', () => ({
   FRAME_WIDTH: 1280,
   FRAME_HEIGHT: 720,
   renderPhotoJpeg: async (src: string) => `data:image/jpeg;base64,still-of-${src}`,
-  probeVideoDurationMs: async (_src: string, fallback: number) => fallback,
+  probeVideoDurationMs: async (_src: string, fallback: number) => probedDurationMs ?? fallback,
+  probeAudioDurationMs: async (_src: string, fallback: number) => probedDurationMs ?? fallback,
 }));
 
 const CONNECTED = {
@@ -102,6 +118,7 @@ function photo(id: string): MediaAsset {
 const PHOTO_IDS = ['asset_a', 'asset_b', 'asset_c'];
 
 beforeEach(() => {
+  probedDurationMs = null;
   generateAnimation.mockClear();
   generateImage.mockClear();
   cancelGeneration.mockClear();
@@ -570,10 +587,11 @@ describe('replace-mode cut transitions', () => {
     succeedCut(id!);
 
     const s = useEditor.getState();
-    // The 5 s render covers the pair's 5 s span exactly, so c keeps its 1 s gap.
+    // The 5 s render covers the pair's 5 s span exactly, and c comes up against its tail:
+    // the second of black the photos were holding back goes with them.
     expect(s.clips.map((x) => [x.kind, x.startMs])).toEqual([
       ['video', 0],
-      ['photo', 6000],
+      ['photo', 5000],
     ]);
     const t = s.clips[0];
     expect(t.transition).toMatchObject({
@@ -1004,6 +1022,171 @@ describe('a transition as a side of a cut', () => {
     // Strictness is intact: trimming the regenerated source is a real change.
     useEditor.getState().setClipDuration(t1.id, 3000);
     expect(transitionStaleness(useEditor.getState().clips, t2.id, useEditor.getState().assets)).toBe('stale');
+  });
+});
+
+/**
+ * The reel never grows black nobody asked for.
+ *
+ * Two things used to put it there. A dropped video lands at a provisional 5 s and the real
+ * length arrived a beat later written straight onto the clip, moving nothing — so a short
+ * file left a hole and a long one put two clips on the same instant. And a landing kept a
+ * gap that had ended up against the render, which is what a user reads as "the transition
+ * left a gap". Every case below is measured with a probe that returns a real length, which
+ * is the thing no test did before: the whole correction path used to run only on the
+ * fallback, where the number never moves.
+ */
+describe('black nobody asked for', () => {
+  /** The named photos in the bin and on the track, 5 s each, laid end to end. */
+  function photosOnTrack(ids: string[]) {
+    useEditor.setState({
+      assets: Object.fromEntries(ids.map((id) => [id, photo(id)])),
+      clips: ids.map((id, i) => photoClip({ id, name: `${id}.jpg` }, 5000, i * 5000)),
+    });
+  }
+
+  function succeedCut(id: string, outputPath: string) {
+    emit({ generationId: id, status: 'succeeded', progress: 1, elapsedSecs: 60, slow: false, outputPath });
+  }
+
+  /** Every boundary on the track, so a single number says whether the reel is whole. */
+  function gaps(): number[] {
+    const clips = useEditor.getState().clips;
+    return clips.slice(1).map((c, i) => c.startMs - (clips[i].startMs + clips[i].durationMs));
+  }
+
+  describe('a length the app measures for itself', () => {
+    /** Three videos dropped together, each landing at the provisional 5 s. */
+    async function dropThreeVideos(realMs: number) {
+      probedDurationMs = realMs;
+      await useEditor.getState().addPaths(['/m/a.mp4', '/m/b.mp4', '/m/c.mp4']);
+    }
+
+    it('closes up behind a file shorter than the guess', async () => {
+      await dropThreeVideos(3000);
+
+      // Written in place this was `0-3000 | 5000-8000 | 10000-13000` — two 2 s holes the
+      // user never opened.
+      expect(useEditor.getState().clips.map((c) => [c.startMs, c.durationMs])).toEqual([
+        [0, 3000],
+        [3000, 3000],
+        [6000, 3000],
+      ]);
+      expect(gaps()).toEqual([0, 0]);
+    });
+
+    it('makes room for a file longer than the guess rather than stacking two clips on one instant', async () => {
+      await dropThreeVideos(8000);
+
+      expect(useEditor.getState().clips.map((c) => [c.startMs, c.durationMs])).toEqual([
+        [0, 8000],
+        [8000, 8000],
+        [16000, 8000],
+      ]);
+      // The old behaviour overlapped by 3 s a clip, which `Clip.startMs` forbids outright.
+      expect(gaps()).toEqual([0, 0]);
+    });
+
+    it('leaves a length the user set while the probe was in flight alone', async () => {
+      probedDurationMs = 3000;
+      await useEditor.getState().addPaths(['/m/a.mp4', '/m/b.mp4']);
+
+      // Both were corrected to their real 3 s and the reel closed up behind them.
+      expect(useEditor.getState().clips.map((c) => [c.startMs, c.durationMs])).toEqual([
+        [0, 3000],
+        [3000, 3000],
+      ]);
+
+      // A length the user types is theirs — the next probe must not overwrite it. Typing
+      // it takes the clip off the provisional length, which is exactly what the guard reads.
+      const [first] = useEditor.getState().clips;
+      useEditor.getState().setClipDuration(first.id, 1500);
+      expect(useEditor.getState().clips[0].durationMs).toBe(1500);
+    });
+  });
+
+  describe('a landing', () => {
+    it('leaves no black against the render — the reported case', async () => {
+      // A 3.4 s video and two photos: the video's real length is not the provisional 5 s.
+      probedDurationMs = 3400;
+      await useEditor.getState().addPaths(['/m/v.mp4']);
+      probedDurationMs = null;
+      const v = useEditor.getState().clips[0];
+      useEditor.setState({
+        assets: { ...useEditor.getState().assets, asset_p1: photo('asset_p1'), asset_p2: photo('asset_p2') },
+        clips: [
+          v,
+          photoClip({ id: 'asset_p1', name: 'p1.jpg' }, 5000, 5000),
+          photoClip({ id: 'asset_p2', name: 'p2.jpg' }, 5000, 10000),
+        ],
+      });
+
+      const [, p1, p2] = useEditor.getState().clips;
+      const id = useEditor.getState().startCutGeneration(p1.id, p2.id);
+      succeedCut(id!, '/cache/t.mp4');
+
+      // The render stands where the two stills did, and comes back to meet the video
+      // rather than standing behind 1.6 s of black.
+      expect(useEditor.getState().clips.map((c) => [c.kind, c.startMs, c.durationMs])).toEqual([
+        ['video', 0, 3400],
+        ['video', 3400, 5000],
+      ]);
+      expect(gaps()).toEqual([0]);
+    });
+
+    it('closes a gap the user dragged open beyond the pair', () => {
+      photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+      const [a, b, c] = useEditor.getState().clips;
+      useEditor.getState().moveClipTo(c.id, 12000);
+      expect(gaps()).toEqual([0, 2000]);
+
+      const id = useEditor.getState().startCutGeneration(a.id, b.id);
+      succeedCut(id!, '/cache/t.mp4');
+
+      expect(useEditor.getState().clips.map((x) => [x.kind, x.startMs])).toEqual([
+        ['video', 0],
+        ['photo', 5000],
+      ]);
+      expect(gaps()).toEqual([0]);
+    });
+
+    it('brings the playhead back onto a reel it shortened', () => {
+      photosOnTrack(['asset_a', 'asset_b']);
+      // The user was watching near the end of the 10 s reel when they pressed Generate.
+      useEditor.getState().setPlayhead(7500);
+
+      const [a, b] = useEditor.getState().clips;
+      succeedCut(useEditor.getState().startCutGeneration(a.id, b.id)!, '/cache/t.mp4');
+
+      // A 5 s render stands where 10 s of stills did; the playhead comes with it instead of
+      // being left two and a half seconds past the end of the film.
+      expect(useEditor.getState().clips.map((c) => [c.startMs, c.durationMs])).toEqual([[0, 5000]]);
+      expect(useEditor.getState().playheadMs).toBe(5000);
+    });
+  });
+
+  describe('three photos with a transition between each — the whole reel stays whole', () => {
+    for (const realMs of [5000, 3400, 8000]) {
+      it(`one cut at a time, each render really ${realMs} ms`, async () => {
+        photosOnTrack(['asset_a', 'asset_b', 'asset_c']);
+        probedDurationMs = realMs;
+
+        const [a, b] = useEditor.getState().clips;
+        succeedCut(useEditor.getState().startCutGeneration(a.id, b.id)!, '/cache/t1.mp4');
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const [t1, c] = useEditor.getState().clips;
+        succeedCut(useEditor.getState().startCutGeneration(t1.id, c.id)!, '/cache/t2.mp4');
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const clips = useEditor.getState().clips;
+        expect(clips.map((x) => x.kind)).toEqual(['video', 'video']);
+        expect(clips.every((x) => x.durationMs === realMs)).toBe(true);
+        expect(gaps()).toEqual([0]);
+      });
+    }
   });
 });
 

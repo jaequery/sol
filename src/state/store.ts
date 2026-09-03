@@ -76,6 +76,7 @@ import {
   replaceTransitionClip,
   resizeAudio,
   resizeClipInList,
+  retimeClip,
   setTransitionDuration,
   sortClips,
   timelineEndMs,
@@ -2410,23 +2411,34 @@ async function probeDurations(set: Setter, epoch: number, accepted: Imported[]) 
           ? await probeVideoDurationMs(asset.src, DEFAULT_VIDEO_DURATION_MS)
           : await probeAudioDurationMs(asset.src, DEFAULT_AUDIO_DURATION_MS);
       if (!stillCurrent(epoch)) return;
-      set((s) => ({
-        // The asset keeps the source length for good: it is what bounds a later trim.
-        assets: s.assets[asset.id]
-          ? { ...s.assets, [asset.id]: { ...s.assets[asset.id], durationMs } }
-          : s.assets,
-        clips: s.clips.map((c) =>
-          // A trim that landed while the probe was in flight is the user's, not ours.
-          c.id === clip?.id && c.durationMs === DEFAULT_VIDEO_DURATION_MS && c.trimStartMs === 0
-            ? { ...c, durationMs }
-            : c,
-        ),
-        audioTracks: s.audioTracks.map((t) =>
-          t.id === track?.id && t.durationMs === DEFAULT_AUDIO_DURATION_MS && t.trimStartMs === 0
-            ? { ...t, durationMs }
-            : t,
-        ),
-      }));
+      set((s) => {
+        // A trim that landed while the probe was in flight is the user's, not ours: they
+        // have said what length they want and the measurement is only news. Where they
+        // dragged it to is a separate question and stays theirs either way — retiming
+        // moves what is *behind* a clip, never the clip itself.
+        const landed = clip ? s.clips.find((c) => c.id === clip.id) : undefined;
+        const ours =
+          landed !== undefined &&
+          landed.durationMs === DEFAULT_VIDEO_DURATION_MS &&
+          landed.trimStartMs === 0;
+        return {
+          // The asset keeps the source length for good: it is what bounds a later trim.
+          assets: s.assets[asset.id]
+            ? { ...s.assets, [asset.id]: { ...s.assets[asset.id], durationMs } }
+            : s.assets,
+          // The reel closes up behind the correction. Writing the real length in place
+          // left black behind a file shorter than the guess and two clips on one instant
+          // behind a longer one — neither of which the user asked for.
+          clips: ours ? retimeClip(s.clips, landed.id, durationMs) : s.clips,
+          // A sound is not a clip: its lane holds one sound and moves nothing, so its
+          // length is corrected where it stands.
+          audioTracks: s.audioTracks.map((t) =>
+            t.id === track?.id && t.durationMs === DEFAULT_AUDIO_DURATION_MS && t.trimStartMs === 0
+              ? { ...t, durationMs }
+              : t,
+          ),
+        };
+      });
     }),
   );
 }
@@ -2968,10 +2980,15 @@ function landCutResult(
     if (clips === s.clips) return s;
     const landed = clips.find((c) => c.assetId === asset.id);
     landedClipId = landed?.id ?? null;
+    // A landing can leave the reel shorter than it found it — a replace one stands a 5 s
+    // render where ten seconds of stills were. The playhead comes with it rather than
+    // being left out past the end, exactly as every other edit that shortens the track.
+    const playheadMs = Math.min(s.playheadMs, timelineEndMs(clips, s.audioTracks));
     if (!replacesPair) {
       return {
         assets: { ...s.assets, [asset.id]: asset },
         clips,
+        playheadMs,
         selection: landed ? { kind: 'clip', clipId: landed.id } : s.selection,
       };
     }
@@ -2996,6 +3013,7 @@ function landCutResult(
     return {
       assets: { ...s.assets, [asset.id]: asset },
       clips,
+      playheadMs,
       selection: landed ? { kind: 'clip', clipId: landed.id } : s.selection,
       ...prunedAfterEdit(clips, generations, s.cutPrompts, s.cutModes),
     };
