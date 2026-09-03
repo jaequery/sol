@@ -30,6 +30,7 @@ export function resetEditor(): void {
     clips: [],
     audioTracks: [],
     selection: { kind: 'none' },
+    croppingClipId: null,
     playheadMs: 0,
     playing: false,
     generations: {},

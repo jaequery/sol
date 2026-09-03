@@ -93,6 +93,16 @@ of cents rather than a plan credit. Both live in the same Model selector; see
   they render. When both are in, the film **puts itself on the timeline** — the two clips
   in order, badged AI and playable — and the panel offers **Export film**. See
   [the flow](#three-photos-to-an-mp4) below.
+- **Framing, per clip.** Select any clip — a photo or a video, it makes no difference — and
+  the inspector's **Transform** card reframes it: a **zoom** up to 4× with a pan once there
+  is somewhere to pan to, a quarter-turn **rotate** either way, a **flip** across or down,
+  and a **crop** you drag as a rectangle over the preview itself. The five compose in one
+  fixed order — rotate, flip, crop, fit, then zoom — and the preview draws that order in CSS
+  while the exporter builds the same picture as an ffmpeg chain, so what is on screen is
+  what lands in the file. A turn or a crop the frame's shape cannot hold sits on black
+  rather than being stretched into 16:9. **Reset** takes the whole lot back, and a clip that
+  has never been reframed carries nothing at all — in memory, on disk, or in the export
+  spec.
 - **MP4 export** of the whole timeline via ffmpeg, audio lanes included.
 - **Your work is still there tomorrow.** The project saves itself as you edit, again every
   few seconds while anything is unwritten, and once more as the window closes — no save

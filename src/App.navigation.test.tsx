@@ -8,6 +8,11 @@
  *
  * Every test also fails on a `console.error` or `console.warn`, which is what makes the
  * ticket's "no console errors" criterion falsifiable rather than a matter of opinion.
+ *
+ * One surface deliberately lives elsewhere: the inspector's **Transform** card and the crop
+ * rectangle it opens over the preview are swept in `App.framing.test.tsx`, under the same
+ * console gate. They are covered there rather than duplicated here because every one of
+ * their controls is only meaningful next to the geometry it produces.
  */
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';

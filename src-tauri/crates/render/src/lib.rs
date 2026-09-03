@@ -66,6 +66,135 @@ pub enum Source {
     Video { path: PathBuf, trim_start_ms: u32 },
 }
 
+/// The rectangle of the framed picture a crop keeps, in fractions of it.
+///
+/// Mirrors `CropRect` in `src/types/project.ts`. Fractions rather than pixels because what
+/// is being cropped is the picture *after* it has been fitted to the export frame, so
+/// neither side has to know how many pixels the source file had.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CropRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Default for CropRect {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        }
+    }
+}
+
+impl CropRect {
+    fn is_full(&self) -> bool {
+        self.x <= 0.0 && self.y <= 0.0 && self.width >= 1.0 && self.height >= 1.0
+    }
+
+    /// The rectangle as ffmpeg will actually take it: inside the picture, and never so
+    /// small there is nothing left to scale back up. A spec is JSON off a hand-editable
+    /// project file, so this is the wall rather than an assertion.
+    fn clamped(&self) -> Self {
+        let width = clamp(self.width, MIN_CROP_FRACTION, 1.0);
+        let height = clamp(self.height, MIN_CROP_FRACTION, 1.0);
+        Self {
+            x: clamp(self.x, 0.0, 1.0 - width),
+            y: clamp(self.y, 0.0, 1.0 - height),
+            width,
+            height,
+        }
+    }
+}
+
+/// How a clip is framed: what part of the picture is kept, which way up it stands, and how
+/// far into it the frame is pushed.
+///
+/// Mirrors `ClipTransform` in `src/types/project.ts`, and the order the fields are applied
+/// in is the order documented there and implemented in `src/lib/transform.ts` — **rotate →
+/// flip → crop → fit → zoom + pan**. The preview draws it as four nested CSS layers and
+/// [`transform_ops`] emits it as a filter chain; they are the same picture because they are
+/// the same five steps in the same order.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipTransform {
+    #[serde(default)]
+    pub crop: CropRect,
+    #[serde(default = "unit_zoom")]
+    pub zoom: f32,
+    #[serde(default)]
+    pub offset_x: f32,
+    #[serde(default)]
+    pub offset_y: f32,
+    /// A quarter turn clockwise in degrees. Anything but 90/180/270 is read as no turn.
+    #[serde(default)]
+    pub rotation: i32,
+    #[serde(default)]
+    pub flip_h: bool,
+    #[serde(default)]
+    pub flip_v: bool,
+}
+
+fn unit_zoom() -> f32 {
+    1.0
+}
+
+/// Zoom's ends, and the smallest crop — the same numbers as `src/types/project.ts`.
+pub const MIN_CLIP_ZOOM: f32 = 1.0;
+pub const MAX_CLIP_ZOOM: f32 = 4.0;
+pub const MIN_CROP_FRACTION: f32 = 0.05;
+
+fn clamp(v: f32, lo: f32, hi: f32) -> f32 {
+    if v.is_finite() {
+        v.max(lo).min(hi)
+    } else {
+        lo
+    }
+}
+
+impl Default for ClipTransform {
+    fn default() -> Self {
+        Self {
+            crop: CropRect::default(),
+            zoom: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            rotation: 0,
+            flip_h: false,
+            flip_v: false,
+        }
+    }
+}
+
+impl ClipTransform {
+    /// Whether this asks for anything at all. An identity transform emits no filters, so a
+    /// clip nobody reframed goes through exactly the chain it did before there was one.
+    pub fn is_identity(&self) -> bool {
+        self.quarter_turns() == 0
+            && !self.flip_h
+            && !self.flip_v
+            && self.crop.is_full()
+            && self.zoom() <= 1.0
+    }
+
+    fn quarter_turns(&self) -> i32 {
+        match self.rotation.rem_euclid(360) {
+            90 => 1,
+            180 => 2,
+            270 => 3,
+            _ => 0,
+        }
+    }
+
+    fn zoom(&self) -> f32 {
+        clamp(self.zoom, MIN_CLIP_ZOOM, MAX_CLIP_ZOOM)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportClip {
@@ -75,6 +204,11 @@ pub struct ExportClip {
     #[serde(default)]
     pub start_ms: u32,
     pub duration_ms: u32,
+    /// How the clip is framed. Absent is the identity — which is what every spec written
+    /// before there was such a thing carries, and what the editor sends for any clip whose
+    /// framing controls have never been moved.
+    #[serde(default)]
+    pub transform: Option<ClipTransform>,
     #[serde(flatten)]
     pub source: Source,
 }
@@ -166,12 +300,108 @@ impl Progress {
 /// The filter chain that renders one photo: scaled to *cover* the export frame, cropped to
 /// it, and held still for the clip's duration.
 pub fn photo_filter(spec: &ExportSpec) -> String {
+    format!("{},{}", photo_fit(spec), filter_tail(spec))
+}
+
+/// A photo fitted to the frame, and nothing else — the picture every later step works on.
+fn photo_fit(spec: &ExportSpec) -> String {
+    let (w, h) = (spec.width, spec.height);
+    format!("scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}")
+}
+
+/// A video fitted to the frame, and nothing else. Letterboxed, never cropped: what the
+/// camera saw is what goes in the film.
+fn video_fit(spec: &ExportSpec) -> String {
     let (w, h) = (spec.width, spec.height);
     format!(
-        "scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1,\
-         fps={fps},format=yuv420p",
-        fps = spec.fps
+        "scale={w}:{h}:force_original_aspect_ratio=decrease,\
+         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black"
     )
+}
+
+/// What every part ends with, whatever it started as: square pixels, the film's rate, and
+/// the one pixel format the concat demuxer will stitch.
+fn filter_tail(spec: &ExportSpec) -> String {
+    format!("setsar=1,fps={fps},format=yuv420p", fps = spec.fps)
+}
+
+/// The framing a clip asked for, as ffmpeg filters — empty when it asked for nothing.
+///
+/// The five steps, in the order `src/lib/transform.ts` documents and the preview draws:
+///
+/// 1. **rotate** — `transpose` for a quarter turn, a pair of flips for a half one.
+/// 2. **flip** — after the turn, so it mirrors what is on screen rather than what was.
+/// 3. **crop** — a fraction of the turned picture, which is the picture the user saw.
+/// 4. **fit** — back inside the frame without stretching, black where it does not reach.
+///    Needed whenever the shape changed, which a turn always does and a crop usually does.
+/// 5. **zoom and pan** — scale the composed frame and take the frame-sized window the pan
+///    points at, so the number means the same thing whatever is under it.
+pub fn transform_ops(spec: &ExportSpec, t: &ClipTransform) -> Vec<String> {
+    if t.is_identity() {
+        return Vec::new();
+    }
+    let (w, h) = (spec.width, spec.height);
+    let turns = t.quarter_turns();
+    let crop = t.crop.clamped();
+    let mut ops: Vec<String> = Vec::new();
+
+    match turns {
+        1 => ops.push("transpose=1".into()),
+        // A half turn is both mirrors at once, and needs no buffer the size of the other axis.
+        2 => ops.extend(["hflip".to_string(), "vflip".to_string()]),
+        3 => ops.push("transpose=2".into()),
+        _ => {}
+    }
+    if t.flip_h {
+        ops.push("hflip".into());
+    }
+    if t.flip_v {
+        ops.push("vflip".into());
+    }
+    if !crop.is_full() {
+        ops.push(format!(
+            "crop=iw*{cw}:ih*{ch}:iw*{cx}:ih*{cy}",
+            cw = num(crop.width),
+            ch = num(crop.height),
+            cx = num(crop.x),
+            cy = num(crop.y),
+        ));
+    }
+    // A turn or a crop leaves a picture that is no longer the frame's shape or size.
+    if turns != 0 || !crop.is_full() {
+        ops.push(format!(
+            "scale={w}:{h}:force_original_aspect_ratio=decrease,\
+             pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black"
+        ));
+    }
+    let zoom = t.zoom();
+    if zoom > 1.0 {
+        // Even dimensions, or the yuv420p the tail asks for has nowhere to put a half pixel.
+        ops.push(format!(
+            "scale=trunc(iw*{z}/2)*2:trunc(ih*{z}/2)*2",
+            z = num(zoom)
+        ));
+        // The window the pan points at: 0 centres it, -1 and +1 give up one whole side of
+        // the overhang the zoom made.
+        ops.push(format!(
+            "crop={w}:{h}:(iw-{w})*{kx}:(ih-{h})*{ky}",
+            kx = num((1.0 + clamp(t.offset_x, -1.0, 1.0)) / 2.0),
+            ky = num((1.0 + clamp(t.offset_y, -1.0, 1.0)) / 2.0),
+        ));
+    }
+    ops
+}
+
+/// The whole chain one clip is rendered through: fitted to the frame, framed as the user
+/// framed it, and finished in the shape every other part is in.
+pub fn clip_filter(spec: &ExportSpec, clip: &ExportClip) -> String {
+    let mut parts = vec![match &clip.source {
+        Source::Photo { .. } => photo_fit(spec),
+        Source::Video { .. } => video_fit(spec),
+    }];
+    parts.extend(transform_ops(spec, &clip.transform.unwrap_or_default()));
+    parts.push(filter_tail(spec));
+    parts.join(",")
 }
 
 /// ffmpeg's argument parser is locale-independent and wants a plain decimal; make sure
@@ -189,12 +419,7 @@ fn num(v: f32) -> String {
 
 /// The filter chain that fits a video into the export frame without cropping it.
 pub fn video_filter(spec: &ExportSpec) -> String {
-    let (w, h) = (spec.width, spec.height);
-    format!(
-        "scale={w}:{h}:force_original_aspect_ratio=decrease,\
-         pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps={fps},format=yuv420p",
-        fps = spec.fps
-    )
+    format!("{},{}", video_fit(spec), filter_tail(spec))
 }
 
 /// The size of an anchor still handed to Higgsfield. Matches `FRAME_WIDTH`/`FRAME_HEIGHT`
@@ -273,13 +498,12 @@ pub fn normalize_args(
     let mut args: Vec<String> = vec!["-hide_banner".into(), "-nostdin".into(), "-y".into()];
     let duration = num(clip.duration_secs());
 
-    let filter = match &clip.source {
+    match &clip.source {
         Source::Photo { path } => {
             args.extend(["-loop".into(), "1".into()]);
             args.extend(["-framerate".into(), spec.fps.to_string()]);
             args.extend(["-t".into(), duration.clone()]);
             args.extend(["-i".into(), path.display().to_string()]);
-            photo_filter(spec)
         }
         Source::Video {
             path,
@@ -290,9 +514,9 @@ pub fn normalize_args(
             }
             args.extend(["-t".into(), duration.clone()]);
             args.extend(["-i".into(), path.display().to_string()]);
-            video_filter(spec)
         }
-    };
+    }
+    let filter = clip_filter(spec, clip);
 
     // Silent bed. It is always present so the mapping below is uniform.
     args.extend([
@@ -1149,6 +1373,237 @@ mod tests {
         assert!(!num(1.0e-7).contains('e'));
     }
 
+    fn framed(transform: ClipTransform) -> ExportClip {
+        ExportClip {
+            name: "a.jpg".into(),
+            start_ms: 0,
+            duration_ms: 1000,
+            transform: Some(transform),
+            source: Source::Photo {
+                path: "/tmp/a.jpg".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_clip_nobody_reframed_is_rendered_exactly_as_it_always_was() {
+        let plain = ExportClip {
+            transform: None,
+            ..framed(ClipTransform::default())
+        };
+        assert_eq!(clip_filter(&spec(), &plain), photo_filter(&spec()));
+        // An identity transform is the same thing said out loud, and must render the same.
+        assert_eq!(
+            clip_filter(&spec(), &framed(ClipTransform::default())),
+            photo_filter(&spec())
+        );
+        assert!(transform_ops(&spec(), &ClipTransform::default()).is_empty());
+    }
+
+    #[test]
+    fn a_video_carries_its_framing_too() {
+        let clip = ExportClip {
+            name: "surf.mp4".into(),
+            start_ms: 0,
+            duration_ms: 1000,
+            transform: Some(ClipTransform {
+                flip_h: true,
+                ..Default::default()
+            }),
+            source: Source::Video {
+                path: "/tmp/a.mp4".into(),
+                trim_start_ms: 0,
+            },
+        };
+        let f = clip_filter(&spec(), &clip);
+        // The letterbox first, the mirror after it, and the same tail every part ends on.
+        assert!(f.starts_with("scale=640:360:force_original_aspect_ratio=decrease"), "{f}");
+        assert!(f.contains(",hflip,"), "{f}");
+        assert!(f.ends_with("setsar=1,fps=30,format=yuv420p"), "{f}");
+    }
+
+    #[test]
+    fn a_quarter_turn_transposes_and_is_fitted_back_into_the_frame() {
+        let ops = transform_ops(
+            &spec(),
+            &ClipTransform {
+                rotation: 90,
+                ..Default::default()
+            },
+        );
+        assert_eq!(ops[0], "transpose=1");
+        // On its side it is 9:16 in a 16:9 frame, so it has to be refitted onto black.
+        assert!(ops[1].contains("force_original_aspect_ratio=decrease"), "{ops:?}");
+        assert!(ops[1].contains("pad=640:360"), "{ops:?}");
+        assert_eq!(
+            transform_ops(
+                &spec(),
+                &ClipTransform {
+                    rotation: 270,
+                    ..Default::default()
+                }
+            )[0],
+            "transpose=2"
+        );
+    }
+
+    #[test]
+    fn a_half_turn_is_both_mirrors_rather_than_two_transposes() {
+        let ops = transform_ops(
+            &spec(),
+            &ClipTransform {
+                rotation: 180,
+                ..Default::default()
+            },
+        );
+        assert_eq!(ops[0], "hflip");
+        assert_eq!(ops[1], "vflip");
+    }
+
+    #[test]
+    fn a_rotation_that_is_not_a_right_angle_is_no_rotation_at_all() {
+        let t = ClipTransform {
+            rotation: 45,
+            ..Default::default()
+        };
+        assert!(t.is_identity());
+        assert!(transform_ops(&spec(), &t).is_empty());
+    }
+
+    #[test]
+    fn flips_come_after_the_turn_so_they_mirror_what_is_on_screen() {
+        let ops = transform_ops(
+            &spec(),
+            &ClipTransform {
+                rotation: 90,
+                flip_h: true,
+                flip_v: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(ops[0], "transpose=1");
+        assert_eq!(ops[1], "hflip");
+        assert_eq!(ops[2], "vflip");
+    }
+
+    #[test]
+    fn a_crop_is_a_fraction_of_the_framed_picture_and_is_blown_back_up() {
+        let ops = transform_ops(
+            &spec(),
+            &ClipTransform {
+                crop: CropRect {
+                    x: 0.25,
+                    y: 0.1,
+                    width: 0.5,
+                    height: 0.5,
+                },
+                ..Default::default()
+            },
+        );
+        assert_eq!(ops[0], "crop=iw*0.5:ih*0.5:iw*0.25:ih*0.1");
+        assert!(ops[1].contains("pad=640:360"), "{ops:?}");
+    }
+
+    #[test]
+    fn a_crop_off_the_edge_of_the_picture_is_pulled_back_onto_it() {
+        // The spec is JSON off a file a user can edit; a rectangle that hangs off the
+        // picture must become one that does not, never a crop ffmpeg refuses.
+        let ops = transform_ops(
+            &spec(),
+            &ClipTransform {
+                crop: CropRect {
+                    x: 0.9,
+                    y: 0.0,
+                    width: 0.5,
+                    height: 1.0,
+                },
+                ..Default::default()
+            },
+        );
+        assert_eq!(ops[0], "crop=iw*0.5:ih*1:iw*0.5:ih*0");
+    }
+
+    #[test]
+    fn zooming_scales_the_frame_and_takes_the_window_the_pan_points_at() {
+        let ops = transform_ops(
+            &spec(),
+            &ClipTransform {
+                zoom: 2.0,
+                offset_x: 1.0,
+                offset_y: -1.0,
+                ..Default::default()
+            },
+        );
+        // Even dimensions, or yuv420p has nowhere to put a half pixel.
+        assert_eq!(ops[0], "scale=trunc(iw*2/2)*2:trunc(ih*2/2)*2");
+        // +1 gives up the whole right-hand overhang, -1 the whole bottom one.
+        assert_eq!(ops[1], "crop=640:360:(iw-640)*1:(ih-360)*0");
+    }
+
+    #[test]
+    fn a_centred_zoom_takes_the_middle() {
+        let ops = transform_ops(
+            &spec(),
+            &ClipTransform {
+                zoom: 1.5,
+                ..Default::default()
+            },
+        );
+        assert_eq!(ops[1], "crop=640:360:(iw-640)*0.5:(ih-360)*0.5");
+    }
+
+    #[test]
+    fn a_zoom_past_the_slider_is_held_to_it() {
+        let ops = transform_ops(
+            &spec(),
+            &ClipTransform {
+                zoom: 99.0,
+                ..Default::default()
+            },
+        );
+        assert!(ops[0].contains(&format!("iw*{}", num(MAX_CLIP_ZOOM))), "{ops:?}");
+    }
+
+    #[test]
+    fn the_whole_chain_runs_rotate_flip_crop_fit_then_zoom() {
+        let f = clip_filter(
+            &spec(),
+            &framed(ClipTransform {
+                crop: CropRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 0.5,
+                    height: 1.0,
+                },
+                zoom: 2.0,
+                offset_x: 0.0,
+                offset_y: 0.0,
+                rotation: 90,
+                flip_h: true,
+                flip_v: false,
+            }),
+        );
+        let steps: Vec<&str> = f.split(',').collect();
+        let at = |needle: &str| {
+            steps
+                .iter()
+                .position(|s| s.starts_with(needle))
+                .unwrap_or_else(|| panic!("{needle} is missing from {f}"))
+        };
+        assert!(at("transpose=1") < at("hflip"), "{f}");
+        assert!(at("hflip") < at("crop=iw*"), "{f}");
+        assert!(at("crop=iw*") < at("pad=640:360"), "{f}");
+        assert!(at("pad=640:360") < at("scale=trunc"), "{f}");
+        // The last `crop=640:360` is the zoom's window; the first is the photo's own cover
+        // crop, which is why this one is looked for from the end.
+        let window = steps
+            .iter()
+            .rposition(|s| s.starts_with("crop=640:360"))
+            .expect("the zoom takes a frame-sized window");
+        assert!(at("scale=trunc") < window, "{f}");
+        assert!(window < at("setsar=1"), "{f}");
+    }
+
     #[test]
     fn videos_are_letterboxed_never_cropped() {
         let f = video_filter(&spec());
@@ -1162,6 +1617,7 @@ mod tests {
             name: "sunset.jpg".into(),
             start_ms: 0,
             duration_ms: 2500,
+            transform: None,
             source: Source::Photo {
                 path: "/tmp/a.jpg".into(),
             },
@@ -1188,6 +1644,7 @@ mod tests {
             name: "surf.mp4".into(),
             start_ms: 0,
             duration_ms: 4000,
+            transform: None,
             source: Source::Video {
                 path: "/tmp/a.mp4".into(),
                 trim_start_ms: 1500,
@@ -1213,6 +1670,7 @@ mod tests {
             name: "a".into(),
             start_ms: 0,
             duration_ms: 1000,
+            transform: None,
             source: Source::Photo {
                 path: "/tmp/a.jpg".into(),
             },
@@ -1221,6 +1679,7 @@ mod tests {
             name: "b".into(),
             start_ms: 1000,
             duration_ms: 1000,
+            transform: None,
             source: Source::Video {
                 path: "/tmp/b.mp4".into(),
                 trim_start_ms: 0,
@@ -1248,6 +1707,7 @@ mod tests {
             name: format!("photo-{start_ms}.jpg"),
             start_ms,
             duration_ms,
+            transform: None,
             source: Source::Photo {
                 path: "/tmp/a.jpg".into(),
             },
@@ -1439,6 +1899,7 @@ mod tests {
             name: "a".into(),
             start_ms: 0,
             duration_ms: 1000,
+            transform: None,
             source: Source::Photo {
                 path: "/tmp/a.jpg".into(),
             },
@@ -1505,6 +1966,65 @@ mod wire_format {
         assert_eq!(spec.audio[0].start_ms, 1500);
         assert_eq!(spec.audio[0].trim_start_ms, 250);
         assert_eq!(spec.audio[0].volume, 0.8);
+    }
+
+    /// The framing the editor sends, field for field. `ClipTransform` is camelCase on the
+    /// wire and snake_case here, which is exactly the kind of drift a runtime
+    /// deserialisation error explains badly.
+    #[test]
+    fn deserialises_the_framing_the_editor_sends() {
+        let json = r#"{
+            "width": 640, "height": 360, "fps": 30,
+            "clips": [
+                {
+                    "name": "a.jpg", "durationMs": 1000, "kind": "photo", "path": "/tmp/a.jpg",
+                    "transform": {
+                        "crop": {"x": 0.1, "y": 0.2, "width": 0.5, "height": 0.6},
+                        "zoom": 2, "offsetX": -1, "offsetY": 0.5,
+                        "rotation": 270, "flipH": true, "flipV": false
+                    }
+                }
+            ]
+        }"#;
+        let spec: ExportSpec = serde_json::from_str(json).expect("the editor's json parses");
+        let t = spec.clips[0].transform.expect("the clip is framed");
+        assert_eq!(t.crop.x, 0.1);
+        assert_eq!(t.crop.width, 0.5);
+        assert_eq!(t.zoom, 2.0);
+        assert_eq!(t.offset_x, -1.0);
+        assert_eq!(t.offset_y, 0.5);
+        assert_eq!(t.rotation, 270);
+        assert!(t.flip_h);
+        assert!(!t.flip_v);
+        assert!(!t.is_identity());
+    }
+
+    /// A clip with no `transform` — every clip from before there was one — is unframed.
+    #[test]
+    fn a_clip_without_a_transform_still_parses() {
+        let json = r#"{
+            "width": 640, "height": 360, "fps": 30,
+            "clips": [{"name": "a.jpg", "durationMs": 1000, "kind": "photo", "path": "/tmp/a.jpg"}]
+        }"#;
+        let spec: ExportSpec = serde_json::from_str(json).expect("parses");
+        assert!(spec.clips[0].transform.is_none());
+    }
+
+    /// And a half-written one — the file is hand-editable — fills its own gaps.
+    #[test]
+    fn a_half_written_transform_defaults_the_rest() {
+        let json = r#"{
+            "width": 640, "height": 360, "fps": 30,
+            "clips": [{
+                "name": "a.jpg", "durationMs": 1000, "kind": "photo", "path": "/tmp/a.jpg",
+                "transform": {"flipV": true}
+            }]
+        }"#;
+        let spec: ExportSpec = serde_json::from_str(json).expect("parses");
+        let t = spec.clips[0].transform.expect("the clip is framed");
+        assert!(t.flip_v);
+        assert_eq!(t.zoom, 1.0, "an absent zoom is 1, never 0");
+        assert!(t.crop.is_full());
     }
 
     /// A spec with no `audio` key — from before the lanes existed — still parses.

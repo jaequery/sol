@@ -19,9 +19,12 @@ import {
   DEFAULT_TRANSITION_MODE,
   DEFAULT_TRANSITION_PROMPT,
   DEFAULT_VIDEO_DURATION_MS,
+  IDENTITY_TRANSFORM,
   type AudioTrack,
   type Clip,
   type ClipEdge,
+  type ClipTransform,
+  type CropRect,
   type Generation,
   type GenerationTarget,
   type MediaAsset,
@@ -49,6 +52,16 @@ import {
   setFilmPrompt,
   type Film,
 } from '../lib/film';
+import {
+  clipTransform,
+  isIdentityTransform,
+  normalizeTransform,
+  withCrop,
+  withFlip,
+  withPan,
+  withRotation,
+  withZoom,
+} from '../lib/transform';
 import {
   hydrate,
   markMissing,
@@ -301,6 +314,14 @@ export interface EditorState {
   pxPerSecond: number;
   /** The snapping aid on the track: drags still land anywhere, they just like edges. */
   snapping: boolean;
+  /**
+   * The clip whose crop rectangle is being dragged over the preview, if any.
+   *
+   * Session state, never the document: a crop tool left open is not something a project
+   * should reopen into. It closes itself whenever the selection moves — the rectangle is
+   * drawn over one clip's picture, so it cannot outlive that clip being the one selected.
+   */
+  croppingClipId: string | null;
 
   generations: Record<string, Generation>;
   /**
@@ -448,6 +469,16 @@ export interface EditorState {
   setClipDuration: (clipId: string, durationMs: number) => number | null;
   toggleSnapping: () => void;
 
+  // ---- framing
+  rotateClip: (clipId: string, quarterTurns: number) => void;
+  flipClip: (clipId: string, axis: 'h' | 'v') => void;
+  setClipZoom: (clipId: string, zoom: number) => void;
+  setClipPan: (clipId: string, offsetX: number, offsetY: number) => void;
+  setClipCrop: (clipId: string, crop: CropRect) => void;
+  resetClipTransform: (clipId: string) => void;
+  beginCrop: (clipId: string) => void;
+  endCrop: () => void;
+
   // ---- playback
   setPlayhead: (ms: number) => void;
   togglePlay: () => void;
@@ -551,6 +582,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   playing: false,
   pxPerSecond: DEFAULT_PX_PER_SECOND,
   snapping: true,
+  croppingClipId: null,
 
   generations: {},
   modelId: backend.DEFAULT_MODEL_ID,
@@ -817,7 +849,16 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   // ------------------------------------------------------------------ editing
 
-  select: (selection) => set({ selection }),
+  // Closing the crop tool here rather than in every caller: the rectangle is drawn over one
+  // clip, so a selection that moves anywhere else has already left it behind.
+  select: (selection) =>
+    set((s) => ({
+      selection,
+      croppingClipId:
+        selection.kind === 'clip' && selection.clipId === s.croppingClipId
+          ? s.croppingClipId
+          : null,
+    })),
 
   deleteSelection() {
     const { selection, clips, audioTracks, generations, cutPrompts, cutModes } = get();
@@ -826,6 +867,7 @@ export const useEditor = create<EditorState>((set, get) => ({
       set({
         clips: nextClips,
         selection: { kind: 'none' },
+        croppingClipId: null,
         ...prunedAfterEdit(nextClips, generations, cutPrompts, cutModes),
       });
       return;
@@ -924,6 +966,56 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   toggleSnapping: () => set((s) => ({ snapping: !s.snapping })),
+
+  // ------------------------------------------------------------------ framing
+
+  /**
+   * Every framing action in one place: read the clip's transform, hand it to the pure
+   * function that changes it, and write the result back — or drop the field entirely when
+   * what comes back is the identity, so a clip the user has reframed and then reset is
+   * indistinguishable on disk from one they never touched.
+   */
+  rotateClip(clipId, quarterTurns) {
+    reframe(set, get, clipId, (t) => withRotation(t, quarterTurns));
+  },
+
+  flipClip(clipId, axis) {
+    reframe(set, get, clipId, (t) => withFlip(t, axis));
+  },
+
+  setClipZoom(clipId, zoom) {
+    reframe(set, get, clipId, (t) => withZoom(t, zoom));
+  },
+
+  setClipPan(clipId, offsetX, offsetY) {
+    reframe(set, get, clipId, (t) => withPan(t, offsetX, offsetY));
+  },
+
+  setClipCrop(clipId, crop) {
+    reframe(set, get, clipId, (t) => withCrop(t, crop));
+  },
+
+  resetClipTransform(clipId) {
+    reframe(set, get, clipId, () => IDENTITY_TRANSFORM);
+  },
+
+  /**
+   * Open the crop tool on a clip.
+   *
+   * The playhead is cued into the clip when it is not already there, because the rectangle
+   * is dragged over the preview and the preview shows whatever is under the playhead — a
+   * crop tool open on a picture that is not on screen would be a rectangle over somebody
+   * else's frame.
+   */
+  beginCrop(clipId) {
+    const clip = get().clips.find((c) => c.id === clipId);
+    if (!clip) return;
+    const inside = get().playheadMs >= clip.startMs && get().playheadMs < clip.startMs + clip.durationMs;
+    set({ croppingClipId: clipId, selection: { kind: 'clip', clipId }, playing: false });
+    if (!inside) get().setPlayhead(clip.startMs);
+  },
+
+  endCrop: () => set({ croppingClipId: null }),
 
   // ------------------------------------------------------------------ playback
 
@@ -2157,6 +2249,7 @@ function emptyDocument(): ProjectDocument {
 function freshSession(): Partial<EditorState> {
   return {
     selection: { kind: 'none' },
+    croppingClipId: null,
     playheadMs: 0,
     playing: false,
     // Blanked here and refilled from the document by `installDocument`. Keeping the reset
@@ -3367,6 +3460,30 @@ function message(error: unknown): string {
   return typeof error === 'string' ? error : JSON.stringify(error);
 }
 
+
+/**
+ * Write a new framing onto one clip.
+ *
+ * The identity is stored as *no transform at all* rather than as a record full of defaults.
+ * That is what keeps a reset honest on disk — and it is what keeps the document snapshot
+ * from calling a project dirty because a clip gained an object that says nothing.
+ */
+function reframe(
+  set: (partial: Partial<EditorState>) => void,
+  get: () => EditorState,
+  clipId: string,
+  change: (t: ClipTransform) => ClipTransform,
+) {
+  const clips = get().clips;
+  const clip = clips.find((c) => c.id === clipId);
+  if (!clip) return;
+  const next = normalizeTransform(change(clipTransform(clip)));
+  const reframed: Clip = { ...clip };
+  if (isIdentityTransform(next)) delete reframed.transform;
+  else reframed.transform = next;
+  set({ clips: clips.map((c) => (c.id === clipId ? reframed : c)) });
+}
+
 /** Shape expected by `solcut_render::ExportSpec`. */
 export function buildExportSpec(
   clips: Clip[],
@@ -3389,7 +3506,16 @@ export function buildExportSpec(
       })),
     clips: sortClips(clips).map((clip) => {
       const asset = assets[clip.assetId];
-      const common = { name: clip.name, startMs: clip.startMs, durationMs: clip.durationMs };
+      const common = {
+        name: clip.name,
+        startMs: clip.startMs,
+        durationMs: clip.durationMs,
+        // Sent only when it asks for something: the exporter defaults an absent transform
+        // to the identity, and a spec full of no-ops is a spec nobody can read.
+        ...(clip.transform && !isIdentityTransform(clip.transform)
+          ? { transform: clip.transform }
+          : {}),
+      };
       if (clip.kind === 'photo') {
         return { ...common, kind: 'photo', path: asset?.path ?? '' };
       }

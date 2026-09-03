@@ -34,6 +34,7 @@ import {
   MIN_PX_PER_SECOND,
   type AudioTrack,
   type Clip,
+  type ClipTransform,
   type Generation,
   type GenerationError,
   type GenerationTarget,
@@ -42,6 +43,7 @@ import {
   type TransitionMode,
   type TransitionSource,
 } from '../types/project';
+import { isIdentityTransform, normalizeTransform } from './transform';
 
 /**
  * What a restored generation says about itself.
@@ -405,6 +407,15 @@ function readClip(raw: unknown): Clip | null {
     durationMs: Math.max(MIN_CLIP_DURATION_MS, durationMs),
     trimStartMs: Math.max(0, trimStartMs),
   };
+
+  // Normalised rather than trusted, and dropped when it turns out to say nothing: the file
+  // is hand-editable, so a crop of negative width or a rotation of 45° must come back as a
+  // clip that is simply not reframed — never as a refused project, and never as a rectangle
+  // the renderers would each guess differently about.
+  if (isRecord(raw.transform)) {
+    const transform = normalizeTransform(raw.transform as Partial<ClipTransform>);
+    if (!isIdentityTransform(transform)) clip.transform = transform;
+  }
 
   const ai = readAi(raw.ai);
   if (ai) clip.ai = ai;
