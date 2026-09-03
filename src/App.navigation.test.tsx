@@ -16,6 +16,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
 import { useEditor } from './state/store';
+import { ASPECT_RATIOS } from './lib/aspect';
 import { MAX_PHOTO_DURATION_MS } from './types/project';
 import { resetEditor } from './test/harness';
 import * as backend from './lib/backend';
@@ -673,6 +674,43 @@ describe('the create sheet', () => {
 });
 
 // ----------------------------------------------------------------------------- transport
+
+describe('the frame’s shape', () => {
+  it('is a live control in the preview’s panel head, offering every ratio', async () => {
+    const user = userEvent.setup();
+    await mount();
+    // The frame only draws itself once there is something in it; empty, the stage shows
+    // the drop prompt instead.
+    await dropPhotoPair();
+
+    const picker = screen.getByLabelText('Frame aspect ratio');
+    expect(picker).toHaveValue('16:9');
+    expect(within(picker).getAllByRole('option')).toHaveLength(ASPECT_RATIOS.length);
+
+    await user.selectOptions(picker, '9:16');
+    expect(useEditor.getState().aspectRatio).toBe('9:16');
+    expect(screen.getByTestId('preview-canvas')).toHaveAttribute('data-aspect', '9:16');
+  });
+
+  /**
+   * Two controls named "Aspect ratio" could be on screen at once — the create sheet floats
+   * over this very panel — and one of them shapes the project while the other shapes a
+   * photo being generated. They are named apart so neither answers to the other's name.
+   */
+  it('does not answer to the create sheet’s aspect control’s name', async () => {
+    const user = userEvent.setup();
+    await mount();
+    await user.click(screen.getByRole('button', { name: 'Generate a photo or video' }));
+    await user.click(screen.getByRole('button', { name: /options/i }));
+
+    expect(screen.getByLabelText('Aspect ratio')).toBe(
+      document.getElementById('create-image-aspect'),
+    );
+    expect(screen.getByLabelText('Frame aspect ratio')).toBe(
+      document.getElementById('frame-aspect'),
+    );
+  });
+});
 
 describe('transport', () => {
   it('⏮ and ⏭ move the playhead to each end of the whole timeline', async () => {

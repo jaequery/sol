@@ -19,6 +19,7 @@ import { App } from './App';
 import { useEditor } from './state/store';
 import { resetEditor } from './test/harness';
 import * as backend from './lib/backend';
+import { DEFAULT_ASPECT_RATIO } from './lib/aspect';
 import { PROJECT_VERSION, type ProjectFile } from './lib/project';
 import type { GenerateInput, GenerationUpdate } from './lib/backend';
 
@@ -88,6 +89,7 @@ const SOUND_PATH = '/media/score.mp3';
 function storedProject(over: Partial<ProjectFile> = {}): ProjectFile {
   return {
     version: PROJECT_VERSION,
+    aspectRatio: DEFAULT_ASPECT_RATIO,
     assets: [
       { id: 'asset_p', name: 'cliff.png', kind: 'photo', path: PHOTO_PATH, sizeBytes: 2048 },
       { id: 'asset_s', name: 'score.mp3', kind: 'audio', path: SOUND_PATH, sizeBytes: 4096, durationMs: 30_000 },

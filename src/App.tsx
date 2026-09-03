@@ -5,7 +5,7 @@ import { ExportDialog } from './components/ExportDialog';
 import { FilmWizard } from './components/FilmWizard';
 import { Inspector } from './components/Inspector';
 import { MediaBin } from './components/MediaBin';
-import { Preview } from './components/Preview';
+import { AspectRatioPicker, Preview } from './components/Preview';
 import { SettingsDialog } from './components/SettingsDialog';
 import { SwitchProjectDialog } from './components/SwitchProjectDialog';
 import { Timeline } from './components/Timeline';
@@ -44,6 +44,11 @@ export function App() {
         <div className="col col--stage">
           <div className="panel-head">
             <span className="panel-head__title">Preview</span>
+            {/* The frame's shape sits over the frame it reshapes: this is the one control
+                whose whole effect is visible in the panel directly below it. */}
+            <div className="panel-head__actions">
+              <AspectRatioPicker />
+            </div>
           </div>
           <Preview />
           <Transport />
@@ -228,6 +233,9 @@ function useProjectPersistence() {
           state.audioTracks === prev.audioTracks &&
           state.cutPrompts === prev.cutPrompts &&
           state.cutModes === prev.cutModes &&
+          // The frame's shape is document, not view: it decides what the export writes, so
+          // it is written on sight like a clip rather than riding along with the next save.
+          state.aspectRatio === prev.aspectRatio &&
           // A render starting or ending changes what is worth recording. Compared by
           // reference first so the common case costs nothing: `applyGenerationUpdate`
           // replaces this object on every poll to move a progress bar, and none of that

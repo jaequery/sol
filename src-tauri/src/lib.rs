@@ -547,18 +547,39 @@ async fn ffmpeg_available() -> bool {
 /// footage that ends up beside it agree on rotation and pixel aspect. That makes ffmpeg a
 /// requirement for transitions *involving video* — photo-to-photo transitions still need
 /// nothing but the CLI.
+///
+/// `width`/`height` are the project's frame scaled down — the editor sends them so the two
+/// ends of one motion are the same shape as each other and as the frame the result will be
+/// shown in. Omitted, the still is the 16:9 [`solcut_render::STILL_WIDTH`] default, which
+/// is what every caller asked for before the frame could be reshaped.
 #[tauri::command]
-async fn capture_video_frame(path: String, at_ms: u32) -> Result<String, String> {
+async fn capture_video_frame(
+    path: String,
+    at_ms: u32,
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Result<String, String> {
     let bytes = Renderer::default()
         .capture_frame(
             std::path::Path::new(&path),
             at_ms,
-            solcut_render::STILL_WIDTH,
-            solcut_render::STILL_HEIGHT,
+            still_edge(width, solcut_render::STILL_WIDTH),
+            still_edge(height, solcut_render::STILL_HEIGHT),
         )
         .await
         .map_err(|e| e.to_string())?;
     Ok(solcut_higgsfield::jpeg_data_url(&bytes))
+}
+
+/// One edge of a requested still: the caller's, when it is a size ffmpeg can actually
+/// scale to, and the default otherwise. Zero is the case that matters — `scale=0:720`
+/// means "keep the source's own width" to ffmpeg, so waving it through would hand back a
+/// still of some entirely unrelated shape rather than failing.
+fn still_edge(asked: Option<u32>, fallback: u32) -> u32 {
+    match asked {
+        Some(px) if px > 0 => px,
+        _ => fallback,
+    }
 }
 
 #[tauri::command]
@@ -1107,6 +1128,24 @@ mod tests {
         let error = GenerationError::from(&HiggsfieldError::NotInstalled);
         let json = serde_json::to_value(&error).expect("serialize");
         assert_eq!(json["build"], BUILD);
+    }
+
+    /// The frame is the project's now, so a still has to be able to take a size — and has
+    /// to refuse the one size that would silently produce the wrong shape.
+    #[test]
+    fn a_still_takes_the_projects_frame_and_refuses_a_zero_edge() {
+        assert_eq!(still_edge(Some(1080), solcut_render::STILL_WIDTH), 1080);
+        assert_eq!(still_edge(Some(1280), solcut_render::STILL_HEIGHT), 1280);
+        // No size asked for: the 16:9 still every caller got before the frame could move.
+        assert_eq!(
+            still_edge(None, solcut_render::STILL_WIDTH),
+            solcut_render::STILL_WIDTH
+        );
+        // `scale=0:720` means "keep the source's width" to ffmpeg, which is not a frame.
+        assert_eq!(
+            still_edge(Some(0), solcut_render::STILL_HEIGHT),
+            solcut_render::STILL_HEIGHT
+        );
     }
 
     #[test]

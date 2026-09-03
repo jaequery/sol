@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_ASPECT_RATIO } from './aspect';
 import {
   hydrate,
   INTERRUPTED,
@@ -15,6 +16,7 @@ import {
   readProjectFile,
   toProjectFile,
   type ProjectDocument,
+  type ProjectFile,
 } from './project';
 import { MAX_PX_PER_SECOND, type AudioTrack, type Clip, type Generation, type MediaAsset } from '../types/project';
 
@@ -55,7 +57,15 @@ function lane(over: Partial<AudioTrack> & { id: string; assetId: string }): Audi
 }
 
 function documentOf(over: Partial<ProjectDocument> = {}): ProjectDocument {
-  return { assets: {}, clips: [], audioTracks: [], cutPrompts: {}, cutModes: {}, ...over };
+  return {
+    assets: {},
+    clips: [],
+    audioTracks: [],
+    cutPrompts: {},
+    cutModes: {},
+    aspectRatio: DEFAULT_ASPECT_RATIO,
+    ...over,
+  };
 }
 
 /** The real path: through `JSON`, exactly as the file on disk does it. */
@@ -164,6 +174,45 @@ describe('where the user was looking', () => {
     const read = readProjectFile({ ...toProjectFile(doc), view: { snapping: false } });
     if (read.kind !== 'project') throw new Error('expected a project');
     expect(read.file.view).toBeUndefined();
+  });
+});
+
+describe('the shape of the frame', () => {
+  const doc = documentOf();
+
+  it('round-trips, so a project reopens at the ratio it was drawn at', () => {
+    const read = throughDisk({ ...doc, aspectRatio: '9:16' });
+    if (read.kind !== 'project') throw new Error('expected a project');
+    expect(read.file.aspectRatio).toBe('9:16');
+    expect(hydrate(read.file, { resolveSrc }).aspectRatio).toBe('9:16');
+  });
+
+  /**
+   * The one field here that is *defaulted* rather than refused. Every project written
+   * before the frame could be reshaped is missing it and is a perfectly good 16:9 project;
+   * refusing the file over its shape would throw away a whole timeline.
+   */
+  it('reads a project written before the setting existed as 16:9, and still reads the timeline', () => {
+    const withMedia = documentOf({
+      assets: { asset_p: asset({ id: 'asset_p' }) },
+      clips: [clip({ id: 'clip_1', assetId: 'asset_p' })],
+    });
+    // Exactly what an older build's bytes look like: the field is not there at all.
+    const stored = { ...toProjectFile(withMedia) } as Partial<ProjectFile>;
+    delete stored.aspectRatio;
+
+    const read = readProjectFile(stored);
+    if (read.kind !== 'project') throw new Error('expected a project');
+    expect(read.file.aspectRatio).toBe(DEFAULT_ASPECT_RATIO);
+    expect(read.file.clips).toHaveLength(1);
+  });
+
+  it('falls back on a shape a hand-edited file invented, rather than refusing the file', () => {
+    for (const invented of ['7:3', '', 42, null, {}]) {
+      const read = readProjectFile({ ...toProjectFile(doc), aspectRatio: invented });
+      if (read.kind !== 'project') throw new Error(`expected a project for ${String(invented)}`);
+      expect(read.file.aspectRatio).toBe(DEFAULT_ASPECT_RATIO);
+    }
   });
 });
 
