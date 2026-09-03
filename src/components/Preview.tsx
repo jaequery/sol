@@ -1,6 +1,13 @@
-import { useCallback, useEffect, type CSSProperties } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import { useEditor } from '../state/store';
-import { ASPECT_RATIOS, aspectRatio } from '../lib/aspect';
+import { ASPECT_RATIOS, aspectRatio, aspectValue } from '../lib/aspect';
 import { clipAt } from '../lib/timeline';
 import {
   eachMedia,
@@ -9,7 +16,15 @@ import {
   videoKey,
   videoPoolAt,
 } from '../lib/preview-sync';
-import type { Clip } from '../types/project';
+import {
+  clipTransform,
+  croppingTransform,
+  dragCrop,
+  previewGeometry,
+  type CropHandle,
+  type PreviewGeometry,
+} from '../lib/transform';
+import type { Clip, CropRect } from '../types/project';
 import { Icon } from './Icon';
 
 /**
@@ -23,12 +38,18 @@ import { Icon } from './Icon';
  * video clip on the track stays mounted invisibly, primed to its in-point, so crossing a
  * cut into it needs no load and no seek. A gap between two clips is black here, exactly
  * as the exporter renders it.
+ *
+ * On top of that framing sits the clip's own: the crop, quarter turn, flips and zoom it
+ * carries. `lib/transform` works out where the four layers below go — from the project's
+ * frame shape and the same numbers the exporter builds its filter chain out of — so what
+ * is on screen is what is written, at whatever shape the frame happens to be.
  */
 export function Preview() {
   const clips = useEditor((s) => s.clips);
   const assets = useEditor((s) => s.assets);
   const playheadMs = useEditor((s) => s.playheadMs);
   const frame = useEditor((s) => s.aspectRatio);
+  const croppingClipId = useEditor((s) => s.croppingClipId);
 
   const syncNow = usePreviewSync();
 
@@ -54,22 +75,26 @@ export function Preview() {
     const a = assets[c.assetId];
     return a && !a.missing && a.src ? [{ clip: c, src: a.src }] : [];
   });
+  const cropping = Boolean(clip && croppingClipId === clip.id && !missing);
 
   return (
     <div className="stage" style={frameStyle(frame)}>
       <div className="canvas" data-testid="preview-canvas" data-aspect={frame}>
         {pool.map(({ clip: c, src }) => (
-          <PreviewVideo
-            key={c.id}
-            clip={c}
-            src={src}
-            active={c.id === clip?.id && !missing}
-            onMount={syncNow}
-          />
+          <Framed key={c.id} geo={framingOf(c, croppingClipId, frame)}>
+            <PreviewVideo
+              clip={c}
+              src={src}
+              active={c.id === clip?.id && !missing}
+              onMount={syncNow}
+            />
+          </Framed>
         ))}
 
         {clip?.kind === 'photo' && asset?.src && !asset.missing && (
-          <img src={asset.src} alt={clip.name} draggable={false} />
+          <Framed geo={framingOf(clip, croppingClipId, frame)}>
+            <img src={asset.src} alt={clip.name} draggable={false} />
+          </Framed>
         )}
 
         {!clip && (
@@ -85,6 +110,8 @@ export function Preview() {
           </div>
         )}
 
+        {cropping && clip && <CropOverlay clip={clip} frame={frame} />}
+
         {/* No timecode here: the transport directly below is the timecode, and a second
             copy of the same number on the frame was the one thing the frame did not need. */}
         {clip?.ai && (
@@ -98,12 +125,45 @@ export function Preview() {
 }
 
 /**
+ * The geometry one clip is drawn with — its own, or the crop tool's view of it.
+ *
+ * While the rectangle is being dragged the crop and the zoom stand down, so the user can
+ * reach the part of the picture they are cropping *to* rather than only the part they
+ * already cropped *from*.
+ */
+function framingOf(clip: Clip, croppingClipId: string | null, frame: string): PreviewGeometry {
+  const t = clipTransform(clip);
+  return previewGeometry(croppingClipId === clip.id ? croppingTransform(t) : t, aspectValue(frame));
+}
+
+/**
+ * The four layers a transformed clip is drawn through, outermost first — zoom, fit, rot,
+ * pic. What each one is for is documented on `PreviewGeometry`; all this does is put the
+ * numbers on the DOM, so there is one place the picture can disagree with the export and
+ * it is `lib/transform`.
+ */
+function Framed({ geo, children }: { geo: PreviewGeometry; children: ReactNode }) {
+  return (
+    <div className="canvas__zoom" style={geo.zoom}>
+      <div className="canvas__fit" style={geo.fit}>
+        <div className="canvas__rot" style={geo.rot}>
+          <div className="canvas__pic" style={geo.pic}>
+            {children}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * One mounted preview video — the active clip's, or the next clip's, primed and hidden.
  *
  * Every preview `<video>` renders in this one keyed array, visibility toggled by style
  * only. That is a hard constraint, not a styling choice: a keyed element that changes its
  * JSX position remounts cold, and the boundary handoff this exists for — the primed
  * element *becoming* the visible one — only works while React can carry the DOM node over.
+ * The wrapper around it is keyed on the same clip for the same reason.
  */
 function PreviewVideo({
   clip,
@@ -144,6 +204,96 @@ function PreviewVideo({
       playsInline
       preload="auto"
     />
+  );
+}
+
+const CORNERS: CropHandle[] = ['nw', 'ne', 'sw', 'se'];
+
+/**
+ * The crop rectangle, drawn over the picture it crops.
+ *
+ * It is laid out against the same box the picture is fitted into, so the rectangle's
+ * fractions are the ones the clip stores and the ones the exporter crops by — there is no
+ * second coordinate system to keep in step. A drag is measured against that box's real
+ * width on screen and handed to `dragCrop`, which owns every rule about where a corner may
+ * end up; a box with no width yet (a frame that has not been laid out) simply does not
+ * move, rather than dividing by zero.
+ */
+function CropOverlay({ clip, frame }: { clip: Clip; frame: string }) {
+  const setClipCrop = useEditor((s) => s.setClipCrop);
+  const endCrop = useEditor((s) => s.endCrop);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [drag, setDrag] = useState<{ handle: CropHandle; x: number; y: number; from: CropRect } | null>(
+    null,
+  );
+
+  const crop = clipTransform(clip).crop;
+  // The same box the picture is fitted into while the tool is open, so the rectangle's
+  // fractions are the ones the clip stores — whatever shape the project's frame is.
+  const fit = previewGeometry(croppingTransform(clipTransform(clip)), aspectValue(frame)).fit;
+
+  useEffect(() => {
+    if (!drag) return;
+    // On the window rather than the handle: a corner dragged past the edge of the picture
+    // must keep tracking the pointer, so it parks at the edge instead of letting go there.
+    const onMove = (e: PointerEvent) => {
+      const box = boxRef.current?.getBoundingClientRect();
+      if (!box || box.width === 0 || box.height === 0) return;
+      setClipCrop(
+        clip.id,
+        dragCrop(drag.from, drag.handle, (e.clientX - drag.x) / box.width, (e.clientY - drag.y) / box.height),
+      );
+    };
+    const stop = () => setDrag(null);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+    };
+  }, [drag, clip.id, setClipCrop]);
+
+  const begin = (e: React.PointerEvent, handle: CropHandle) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDrag({ handle, x: e.clientX, y: e.clientY, from: crop });
+  };
+
+  return (
+    <div className="crop" data-testid="crop-overlay">
+      <div className="crop__box" style={fit} ref={boxRef}>
+        <div
+          className="crop__rect"
+          data-testid="crop-rect"
+          style={{
+            left: `${crop.x * 100}%`,
+            top: `${crop.y * 100}%`,
+            width: `${crop.width * 100}%`,
+            height: `${crop.height * 100}%`,
+          }}
+          onPointerDown={(e) => begin(e, 'move')}
+        >
+          {CORNERS.map((corner) => (
+            <span
+              key={corner}
+              className={`crop__handle crop__handle--${corner}`}
+              data-testid={`crop-handle-${corner}`}
+              onPointerDown={(e) => begin(e, corner)}
+            />
+          ))}
+        </div>
+      </div>
+      <div className="crop__bar">
+        <span>Drag the rectangle or its corners</span>
+        <button type="button" onClick={endCrop}>
+          <Icon name="check" size={14} />
+          Done
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -205,7 +355,7 @@ export function AspectRatioPicker() {
 
   return (
     <div className="aspect-pick">
-      <Icon name="crop" size={13} />
+      <Icon name="frame" size={13} />
       {/* "Frame aspect ratio", not "Aspect ratio": the create sheet's own aspect control
           can be on screen at the same time, over this very panel, and two controls with
           one name is how you pick the wrong one. This is the project's frame. */}

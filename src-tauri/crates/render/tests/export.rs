@@ -131,12 +131,14 @@ async fn exports_a_photo_and_a_video_into_one_mp4() {
                 name: "photo.jpg".into(),
                 start_ms: 0,
                 duration_ms: 2000,
+                transform: None,
                 source: Source::Photo { path: photo },
             },
             ExportClip {
                 name: "clip.mp4".into(),
                 start_ms: 2000,
                 duration_ms: 2000,
+                transform: None,
                 source: Source::Video {
                     path: video,
                     trim_start_ms: 500,
@@ -227,6 +229,7 @@ async fn exports_a_lone_still_photo() {
             name: "photo.jpg".into(),
             start_ms: 0,
             duration_ms: 1000,
+            transform: None,
             source: Source::Photo { path: photo },
         }],
         audio: vec![],
@@ -281,6 +284,7 @@ async fn mixes_an_audio_lane_into_the_export_without_stretching_the_film() {
             name: "photo.jpg".into(),
             start_ms: 0,
             duration_ms: 2000,
+            transform: None,
             source: Source::Photo { path: photo },
         }],
         // Starts halfway in, trimmed a little, and would outlast the 2s film if not cut.
@@ -328,6 +332,7 @@ async fn a_missing_source_file_is_named_in_the_error() {
             name: "gone.jpg".into(),
             start_ms: 0,
             duration_ms: 1000,
+            transform: None,
             source: Source::Photo {
                 path: dir.join("nope.jpg"),
             },
@@ -396,6 +401,7 @@ async fn a_gap_between_two_clips_becomes_black_film_of_its_own() {
                 name: "first.jpg".into(),
                 start_ms: 0,
                 duration_ms: 1000,
+                transform: None,
                 source: Source::Photo {
                     path: photo.clone(),
                 },
@@ -404,6 +410,7 @@ async fn a_gap_between_two_clips_becomes_black_film_of_its_own() {
                 name: "second.jpg".into(),
                 start_ms: 2000,
                 duration_ms: 1000,
+                transform: None,
                 source: Source::Photo { path: photo },
             },
         ],
@@ -467,6 +474,7 @@ async fn exports_an_assembled_three_photo_film() {
                 name: "film-1.mp4".into(),
                 start_ms: 0,
                 duration_ms: 5000,
+                transform: None,
                 source: Source::Video {
                     path: first,
                     trim_start_ms: 0,
@@ -476,6 +484,7 @@ async fn exports_an_assembled_three_photo_film() {
                 name: "film-2.mp4".into(),
                 start_ms: 5000,
                 duration_ms: 5000,
+                transform: None,
                 source: Source::Video {
                     path: second,
                     trim_start_ms: 0,

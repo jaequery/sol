@@ -139,6 +139,78 @@ describe('a project through disk and back', () => {
   });
 });
 
+describe('how a clip is framed', () => {
+  const photo = asset({ id: 'asset_p' });
+  const framed: Clip = clip({
+    id: 'clip_1',
+    assetId: 'asset_p',
+    transform: {
+      crop: { x: 0.1, y: 0.2, width: 0.5, height: 0.6 },
+      zoom: 2.5,
+      offsetX: -0.5,
+      offsetY: 1,
+      rotation: 270,
+      flipH: true,
+      flipV: false,
+    },
+  });
+
+  it('comes back exactly as it was set', () => {
+    const read = throughDisk(
+      documentOf({ assets: { asset_p: photo }, clips: [framed] }),
+    );
+    if (read.kind !== 'project') throw new Error('expected a project');
+    expect(hydrate(read.file, { resolveSrc }).clips[0]).toEqual(framed);
+  });
+
+  /** A clip nobody reframed carries no `transform` key at all — not one full of defaults. */
+  it('writes nothing for a clip that was never reframed', () => {
+    const plain = clip({ id: 'clip_1', assetId: 'asset_p' });
+    const raw = JSON.stringify(
+      toProjectFile(documentOf({ assets: { asset_p: photo }, clips: [plain] })),
+    );
+    expect(raw).not.toContain('transform');
+  });
+
+  it('reads a hand-edited nonsense framing as a clip that is simply not reframed', () => {
+    const result = readProjectFile({
+      version: PROJECT_VERSION,
+      assets: [{ id: 'asset_p', name: 'a.png', kind: 'photo', path: '/a.png', sizeBytes: 1 }],
+      clips: [
+        { ...clip({ id: 'clip_1', assetId: 'asset_p' }), transform: 'sideways' },
+        {
+          ...clip({ id: 'clip_2', assetId: 'asset_p' }),
+          transform: { crop: { x: -3, y: 0, width: 0, height: 9 }, zoom: 1, rotation: 45 },
+        },
+      ],
+    });
+    if (result.kind !== 'project') throw new Error('expected a project, not a refusal');
+    expect(result.file.clips[0].transform).toBeUndefined();
+    // The rotation was refused outright; the crop was pulled back onto the picture, which
+    // leaves a rectangle that is real — so this clip *is* framed, just not as asked.
+    expect(result.file.clips[1].transform).toEqual({
+      crop: { x: 0, y: 0, width: 0.05, height: 1 },
+      zoom: 1,
+      offsetX: 0,
+      offsetY: 0,
+      rotation: 0,
+      flipH: false,
+      flipV: false,
+    });
+  });
+
+  /** A framing that survives normalisation as the identity is dropped, not stored empty. */
+  it('drops a stored framing that turns out to say nothing', () => {
+    const result = readProjectFile({
+      version: PROJECT_VERSION,
+      assets: [{ id: 'asset_p', name: 'a.png', kind: 'photo', path: '/a.png', sizeBytes: 1 }],
+      clips: [{ ...clip({ id: 'clip_1', assetId: 'asset_p' }), transform: { zoom: 0.2 } }],
+    });
+    if (result.kind !== 'project') throw new Error('expected a project');
+    expect(result.file.clips[0].transform).toBeUndefined();
+  });
+});
+
 describe('where the user was looking', () => {
   const doc = documentOf();
 

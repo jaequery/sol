@@ -325,7 +325,7 @@ const COARSE_STEP_MS = 1000;
  *   (Shift for a second at a time); S splits at the playhead.
  * - Delete and Backspace remove the selection — from anywhere that is not a text field,
  *   so a clip reached by Tab can be deleted without first clicking away from it.
- * - Escape closes the innermost layer.
+ * - Escape closes the innermost layer, the crop tool included.
  *
  * Space and the arrows stand back from any control that answers to them itself: a
  * focused button is activated by Space, and a focused clip nudges itself with the arrows.
@@ -356,6 +356,11 @@ function useKeyboardShortcuts() {
         // The compose panel keeps its draft when it closes, so Escape here is a way out
         // rather than a way to lose a typed prompt.
         else if (store.imagePanel.open) store.closeImagePanel();
+        // Last, because it is the only one of these that is not drawn over the editor: the
+        // crop rectangle lives on the preview, under every dialog above.  Escape leaves the
+        // tool rather than undoing the crop — each drag was already an edit, and Reset on
+        // the Transform card is what takes them all back.
+        else if (store.croppingClipId) store.endCrop();
         return;
       }
 

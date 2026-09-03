@@ -189,6 +189,90 @@ export type ImageGeneration = GenerationOf<'image'>;
 /** A video made from a prompt alone — the media bin's other generation. */
 export type VideoGeneration = GenerationOf<'video'>;
 
+/**
+ * A quarter turn, clockwise, in degrees. Only right angles: a free-angle rotation would
+ * have to letterbox its own corners into the frame and there is no honest default for what
+ * fills them, while a quarter turn is exactly what a phone clip held the wrong way needs.
+ */
+export type ClipRotation = 0 | 90 | 180 | 270;
+
+/**
+ * The rectangle of the framed picture a crop keeps, in fractions of that frame — `x`/`y`
+ * from its top-left corner, `width`/`height` across it. The whole frame is
+ * `{ x: 0, y: 0, width: 1, height: 1 }`.
+ *
+ * Fractions rather than pixels because the thing being cropped is *the picture as the
+ * preview shows it*, which is the export frame's shape whatever the source's was — a photo
+ * is already cover-cropped to it and a video already letterboxed into it. That keeps one
+ * number meaning one thing on both sides of the app, and keeps a crop from having to be
+ * re-derived when a source turns out to be a different size than the probe first said.
+ */
+export interface CropRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * How a clip is framed: what part of the picture is kept, which way up it stands, and how
+ * far into it the frame is pushed.
+ *
+ * The five operations compose in one fixed order, and it is the same order in the preview's
+ * CSS and in the exporter's filter graph — see `lib/transform.ts`, which is the only place
+ * that order is written down:
+ *
+ * 1. **crop** the framed picture to `crop`,
+ * 2. **rotate** what is left by `rotation`,
+ * 3. **flip** it in screen space (`flipH` then `flipV` — they commute),
+ * 4. **fit** the result back into the export frame, black where it does not reach,
+ * 5. **zoom** by `zoom` about the centre and **pan** by `offsetX`/`offsetY`.
+ *
+ * Flips come after the rotation on purpose: the buttons mirror what is on screen, so
+ * "flip horizontally" always means left-for-right *as you see it*, never left-for-right in
+ * some earlier coordinate system the user cannot see.
+ */
+export interface ClipTransform {
+  crop: CropRect;
+  /** 1 shows the whole frame; above that the frame is pushed into the picture. */
+  zoom: number;
+  /**
+   * Which part of the zoomed picture is centred, as a fraction of the overflow the zoom
+   * created: `0` is the middle, `-1` the left/top edge, `+1` the right/bottom.
+   *
+   * Expressed against the overflow rather than in pixels so it cannot fall out of range:
+   * at zoom 1 there is no overflow and every offset is the same picture, and a zoom
+   * *out* of a pan the user set keeps that pan proportionally rather than jumping.
+   */
+  offsetX: number;
+  offsetY: number;
+  rotation: ClipRotation;
+  flipH: boolean;
+  flipV: boolean;
+}
+
+/** The whole frame, the right way up, unmirrored — what a clip is framed as until it is not. */
+export const IDENTITY_TRANSFORM: ClipTransform = {
+  crop: { x: 0, y: 0, width: 1, height: 1 },
+  zoom: 1,
+  offsetX: 0,
+  offsetY: 0,
+  rotation: 0,
+  flipH: false,
+  flipV: false,
+};
+
+/** Zoom's ends. 1 is the whole frame — there is no zooming *out* of a frame that is the film. */
+export const MIN_CLIP_ZOOM = 1;
+export const MAX_CLIP_ZOOM = 4;
+
+/**
+ * The smallest a crop rectangle may get, as a fraction of the frame. Small enough for a
+ * real punch-in, large enough that the handles never overlap each other and that what
+ * survives is still a picture rather than a few upscaled pixels.
+ */
+export const MIN_CROP_FRACTION = 0.05;
+
 export interface Clip {
   id: string;
   assetId: string;
@@ -202,6 +286,14 @@ export interface Clip {
   durationMs: number;
   /** Videos only: where playback starts inside the source. */
   trimStartMs: number;
+  /**
+   * How the clip is framed — crop, zoom, rotation, flips. Absent means
+   * `IDENTITY_TRANSFORM`, which is what every clip that has never been reframed is and what
+   * every project written before there was such a thing holds: the field is only ever
+   * written once a user has moved one of its controls, so an untouched project file gains
+   * nothing to read back.
+   */
+  transform?: ClipTransform;
   /** Present when this clip is a Higgsfield result rather than imported media. */
   ai?: {
     prompt: string;

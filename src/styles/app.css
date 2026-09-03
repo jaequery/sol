@@ -913,6 +913,28 @@ select:focus-visible {
 .canvas video {
   object-fit: contain;
 }
+/* The four layers a clip's own framing is drawn through, outermost first. What each is
+   for, and where its numbers come from, is `PreviewGeometry` in lib/transform.ts — this
+   is only the positioning that lets the inline percentages mean anything. */
+.canvas__zoom {
+  position: absolute;
+  inset: 0;
+}
+/* The cropped picture at the size it fits the frame at, centred, clipping the crop. */
+.canvas__fit {
+  position: absolute;
+  overflow: hidden;
+}
+/* The whole turned picture, hung off the fit box so its crop lands over it. */
+.canvas__rot {
+  position: absolute;
+}
+/* The picture before it was turned, centred inside the box it turns in. Centred by an
+   explicit offset, not by auto margins: on its side it is wider than the box that holds
+   it, and auto margins pin an oversized box to the left rather than centring it. */
+.canvas__pic {
+  position: absolute;
+}
 /* The next clip, mounted early and primed so the cut into it needs no load and no seek. */
 .canvas video.canvas__preload {
   opacity: 0;
@@ -965,6 +987,94 @@ select:focus-visible {
 }
 .canvas__offline span {
   opacity: 0.75;
+}
+
+/* ------------------------------------------------------------------ crop tool */
+
+/* The rectangle, drawn over the picture it crops. Laid out against the same box the
+   picture is fitted into, so what is dragged here is exactly what the clip stores. */
+.crop {
+  position: absolute;
+  inset: 0;
+}
+.crop__box {
+  position: absolute;
+}
+/* One shadow is the whole dimming: everything outside the rectangle, in one paint, with
+   no four-div frame to keep in step with it. */
+.crop__rect {
+  position: absolute;
+  border: 1px solid var(--on-accent);
+  box-shadow: 0 0 0 9999px var(--scrim);
+  cursor: move;
+  touch-action: none;
+}
+.crop__handle {
+  position: absolute;
+  width: var(--sp-3);
+  height: var(--sp-3);
+  background: var(--accent-solid);
+  border: 1px solid var(--on-accent);
+  border-radius: var(--r-xs);
+  touch-action: none;
+}
+.crop__handle--nw,
+.crop__handle--sw {
+  left: calc(var(--sp-3) / -2);
+}
+.crop__handle--ne,
+.crop__handle--se {
+  right: calc(var(--sp-3) / -2);
+}
+.crop__handle--nw,
+.crop__handle--ne {
+  top: calc(var(--sp-3) / -2);
+}
+.crop__handle--sw,
+.crop__handle--se {
+  bottom: calc(var(--sp-3) / -2);
+}
+.crop__handle--nw,
+.crop__handle--se {
+  cursor: nwse-resize;
+}
+.crop__handle--ne,
+.crop__handle--sw {
+  cursor: nesw-resize;
+}
+/* The way out of the tool, and the one sentence saying what to do in it. */
+.crop__bar {
+  position: absolute;
+  left: 50%;
+  bottom: var(--sp-3);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  height: var(--h-control-md);
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  border: 1px solid var(--overlay-line);
+  border-radius: 99px;
+  background: var(--overlay-strong);
+  color: var(--overlay-ink);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+/* The way out of the tool, and the only fill on the picture: it has no surrounding chrome
+   to borrow a background from, so it names its own rather than inheriting the browser's. */
+.crop__bar button {
+  height: var(--h-control-xs);
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--accent-solid);
+  border-radius: 99px;
+  background: var(--accent-solid);
+  color: var(--on-accent);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+.crop__bar button:hover {
+  border-color: var(--accent-solid-hover);
+  background: var(--accent-solid-hover);
 }
 .stage__empty {
   text-align: center;
@@ -1440,6 +1550,18 @@ select:focus-visible {
 .btn-row > button:hover:not(:disabled) {
   border-color: var(--line-strong);
   background: var(--panel-3);
+}
+/* A toggle in a row of buttons, on. The same reading `tool--on` gives a toolbar button,
+   at the specificity a `.btn-row > button` needs it at. */
+.btn-row > button[aria-pressed='true'] {
+  background: var(--accent-dim);
+  border-color: var(--accent-line);
+  color: var(--accent-3);
+}
+.btn-row > button[aria-pressed='true']:hover:not(:disabled) {
+  background: var(--accent-dim);
+  border-color: var(--accent-2);
+  color: var(--ink);
 }
 .btn-row > button.primary {
   border-color: var(--accent-solid);

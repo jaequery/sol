@@ -39,7 +39,13 @@ export type IconName =
   | 'minus'
   | 'folder'
   | 'diamond'
-  | 'crop';
+  | 'rotate-ccw'
+  | 'rotate-cw'
+  | 'flip-h'
+  | 'flip-v'
+  | 'crop'
+  | 'frame'
+  | 'move';
 
 /** Lucide-style 24-unit paths; `fill` marks the few solid glyphs (transport). */
 const PATHS: Record<IconName, { d: string[]; fill?: boolean }> = {
@@ -125,7 +131,39 @@ const PATHS: Record<IconName, { d: string[]; fill?: boolean }> = {
   minus: { d: ['M5 12h14'] },
   folder: { d: ['M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z'] },
   diamond: { d: ['M12 3l9 9-9 9-9-9z'], fill: true },
+  'rotate-ccw': { d: ['M3 12a9 9 0 1 0 3-6.7L3 8', 'M3 3v5h5'] },
+  'rotate-cw': { d: ['M21 12a9 9 0 1 1-3-6.7L21 8', 'M21 3v5h-5'] },
+  // Two halves of one shape either side of a dotted mirror line — the axis the flip is about.
+  'flip-h': {
+    d: [
+      'M12 3v2',
+      'M12 9v2',
+      'M12 15v2',
+      'M12 21v-2',
+      'M8 5H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h3z',
+      'M16 5h3a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-3z',
+    ],
+  },
+  'flip-v': {
+    d: [
+      'M3 12h2',
+      'M9 12h2',
+      'M15 12h2',
+      'M21 12h-2',
+      'M5 8V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3z',
+      'M5 16v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3z',
+    ],
+  },
+  // Crop marks, for the tool that draws a rectangle on the picture. The *project's* frame
+  // shape wears `frame` — two controls that are regularly on screen together, so they must
+  // not wear one glyph.
   crop: { d: ['M6 2v14a2 2 0 0 0 2 2h14', 'M18 22V8a2 2 0 0 0-2-2H2'] },
+  frame: { d: ['M8 3H5a2 2 0 0 0-2 2v3', 'M21 8V5a2 2 0 0 0-2-2h-3', 'M3 16v3a2 2 0 0 0 2 2h3', 'M16 21h3a2 2 0 0 0 2-2v-3'] },
+  // Four arrows out of a centre: the standard "this moves and scales" affordance, for the
+  // inspector card that does both.
+  move: {
+    d: ['M5 9l-3 3 3 3', 'M9 5l3-3 3 3', 'M9 19l3 3 3-3', 'M19 9l3 3-3 3', 'M2 12h20', 'M12 2v20'],
+  },
 };
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'name'> {

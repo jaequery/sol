@@ -2,13 +2,17 @@ import { useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { resolveCutMode, useEditor } from '../state/store';
 import {
   DEFAULT_TRANSITION_PROMPT,
+  MAX_CLIP_ZOOM,
   MAX_PHOTO_DURATION_MS,
   MIN_CLIP_DURATION_MS,
+  MIN_CLIP_ZOOM,
   type AudioTrack,
   type Clip,
+  type ClipTransform,
   type Generation,
   type MediaAsset,
 } from '../types/project';
+import { clipTransform, isFullCrop, isIdentityTransform } from '../lib/transform';
 import {
   bridgeableCuts,
   cutOffersReplace,
@@ -371,9 +375,143 @@ function InspectorBody({ clip }: { clip: Clip }) {
         </div>
       </div>
 
+      <TransformCard clip={clip} offline={offline} />
+
       {clip.transition && <TransitionCard clip={clip} />}
     </>
   );
+}
+
+/**
+ * How the clip is framed: crop, zoom, quarter turn, mirrors — the five things that decide
+ * what part of the picture the film shows and which way up it is.
+ *
+ * Every control writes straight to the clip and the preview redraws, because there is
+ * nothing here worth a Cancel: each one is a single reversible step, and Reset undoes all
+ * of them at once. Only the crop needs a mode, and it is a mode because the rectangle is
+ * dragged over the picture rather than typed into this panel.
+ */
+function TransformCard({ clip, offline }: { clip: Clip; offline: boolean }) {
+  const rotateClip = useEditor((s) => s.rotateClip);
+  const flipClip = useEditor((s) => s.flipClip);
+  const setClipZoom = useEditor((s) => s.setClipZoom);
+  const setClipPan = useEditor((s) => s.setClipPan);
+  const resetClipTransform = useEditor((s) => s.resetClipTransform);
+  const beginCrop = useEditor((s) => s.beginCrop);
+  const endCrop = useEditor((s) => s.endCrop);
+  const cropping = useEditor((s) => s.croppingClipId === clip.id);
+
+  const t = clipTransform(clip);
+  const untouched = isIdentityTransform(t);
+
+  return (
+    <div className="card">
+      <div className="card__head">
+        <Icon name="move" size={15} />
+        <span className="card__title">Transform</span>
+      </div>
+      <div className="card__body">
+        <div className="kv">
+          <span>Framing</span>
+          <b>{framingSummary(t)}</b>
+        </div>
+        <Slider
+          label="Zoom"
+          min={MIN_CLIP_ZOOM}
+          max={MAX_CLIP_ZOOM}
+          step={0.05}
+          value={t.zoom}
+          format={(v) => `${Math.round(v * 100)}%`}
+          onChange={(zoom) => setClipZoom(clip.id, zoom)}
+        />
+        {/* Pan has nothing to move until the zoom has made somewhere to move it: at 1× the
+            picture is exactly the frame, so the sliders would be two controls that do
+            nothing. */}
+        {t.zoom > MIN_CLIP_ZOOM && (
+          <>
+            <Slider
+              label="Pan X"
+              min={-1}
+              max={1}
+              step={0.01}
+              value={t.offsetX}
+              format={panLabel}
+              onChange={(x) => setClipPan(clip.id, x, t.offsetY)}
+            />
+            <Slider
+              label="Pan Y"
+              min={-1}
+              max={1}
+              step={0.01}
+              value={t.offsetY}
+              format={panLabel}
+              onChange={(y) => setClipPan(clip.id, t.offsetX, y)}
+            />
+          </>
+        )}
+        <div className="btn-row">
+          <button type="button" onClick={() => rotateClip(clip.id, -1)}>
+            <Icon name="rotate-ccw" size={14} />
+            Rotate left
+          </button>
+          <button type="button" onClick={() => rotateClip(clip.id, 1)}>
+            <Icon name="rotate-cw" size={14} />
+            Rotate right
+          </button>
+        </div>
+        <div className="btn-row">
+          <button type="button" aria-pressed={t.flipH} onClick={() => flipClip(clip.id, 'h')}>
+            <Icon name="flip-h" size={14} />
+            Flip across
+          </button>
+          <button type="button" aria-pressed={t.flipV} onClick={() => flipClip(clip.id, 'v')}>
+            <Icon name="flip-v" size={14} />
+            Flip down
+          </button>
+        </div>
+        <div className="btn-row">
+          <button
+            type="button"
+            aria-pressed={cropping}
+            disabled={offline}
+            onClick={() => (cropping ? endCrop() : beginCrop(clip.id))}
+          >
+            <Icon name="crop" size={14} />
+            {cropping ? 'Done cropping' : 'Crop'}
+          </button>
+          <button type="button" disabled={untouched} onClick={() => resetClipTransform(clip.id)}>
+            <Icon name="refresh" size={14} />
+            Reset
+          </button>
+        </div>
+        <p className="hint">
+          {offline
+            ? 'The crop rectangle is dragged over the picture, and there is no picture to drag it over until the file is back.'
+            : cropping
+              ? 'Drag the rectangle on the preview, or its corners. The crop and the zoom stand down while you do.'
+              : 'Framing applies to the whole clip, in the preview and in the export alike.'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** A pan reading: which way the frame has moved off centre, and how far. */
+function panLabel(v: number): string {
+  if (v === 0) return 'Centred';
+  return `${v > 0 ? '+' : '−'}${Math.round(Math.abs(v) * 100)}%`;
+}
+
+/** The framing in a phrase — what the card says before any of its controls are read. */
+function framingSummary(t: ClipTransform): string {
+  const parts: string[] = [];
+  if (t.rotation !== 0) parts.push(`${t.rotation}°`);
+  if (t.flipH && t.flipV) parts.push('flipped both ways');
+  else if (t.flipH) parts.push('flipped across');
+  else if (t.flipV) parts.push('flipped down');
+  if (!isFullCrop(t.crop)) parts.push('cropped');
+  if (t.zoom > MIN_CLIP_ZOOM) parts.push(`${Math.round(t.zoom * 100)}%`);
+  return parts.length === 0 ? 'Original' : parts.join(' · ');
 }
 
 /** A frame of the thing the card is about — the same picture the bin and the track show. */
