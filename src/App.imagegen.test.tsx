@@ -90,11 +90,11 @@ async function mount() {
 
 /** Open the compose panel the way a user does. */
 async function openPanel(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole('button', { name: 'Generate an image' }));
-  return screen.getByLabelText('Describe the image to generate');
+  await user.click(screen.getByRole('button', { name: 'Generate a photo or video' }));
+  return screen.getByLabelText('Describe the photo to generate');
 }
 
-const GENERATE = { name: /generate image/i } as const;
+const GENERATE = { name: /generate photo/i } as const;
 
 function succeed(id: string, outputPath: string) {
   return act(async () => {
@@ -136,7 +136,7 @@ describe('generating a photo in the media bin', () => {
     expect(sent.aspectRatio).toBe('16:9');
 
     // The generation owns the prompt now, so the panel is closed and clean.
-    expect(screen.queryByLabelText('Describe the image to generate')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Describe the photo to generate')).not.toBeInTheDocument();
     expect(useEditor.getState().imagePanel.prompt).toBe('');
   });
 
@@ -452,10 +452,10 @@ describe('generating a photo in the media bin', () => {
     const prompt = await openPanel(user);
     await user.type(prompt, 'half a thought');
     await user.click(screen.getByRole('button', { name: 'Close the generate panel' }));
-    expect(screen.queryByLabelText('Describe the image to generate')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Describe the photo to generate')).not.toBeInTheDocument();
 
     await openPanel(user);
-    expect(screen.getByLabelText('Describe the image to generate')).toHaveValue('half a thought');
+    expect(screen.getByLabelText('Describe the photo to generate')).toHaveValue('half a thought');
     expect(generateImage).not.toHaveBeenCalled();
   });
 });

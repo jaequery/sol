@@ -355,6 +355,11 @@ select:focus-visible {
 .col + .col {
   border-left: 1px solid var(--line);
 }
+/* The preview column is the only one anything floats inside — the create sheet. Scoped to
+   a modifier rather than put on `.col`, which all three columns share. */
+.col--stage {
+  position: relative;
+}
 .panel-head {
   height: var(--h-panelhead);
   flex: 0 0 auto;
@@ -632,43 +637,130 @@ select:focus-visible {
   gap: var(--sp-3);
 }
 
-/* ---------------------------------------------- generating a photo, in the bin */
-
-/* The compose panel spans the bin's two columns, above the tiles it picks from — the
-   same mechanism the empty state and the import problems already use. Boxed, so the
-   request reads as one thing and the tiles below it as its material. */
-.compose {
-  grid-column: 1 / -1;
+/* --------------------------------------- generating a photo or a video: the sheet
+ * A floating layer over the preview stage, not a modal — the bin beside it stays visible
+ * and clickable because in photo mode its tiles are this sheet's reference picker. Same
+ * posture as the film panel, and the same recipe for it: one hairline, one elevation
+ * token, and no z-index at all, which leaves it correctly below both the film panel and
+ * the settings/export scrim.
+ *
+ * It covers exactly the stage — from under the column's own head to above the transport —
+ * so the timecode and the transport stay readable, and a timeline dragged taller cannot
+ * push the sheet out of its column.
+ */
+.sheet {
+  position: absolute;
+  /* Anchored below the column's own head, centred, and only as tall as it needs to be.
+     A full-height panel was the first attempt and it read as a void: the content is six
+     short rows, so the rest was 500px of nothing. Hugging the content is also what makes
+     it legible as a sheet laid over the stage rather than a replacement for it. */
+  top: calc(var(--h-panelhead) + var(--sp-4));
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: min(460px, calc(100% - 2 * var(--sp-4)));
+  max-height: calc(100% - var(--h-panelhead) - var(--h-transport) - 2 * var(--sp-4));
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
-  padding: var(--sp-3);
-  border: 1px solid var(--accent-line);
-  border-radius: var(--r-md);
-  background: var(--accent-wash);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
 }
-/* Both already carry their own top margin for the contexts they were written for. */
-.compose .hint,
-.compose .block-btn,
-.compose .linklike,
-.compose .disclosure {
-  margin-top: 0;
-}
-.compose .linklike {
-  margin-bottom: 0;
-}
-.compose__row {
+.sheet__head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
+  min-height: var(--h-dialoghead);
+  flex: 0 0 auto;
+  padding: 0 var(--sp-2) 0 var(--sp-4);
+  border-bottom: 1px solid var(--line);
 }
-.compose__row .linklike {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sp-1);
-  margin: 0;
+/* The title takes the slack, so the switch sits beside the close button rather than
+   drifting with it. */
+.sheet__title {
+  flex: 1;
+  font-size: var(--fs-md);
+  font-weight: 600;
 }
+.sheet__close {
+  background: none;
+  border: 0;
+  color: var(--ink-3);
+  width: var(--h-control-sm);
+  height: var(--h-control-sm);
+  padding: 0;
+  border-radius: var(--r-sm);
+}
+.sheet__close:hover {
+  color: var(--ink);
+  background: var(--panel-2);
+}
+/* The measure, not the column: the sheet is as wide as the stage but its content stops at
+   a comfortable line length, centred. That is what keeps it calm on a 1440px window and
+   still correct at the ~498px this column collapses to at the 1080px minimum. */
+.sheet__body {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
+}
+/* The action stays put while the body scrolls, so it is never the thing below the fold. */
+.sheet__foot {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-4) var(--sp-4);
+}
+/* A disclosure opens what is under it, so it reads from the same left edge as the rest —
+   the app's base button centres its content, which is right for a CTA and wrong here. */
+.sheet__body .disclosure {
+  align-self: flex-start;
+  justify-content: flex-start;
+}
+/* Each already carries a top margin for the context it was written for; here the body's
+   own gap is the spacing. */
+.sheet__body .hint,
+.sheet__body .block-btn,
+.sheet__body .disclosure,
+.sheet__body .callout,
+.sheet__body .field {
+  margin-top: 0;
+}
+/* The mode switch: one bordered track, two buttons, no fill and no elevation. The border
+   is the group's boundary, which is the functional job that earns it. Built on the
+   `.tool` vocabulary the inspector's insert/overwrite pair already uses. */
+.seg {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--sp-05);
+  padding: var(--sp-05);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--sunken);
+}
+.seg__btn {
+  height: var(--h-control-xs);
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--ink-3);
+}
+.seg__btn:hover:not(:disabled) {
+  color: var(--ink);
+}
+.seg__btn--on {
+  background: var(--accent-dim);
+  color: var(--accent-3);
+}
+.seg__btn--on:hover:not(:disabled) {
+  color: var(--ink);
+}
+
 /* While the panel is open the tiles are its reference picker; the ones it cannot use
    step back rather than keep promising a drag that will not happen. */
 .bin[data-composing='true'] .bin__tile:not(.bin__tile--pick):not(.bin__tile--missing) {

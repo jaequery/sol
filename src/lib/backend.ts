@@ -128,6 +128,25 @@ export interface GenerateImageInput {
   aspectRatio: string;
 }
 
+/**
+ * One "make me a video out of these words" request from the media bin's create sheet.
+ *
+ * The thinnest of the three generation requests: no frames (a transition's two stills),
+ * no references and no aspect ratio (a photo's). Text-to-video means the model invents the
+ * whole shot, so the prompt and the model are the entire request.
+ *
+ * No `provider` either. The local backends composite an ffmpeg `xfade` between two stills
+ * the editor supplies; with no stills there is nothing for them to composite, so
+ * Higgsfield is the only thing that could serve this and offering a choice would imply
+ * otherwise.
+ */
+export interface GenerateVideoInput {
+  generationId: string;
+  prompt: string;
+  /** The CLI video job type chosen for THIS request. */
+  model: string;
+}
+
 export interface ExportProgress {
   stage: string;
   fraction: number;
@@ -173,6 +192,39 @@ export const DEFAULT_MODEL_ID = 'seedance-2.5';
 
 /** The selector entry that sends the model id typed into Settings instead of a known model. */
 export const CUSTOM_MODEL_ID = 'custom';
+
+/** One entry in a model menu: what the store holds, and what a human reads. */
+export interface ModelChoice {
+  id: string;
+  label: string;
+}
+
+/**
+ * The models the create sheet offers for a **prompt-only video**.
+ *
+ * The same Higgsfield video models a transition can be rendered with — reusing that list
+ * rather than declaring a second one is what keeps this feature from inventing model ids
+ * the CLI has never heard of.
+ *
+ * Two things are deliberately absent. The **local backends**, because they composite
+ * between two supplied stills and cannot make a shot from words, so a menu entry for them
+ * would be one that always fails. And any **image** model, because those return a photo.
+ *
+ * `Custom` appears on the same terms it does in the transition picker: only when Settings
+ * holds a model id that is not already listed, so the escape hatch for a job type the live
+ * catalog offers stays reachable without a new build.
+ */
+export function videoModelChoices(customModel?: string, selectedId?: string): ModelChoice[] {
+  const choices: ModelChoice[] = RENDER_MODELS.map((m) => ({ id: m.id, label: m.label }));
+  const custom = (customModel ?? '').trim();
+  const customIsItsOwn = custom !== '' && RENDER_MODELS.every((m) => m.job !== custom);
+  // Kept while selected even if Settings has since matched a listed model, so the control
+  // never shows an empty value — the same rule the transition picker follows.
+  if (customIsItsOwn || selectedId === CUSTOM_MODEL_ID) {
+    choices.push({ id: CUSTOM_MODEL_ID, label: `Custom — ${custom || 'Settings model'}` });
+  }
+  return choices;
+}
 
 /** Who renders a transition: Higgsfield, or one of the local agent-CLI backends. */
 export type Provider = 'higgsfield' | 'claude-code' | 'codex';
@@ -577,6 +629,15 @@ export async function generateAnimation(input: GenerateInput): Promise<void> {
 export async function generateImage(input: GenerateImageInput): Promise<void> {
   requireDesktop();
   await invoke('generate_image', { input });
+}
+
+/**
+ * Start one prompt-only video generation. Answers as soon as the CLI has the job;
+ * everything after that arrives on the same `generation:update` events the other two use.
+ */
+export async function generateVideo(input: GenerateVideoInput): Promise<void> {
+  requireDesktop();
+  await invoke('generate_video', { input });
 }
 
 /**

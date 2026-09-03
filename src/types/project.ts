@@ -99,10 +99,10 @@ export const DEFAULT_TRANSITION_MODE: TransitionMode = 'replace';
 
 /**
  * What a generation is for: the cut between two adjacent photos, one leg of a
- * three-photo film, or a photo asked for in the media bin. Success routes on this — a cut
- * result is inserted at the cut (or swapped over `replacesClipId` when it is a
+ * three-photo film, or a photo or a video asked for in the media bin. Success routes on
+ * this — a cut result is inserted at the cut (or swapped over `replacesClipId` when it is a
  * regeneration of an existing transition clip), a film leg's result is parked in film
- * state until every leg is in, and an image lands in the bin and nowhere else.
+ * state until every leg is in, and an image or a video lands in the bin and nowhere else.
  */
 export type GenerationTarget =
   | {
@@ -131,6 +131,18 @@ export type GenerationTarget =
       referenceAssetIds: string[];
       /** The aspect ratio the request carried. */
       aspect: string;
+    }
+  | {
+      /**
+       * A video made from words alone, asked for in the media bin.
+       *
+       * It carries no fields, and that is the honest shape rather than an omission: a
+       * prompt-only request has no references and no aspect ratio, and the model a retry
+       * must re-send is already on `Generation.modelId`. Notably it has **no clip** on the
+       * track either — see `generationDoomed`, where that is what keeps deleting an
+       * unrelated asset from cancelling a paid render.
+       */
+      kind: 'video';
     };
 
 export interface Generation {
@@ -173,6 +185,9 @@ export type FilmGeneration = GenerationOf<'film'>;
  * nothing they were working on.
  */
 export type ImageGeneration = GenerationOf<'image'>;
+
+/** A video made from a prompt alone — the media bin's other generation. */
+export type VideoGeneration = GenerationOf<'video'>;
 
 export interface Clip {
   id: string;

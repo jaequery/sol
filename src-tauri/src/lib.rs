@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use settings::{AgentStatus, SettingsInput, SettingsView};
 use solcut_agent::{Agent, AgentCli, AgentError, MotionRequest, TransitionJob};
 use solcut_higgsfield::{
-    check_credential, Cli, GenerateRequest, HiggsfieldError, ImageRequest, JobState, API_BASE_URL,
-    DEFAULT_IMAGE_MODEL, DEFAULT_MODEL,
+    check_credential, Cli, GenerateRequest, HiggsfieldError, ImageRequest, JobState,
+    VideoPromptRequest, API_BASE_URL, DEFAULT_IMAGE_MODEL, DEFAULT_MODEL,
 };
 use solcut_render::{ExportSpec, Progress, Renderer};
 use std::collections::HashSet;
@@ -188,6 +188,25 @@ impl Backend {
                 .ok_or_else(|| format!("{id:?} is not a generation backend SolCut knows")),
         }
     }
+}
+
+/// One "make me a video out of these words" request from the media bin's create sheet.
+///
+/// The thinnest generation request in the app, and deliberately so: a prompt-only video
+/// carries no frames (unlike [`GenerateInput`]), no references and no aspect ratio (unlike
+/// [`ImageGenerateInput`]). No `provider` either — the local backends composite between two
+/// supplied stills and cannot make a shot from words, so Higgsfield is the only thing that
+/// could serve this and naming a choice would imply otherwise.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoGenerateInput {
+    /// Chosen by the frontend so it can match events to the generation that asked.
+    pub generation_id: String,
+    pub prompt: String,
+    /// The CLI video job id chosen for THIS request. Absent or blank falls back to the
+    /// default model, exactly as the other two paths do.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// One "make me a photo" request from the media bin's compose panel.
@@ -480,6 +499,30 @@ async fn generate_image(
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         run_image_generation(handle, cli, media_dir, input, references).await;
+    });
+    Ok(())
+}
+
+/// Start a prompt-only video generation. Like the other two it returns as soon as the job
+/// is handed to the CLI; everything after that arrives on `generation:update`.
+///
+/// There is nothing to validate before sending — no frames to write, no references to
+/// resolve — so this is only the CLI lookup and the handoff.
+#[tauri::command]
+async fn generate_video(
+    app: AppHandle,
+    input: VideoGenerateInput,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let Some(cli) = Cli::find() else {
+        return Err(HiggsfieldError::NotInstalled.to_string());
+    };
+    state.forget(&input.generation_id);
+
+    let media_dir = state.media_dir.clone();
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        run_video_generation(handle, cli, media_dir, input).await;
     });
     Ok(())
 }
@@ -780,6 +823,59 @@ async fn run_image_generation(
     watch_job(app, cli, media_dir, id, job_id, started, Landing::Photo).await;
 }
 
+/// One prompt-only video generation: submit the words, then watch the job.
+///
+/// Nothing is uploaded, so unlike the other two paths there is no slow submit to cancel
+/// into — but the check is kept anyway, because the CLI still validates the model against
+/// the live catalog before it answers and that is a round trip the user can give up on.
+///
+/// **`Landing::Video` is the load-bearing argument.** `Landing::Photo` names its file from
+/// the server's content type, which has no `video/mp4` entry and falls back to PNG; since
+/// the media bin classifies by extension alone, routing a video result through it would
+/// produce a photo that will not draw. See `Landing::video_dest`.
+async fn run_video_generation(
+    app: AppHandle,
+    cli: Cli,
+    media_dir: PathBuf,
+    input: VideoGenerateInput,
+) {
+    let started = Instant::now();
+    let id = input.generation_id.clone();
+
+    let model = input
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .unwrap_or(DEFAULT_MODEL)
+        .to_string();
+    let request = VideoPromptRequest {
+        model,
+        prompt: input.prompt.clone(),
+    };
+
+    emit(
+        &app,
+        GenerationUpdate::new(&id, "queued", started.elapsed()),
+    );
+
+    let job_id = match cli.create_video_from_prompt(&request).await {
+        Ok(job_id) => job_id,
+        Err(e) => return fail(&app, &id, started, &e),
+    };
+
+    if cancelled(&app, &id) {
+        emit(
+            &app,
+            update_for(&id, "cancelled", started.elapsed(), &job_id),
+        );
+        return;
+    }
+
+    emit(&app, update_for(&id, "queued", started.elapsed(), &job_id));
+    watch_job(app, cli, media_dir, id, job_id, started, Landing::Video).await;
+}
+
 /// What a finished job's result URL turns into on disk — the one thing a video job and a
 /// photo job still do differently once both are queued.
 #[derive(Debug, Clone, Copy)]
@@ -792,6 +888,15 @@ enum Landing {
 }
 
 impl Landing {
+    /// Where a video result is written.
+    ///
+    /// The name itself comes from `solcut_higgsfield::video_file_name`, which sits beside
+    /// the photo path's `image_extension` precisely so the two can be read — and asserted —
+    /// as the one rule they are. See that function for what goes wrong otherwise.
+    fn video_dest(media_dir: &std::path::Path, id: &str) -> PathBuf {
+        media_dir.join(solcut_higgsfield::video_file_name(id))
+    }
+
     async fn fetch(
         self,
         cli: &Cli,
@@ -801,7 +906,7 @@ impl Landing {
     ) -> Result<PathBuf, HiggsfieldError> {
         match self {
             Self::Video => {
-                let dest = media_dir.join(format!("{id}.mp4"));
+                let dest = Self::video_dest(media_dir, id);
                 cli.download(url, &dest).await?;
                 Ok(dest)
             }
@@ -978,6 +1083,7 @@ pub fn run() {
             supported_extensions,
             generate_animation,
             generate_image,
+            generate_video,
             cancel_generation,
             ffmpeg_available,
             capture_video_frame,
@@ -1092,5 +1198,36 @@ mod tests {
         assert_eq!(full.references, vec!["/p/a.png", "/p/b.jpg"]);
         assert_eq!(full.model.as_deref(), Some("nano_banana_2"));
         assert_eq!(full.aspect_ratio.as_deref(), Some("16:9"));
+    }
+
+    /// The create sheet's video shape: the words, and at most a model.
+    #[test]
+    fn a_video_input_needs_nothing_but_a_prompt() {
+        let bare: VideoGenerateInput =
+            serde_json::from_str(r#"{"generationId":"gen_1","prompt":"a drone over the surf"}"#)
+                .expect("a prompt on its own");
+        assert!(bare.model.is_none());
+
+        let full: VideoGenerateInput = serde_json::from_str(
+            r#"{"generationId":"gen_2","prompt":"a drone over the surf","model":"seedance_2_5"}"#,
+        )
+        .expect("a prompt and a model");
+        assert_eq!(full.model.as_deref(), Some("seedance_2_5"));
+    }
+
+    /// A video result is named `.mp4` by the landing itself, never by what the server said
+    /// it served.
+    ///
+    /// This is the assertion that stops the quiet version of this bug. The photo landing
+    /// asks `image_extension` for the extension, which knows no video type and answers
+    /// `png`; the bin then classifies by extension alone, so the file would return from
+    /// the next launch as a photo that cannot draw. `solcut-higgsfield` has the other half
+    /// of this test — that the photo path really would say `png` — so the two together
+    /// document why the video path does not go near it.
+    #[test]
+    fn a_video_result_is_named_mp4_whatever_the_server_called_it() {
+        let dest = Landing::video_dest(Path::new("/data/generated"), "gen_7");
+        assert_eq!(dest, PathBuf::from("/data/generated/gen_7.mp4"));
+        assert_eq!(dest.extension().and_then(|e| e.to_str()), Some("mp4"));
     }
 }

@@ -536,11 +536,11 @@ describe('media bin', () => {
 
 // ------------------------------------------------------------------------ compose panel
 
-describe('the compose panel', () => {
-  const PROMPT = 'Describe the image to generate';
+describe('the create sheet', () => {
+  const PROMPT = 'Describe the photo to generate';
 
   async function open(user: ReturnType<typeof userEvent.setup>) {
-    await user.click(screen.getByRole('button', { name: 'Generate an image' }));
+    await user.click(screen.getByRole('button', { name: 'Generate a photo or video' }));
     return screen.getByLabelText(PROMPT);
   }
 
@@ -553,10 +553,10 @@ describe('the compose panel', () => {
     expect(backend.pickMediaFiles).toHaveBeenCalledTimes(1);
 
     await open(user);
-    expect(screen.getByRole('group', { name: 'Generate an image' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Generate a photo or video' })).toBeInTheDocument();
   });
 
-  it('Cancel and Escape both close it, and neither costs the draft', async () => {
+  it('the close button and Escape both close it, and neither costs the draft', async () => {
     const user = userEvent.setup();
     await mount();
 
@@ -628,9 +628,9 @@ describe('the compose panel', () => {
     await mount();
 
     const prompt = await open(user);
-    expect(screen.getByRole('button', { name: /generate image/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /generate photo/i })).toBeDisabled();
     await user.type(prompt, 'a lighthouse');
-    expect(screen.getByRole('button', { name: /generate image/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /generate photo/i })).toBeEnabled();
 
     // The same control, on a machine with no CLI, offers nothing.
     await user.click(screen.getByRole('button', { name: 'Close the generate panel' }));
@@ -639,7 +639,7 @@ describe('the compose panel', () => {
       await useEditor.getState().loadSettings();
     });
     await open(user);
-    expect(screen.getByRole('button', { name: /generate image/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /generate photo/i })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: 'Open settings →' }));
     expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
   });

@@ -518,6 +518,13 @@ function readGenerationTarget(raw: unknown): GenerationTarget | null {
     };
   }
 
+  // A prompt-only video carries no fields, so there is nothing here to validate — but the
+  // branch is not optional. Without it this function falls through to `null` and a video
+  // generation that was still running when the app closed is dropped where it enters,
+  // instead of coming back as the Interrupted card an image generation gets. The prompt and
+  // the model live on the record itself, so Retry has everything it needs.
+  if (raw.kind === 'video') return { kind: 'video' };
+
   return null;
 }
 

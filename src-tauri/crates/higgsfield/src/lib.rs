@@ -136,6 +136,45 @@ pub fn build_create_args(req: &GenerateRequest) -> Vec<String> {
     args
 }
 
+/// One "make me a video out of nothing but these words" job.
+///
+/// The other video job in this file, [`GenerateRequest`], is a *transition*: it pins the
+/// motion between two stills the editor already has. This one has no stills at all — the
+/// model invents the whole shot from the prompt — which is why it is a separate request
+/// type with a separate builder rather than a [`GenerateRequest`] whose frames are
+/// `None`. See [`build_video_prompt_args`] for the part that actually matters.
+#[derive(Debug, Clone)]
+pub struct VideoPromptRequest {
+    /// The CLI job type, e.g. `seedance_2_5`.
+    pub model: String,
+    pub prompt: String,
+}
+
+/// The argv for a prompt-only video `generate create`.
+///
+/// Deliberately a third builder rather than a branch of either existing one, for the same
+/// reason [`build_image_create_args`] is not a branch of [`build_create_args`]: each of
+/// the other two injects a flag that is wrong here, and sharing the function would leak
+/// that flag into this job.
+///
+/// **The `--mode` omission is the whole point of this function.** [`build_create_args`]
+/// sends `--mode omni_reference` whenever the model is [`DEFAULT_MODEL`], because the live
+/// API refuses frame inputs outside that mode in exactly these words: "start_image and
+/// end_image are only allowed for mode 'omni_reference'". That flag exists to *unlock
+/// frame inputs* and for nothing else — so a job sending no frames must not ask for it,
+/// even on Seedance 2.5.
+pub fn build_video_prompt_args(req: &VideoPromptRequest) -> Vec<String> {
+    // Every token here is load-bearing and there are no optional ones: a prompt-only job
+    // is the model id and the words, and anything further would be this function guessing.
+    vec![
+        "generate".to_string(),
+        "create".to_string(),
+        req.model.clone(),
+        "--prompt".to_string(),
+        req.prompt.clone(),
+    ]
+}
+
 /// One "make me a photo" job: a prompt, and any number of the user's own images to work
 /// from. Zero references is a plain text-to-image generation; one or more is the same
 /// generation done *on top of* those photos.
@@ -227,6 +266,22 @@ pub fn validate_references(paths: &[String]) -> Result<Vec<PathBuf>> {
     }
     Ok(files)
 }
+/// What a generated **video** is called on disk: the job id and `.mp4`, always.
+///
+/// The counterpart to [`image_extension`], and deliberately its neighbour, because the two
+/// together are one rule with a trap in the middle of it. A photo's extension comes from
+/// what the server actually served; a video's does **not**, and must not, because
+/// [`image_extension`] knows no video content type and answers `png` for every one of them
+/// (there is a test to that effect). Since the media bin classifies media by extension and
+/// nothing else, a video landed through the photo path would come back from the next launch
+/// as a photo that cannot draw.
+///
+/// It lives in this crate rather than beside its one caller in the Tauri shell so that it
+/// can be asserted on any machine — the shell's own tests need a GUI toolchain to link,
+/// which is exactly the gap this crate exists to cover.
+pub fn video_file_name(id: &str) -> String {
+    format!("{id}.mp4")
+}
 
 /// What to call a downloaded photo, from the response's own content type and, failing
 /// that, the URL.
@@ -302,6 +357,19 @@ impl Cli {
     pub async fn create_image(&self, req: &ImageRequest) -> Result<String> {
         let stdout = self
             .run(&build_image_create_args(req), CREATE_TIMEOUT)
+            .await?;
+        parse_create(&stdout)
+    }
+
+    /// Submit one prompt-only video generation — a shot made from words alone, with no
+    /// frame on either end of it.
+    ///
+    /// Named for what it is rather than `create_video`, because [`Cli::create`] also
+    /// creates a video and a reader should not have to open both to tell them apart.
+    /// Nothing is uploaded, so this answers as fast as the CLI can queue the job.
+    pub async fn create_video_from_prompt(&self, req: &VideoPromptRequest) -> Result<String> {
+        let stdout = self
+            .run(&build_video_prompt_args(req), CREATE_TIMEOUT)
             .await?;
         parse_create(&stdout)
     }
@@ -847,6 +915,98 @@ mod tests {
         let args = build_image_create_args(&req);
         assert!(!args.iter().any(|a| a == "--mode"), "{args:?}");
         assert!(!args.iter().any(|a| a == "--start-image"), "{args:?}");
+    }
+
+    fn video_prompt_request() -> VideoPromptRequest {
+        VideoPromptRequest {
+            model: DEFAULT_MODEL.into(),
+            prompt: "a drone rises over the surf at dawn".into(),
+        }
+    }
+
+    #[test]
+    fn a_prompt_only_video_job_is_the_model_and_the_words_and_nothing_else() {
+        assert_eq!(
+            build_video_prompt_args(&video_prompt_request()),
+            vec![
+                "generate",
+                "create",
+                "seedance_2_5",
+                "--prompt",
+                "a drone rises over the surf at dawn",
+            ]
+        );
+    }
+
+    /// The regression this whole request type exists to make impossible.
+    ///
+    /// `--mode omni_reference` unlocks *frame inputs* and does nothing else, so a job that
+    /// sends no frames must not ask for it — on Seedance 2.5 least of all, since that is
+    /// the one model [`build_create_args`] injects it for.
+    #[test]
+    fn a_prompt_only_video_job_never_asks_for_the_reference_mode() {
+        for model in [
+            "seedance_2_5",
+            "seedance_2_0",
+            "seedance1_5",
+            "kling3_0",
+            "veo3_1_lite",
+        ] {
+            let mut req = video_prompt_request();
+            req.model = model.into();
+            let args = build_video_prompt_args(&req);
+            assert!(!args.iter().any(|a| a == "--mode"), "{model}: {args:?}");
+        }
+    }
+
+    #[test]
+    fn a_prompt_only_video_job_sends_no_frames_and_no_references() {
+        let args = build_video_prompt_args(&video_prompt_request());
+        for flag in [
+            "--start-image",
+            "--end-image",
+            "--image",
+            "--image-references",
+            "--aspect_ratio",
+        ] {
+            assert!(!args.iter().any(|a| a == flag), "{flag}: {args:?}");
+        }
+    }
+
+    /// A prompt is a prompt, not shell input — the same guarantee the transition path has.
+    #[test]
+    fn a_prompt_only_video_job_passes_the_prompt_through_untouched() {
+        let mut req = video_prompt_request();
+        req.prompt = "pan; rm -rf / `boom` $(x)".into();
+        let args = build_video_prompt_args(&req);
+        let at = args.iter().position(|a| a == "--prompt").unwrap();
+        assert_eq!(args[at + 1], "pan; rm -rf / `boom` $(x)");
+    }
+
+    #[test]
+    fn a_generated_video_is_named_from_the_job_id_and_never_from_the_server() {
+        assert_eq!(video_file_name("gen_7"), "gen_7.mp4");
+        assert!(video_file_name("gen_7").ends_with(".mp4"));
+    }
+
+    /// **The landmine, held by a test.**
+    ///
+    /// [`image_extension`] answers from a whitelist of image content types and falls back
+    /// to PNG for everything else — so an MP4 downloaded through [`Cli::download_image`]
+    /// is written as `.png`. The media bin classifies by extension and nothing else, which
+    /// means such a file returns from the next launch as a photo that will not draw.
+    ///
+    /// This is not a bug in `image_extension`; it is why a video result must land through
+    /// `Landing::Video` (a plain byte stream to a caller-chosen `.mp4`) and must never be
+    /// routed through the photo download. The assertion below is the trap, kept visible so
+    /// that anyone tempted to reuse the photo path for video reads why they must not.
+    #[test]
+    fn the_photo_download_would_misname_a_video_which_is_why_video_does_not_use_it() {
+        assert_eq!(
+            image_extension(Some("video/mp4"), "https://cdn/out.mp4"),
+            "png"
+        );
+        assert_eq!(image_extension(None, "https://cdn/out.mp4"), "png");
     }
 
     #[test]

@@ -286,6 +286,26 @@ describe('a render that was still going when the app went away', () => {
     if (read.kind !== 'project') throw new Error('expected a project');
     expect(read.file.generations?.map((g) => g.id)).toEqual(['gen_img']);
   });
+
+  /**
+   * The same for a video, and the reason this test exists rather than being assumed: the
+   * target reader answers `null` for any kind it does not know, and a `null` target drops
+   * the whole record silently. Without its own branch a video generation interrupted by a
+   * quit would simply never come back, where a photo comes back as an Interrupted card.
+   */
+  it('keeps a video record, which has no clips to lose either', () => {
+    const video: Generation = {
+      ...generation(),
+      id: 'gen_vid',
+      target: { kind: 'video' },
+    };
+    const read = throughDisk({ ...doc, clips: [], generations: { gen_vid: video } });
+    if (read.kind !== 'project') throw new Error('expected a project');
+    expect(read.file.generations?.map((g) => g.id)).toEqual(['gen_vid']);
+    expect(read.file.generations?.[0].target).toEqual({ kind: 'video' });
+    // And it comes back as something the user is told about, not as a live job.
+    expect(read.file.generations?.[0].prompt).toBe(video.prompt);
+  });
 });
 
 describe('media that is no longer there', () => {
