@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  FRAME_ASPECT,
   FULL_CROP,
   clipTransform,
   croppingTransform,
@@ -20,8 +19,13 @@ import {
   MIN_CROP_FRACTION,
   type ClipTransform,
 } from '../types/project';
+import { aspectValue } from './aspect';
 
 const identity = IDENTITY_TRANSFORM;
+
+/** The frame the geometry below is worked out in, unless a test says otherwise. */
+const WIDE = aspectValue('16:9');
+const TALL = aspectValue('9:16');
 
 describe('clipTransform', () => {
   it('reads an absent transform as the identity', () => {
@@ -149,7 +153,7 @@ describe('isIdentityTransform', () => {
 
 describe('previewGeometry', () => {
   it('draws an untransformed clip as the plain frame, with no transforms at all', () => {
-    const geo = previewGeometry(identity);
+    const geo = previewGeometry(identity, WIDE);
     expect(geo.zoom.transform).toBeUndefined();
     expect(geo.pic.transform).toBeUndefined();
     expect(geo.fit).toEqual({ width: '100%', height: '100%', left: '0%', top: '0%' });
@@ -158,19 +162,19 @@ describe('previewGeometry', () => {
   });
 
   it('scales about the centre and pans by the overhang the zoom made', () => {
-    const geo = previewGeometry({ ...identity, zoom: 2, offsetX: 1, offsetY: -1 });
+    const geo = previewGeometry({ ...identity, zoom: 2, offsetX: 1, offsetY: -1 }, WIDE);
     // At 2× the picture overhangs the frame by half its width on each side; +1 gives the
     // whole right-hand overhang up, which means moving the picture left by it.
     expect(geo.zoom.transform).toBe('translate(-50%, 50%) scale(2)');
   });
 
   it('turns and mirrors the picture layer, rotation first', () => {
-    const geo = previewGeometry({ ...identity, rotation: 90, flipH: true });
+    const geo = previewGeometry({ ...identity, rotation: 90, flipH: true }, WIDE);
     expect(geo.pic.transform).toBe('scale(-1, 1) rotate(90deg)');
   });
 
   it('pillarboxes a quarter turn rather than stretching it', () => {
-    const geo = previewGeometry({ ...identity, rotation: 90 });
+    const geo = previewGeometry({ ...identity, rotation: 90 }, WIDE);
     // A 16:9 frame stood on end is 9:16, which fits the frame by its height and is
     // pillarboxed into the middle of it.
     expect(geo.fit).toEqual({
@@ -190,17 +194,43 @@ describe('previewGeometry', () => {
   });
 
   it('blows a crop up to fill the frame and hangs the picture off it', () => {
-    const geo = previewGeometry(withCrop(identity, { x: 0.25, y: 0.25, width: 0.5, height: 0.5 }));
+    const geo = previewGeometry(
+      withCrop(identity, { x: 0.25, y: 0.25, width: 0.5, height: 0.5 }),
+      WIDE,
+    );
     // Half by half of a 16:9 picture is still 16:9, so it fills the frame exactly.
     expect(geo.fit).toEqual({ width: '100%', height: '100%', left: '0%', top: '0%' });
     expect(geo.rot).toEqual({ width: '200%', height: '200%', left: '-50%', top: '-50%' });
   });
 
   it('letterboxes a crop whose shape the frame does not have', () => {
-    const geo = previewGeometry(withCrop(identity, { x: 0, y: 0, width: 0.5, height: 1 }));
+    const geo = previewGeometry(withCrop(identity, { x: 0, y: 0, width: 0.5, height: 1 }), WIDE);
     // 8:9 is taller than the frame, so it fits by its height and leaves black either side.
     expect(geo.fit.height).toBe('100%');
-    expect(geo.fit.width).toBe(`${(FRAME_ASPECT / 2 / FRAME_ASPECT) * 100}%`);
+    expect(geo.fit.width).toBe('50%');
+  });
+
+  /**
+   * The frame's shape is the project's, not this module's. A quarter turn in a vertical
+   * project is the mirror image of one in a wide project — letterboxed above and below
+   * rather than pillarboxed left and right — and getting that from the same code is the
+   * whole reason `previewGeometry` is handed the aspect instead of assuming one.
+   */
+  it('follows the project\'s frame rather than assuming a wide one', () => {
+    const turned = previewGeometry({ ...identity, rotation: 90 }, TALL);
+    expect(turned.fit).toEqual({
+      width: '100%',
+      height: '31.640625%',
+      left: '0%',
+      top: '34.179688%',
+    });
+
+    // And an untouched clip is still the whole frame, whatever shape the frame is.
+    for (const id of ['16:9', '9:16', '1:1', '4:5', '21:9']) {
+      const geo = previewGeometry(identity, aspectValue(id));
+      expect(geo.fit).toEqual({ width: '100%', height: '100%', left: '0%', top: '0%' });
+      expect(geo.pic.transform).toBeUndefined();
+    }
   });
 });
 

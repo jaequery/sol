@@ -7,6 +7,7 @@
  * between tests in ways that only show up as a mystery failure three files later.
  */
 
+import { DEFAULT_ASPECT_RATIO } from '../lib/aspect';
 import { DEFAULT_MODEL_ID } from '../lib/backend';
 import { resetPreviewSync } from '../lib/preview-sync';
 import { emptyImagePanel, forgetSavedSnapshot, useEditor } from '../state/store';
@@ -55,6 +56,7 @@ export function resetEditor(): void {
     settingsOpen: false,
     snapping: true,
     pxPerSecond: 100,
+    aspectRatio: DEFAULT_ASPECT_RATIO,
     saveError: null,
     saving: false,
     savedAt: null,

@@ -32,6 +32,14 @@ of cents rather than a plan credit. Both live in the same Model selector; see
   playhead when it comes within a few pixels. Click anywhere along the timeline — the
   ruler, a gap, a clip, an audio lane — and the playhead cues exactly there, so play runs
   from the point you clicked; hold the button down on the ruler to scrub.
+- **The shape of the film is yours to pick.** The preview's panel head carries the frame's
+  **aspect ratio** — 16:9 by default, plus 9:16, 1:1, 4:5, 4:3, 3:2 and 21:9 — and it is one
+  setting the whole project follows: the preview turns on its side as you pick it, the
+  export writes those pixels (the short edge is always 1080, so 9:16 is 1080 × 1920), and
+  the stills an AI transition is generated from are cut to the same shape, so a vertical
+  film does not come back with a horizontal transition sitting in the middle of it. It is
+  saved with the project. Inside the frame nothing changes: a photo fills it and is cropped,
+  a video fits inside it and is letterboxed — in the preview exactly as in the export.
 - **Photos and videos you did not shoot.** The media bin generates as well as imports:
   **✦ Generate** beside **+ Import** opens a sheet over the preview stage — the bin stays
   beside it, because in photo mode its tiles are the sheet's reference picker — and a
@@ -99,10 +107,11 @@ of cents rather than a plan credit. Both live in the same Model selector; see
   and a **crop** you drag as a rectangle over the preview itself. The five compose in one
   fixed order — rotate, flip, crop, fit, then zoom — and the preview draws that order in CSS
   while the exporter builds the same picture as an ffmpeg chain, so what is on screen is
-  what lands in the file. A turn or a crop the frame's shape cannot hold sits on black
-  rather than being stretched into 16:9. **Reset** takes the whole lot back, and a clip that
-  has never been reframed carries nothing at all — in memory, on disk, or in the export
-  spec.
+  what lands in the file. It is all *inside* the project's frame, whatever shape that has
+  been set to: a turn or a crop the frame cannot hold sits on black rather than being
+  stretched to fit, and a crop is a fraction of the frame, so turning the project on its
+  side never has to re-derive one. **Reset** takes the whole lot back, and a clip that has
+  never been reframed carries nothing at all — in memory, on disk, or in the export spec.
 - **MP4 export** of the whole timeline via ffmpeg, audio lanes included.
 - **Your work is still there tomorrow.** The project saves itself as you edit, again every
   few seconds while anything is unwritten, and once more as the window closes — no save
@@ -288,8 +297,9 @@ is put back the flow below is reachable only from `openFilmWizard` in the store.
    at the end of whatever is on the track *at that moment*, so editing while it renders is
    safe. A film with a failed leg assembles nothing — retry the leg, and only that leg.
 6. **Export film** in the panel (or **Export MP4** in the title bar) opens the save dialog
-   and runs the ffmpeg export: **H.264, 1920 × 1080, 30 fps**. The toast names the file and
-   offers to reveal it.
+   and runs the ffmpeg export: **H.264, 30 fps, at the project's frame** — 1920 × 1080
+   unless the preview's aspect ratio says otherwise. The toast names the file and offers to
+   reveal it.
 
 Two transitions give a film of about 10 s at 5 s a leg — the model decides the exact
 length, and the timeline takes it from the file. The film renders with **whatever the Model
@@ -398,6 +408,8 @@ src/                     React + TypeScript editor
   types/project.ts       the data model
   lib/timeline.ts        pure timeline maths — placement, cuts, transitions
   lib/film.ts            pure film orchestration — three photos, two AI transitions
+  lib/aspect.ts          the project's frame — the ratios on offer and the pixel size each
+                         one means, for the preview, the export and the API stills alike
   lib/frames.ts          rendering a photo to a still for the API (a video's frame comes
                          off ffmpeg — see `capture_video_frame`)
   lib/project.ts         the saved project — what persists, and what a bad file may not do
@@ -458,8 +470,15 @@ GTK toolchain.
   five-second photos for a blink.
 - **A generated video has no aspect ratio to choose.** The image models publish an
   `--aspect_ratio` and the sheet offers it; the video job types are not documented as taking
-  one, and SolCut does not guess at the CLI's flags — so a generated video comes back in
-  whatever frame its model defaults to. Vertical video is therefore not yet askable for.
+  one, and SolCut does not guess at the CLI's flags — so a *text-to-video* generation comes
+  back in whatever frame its model defaults to. A **transition** is the case that can be
+  steered without a flag: it is animated between two stills the editor draws, and those are
+  cut to the project's own frame, so a 9:16 project asks for 9:16 motion. Anything that
+  still comes back the wrong shape is fitted inside the frame on export, never cropped.
+- **A video is letterboxed into a frame it does not match, never cropped.** Footage is not
+  thrown away on your behalf, so 16:9 clips in a 9:16 project export with black above and
+  below — and the preview shows exactly that. Photos are the other way round: they fill the
+  frame and are cropped to it, in both. There is no per-clip fit control yet.
 - **Local motion composites; it does not generate.** Sixteen `xfade` motions, chosen from
   your words. It will not invent what lies between two photos the way a video model does —
   it will move convincingly between them, for about two cents.

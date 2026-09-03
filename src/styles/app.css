@@ -417,6 +417,51 @@ select:focus-visible {
   color: var(--accent-3);
 }
 
+/* The frame's shape, in the preview's panel head. It wears the chrome of the actions
+   beside it rather than `.field`'s sunken box: this is part of the panel's own bar, and a
+   form field there would read as something the panel contains. The native select keeps its
+   own menu — the focus ring moves to the wrapper so the ring outlines the whole control. */
+.aspect-pick {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+  height: var(--h-control-xs);
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  color: var(--ink-2);
+}
+.aspect-pick:hover {
+  border-color: var(--line-strong);
+  background: var(--panel-3);
+  color: var(--ink);
+}
+.aspect-pick:focus-within {
+  border-color: var(--accent-2);
+  box-shadow: var(--focus-halo);
+}
+.aspect-pick select {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: 600 var(--fs-xs) / 1 var(--font);
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+}
+/* The wrapper is wearing the ring; a second one inside it would be two rings. */
+.aspect-pick select:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.aspect-pick select option {
+  background: var(--panel-2);
+  color: var(--ink);
+}
+
 /* ------------------------------------------------------------------ media bin */
 
 .bin {
@@ -820,6 +865,11 @@ select:focus-visible {
 /* ------------------------------------------------------------------ preview */
 
 .stage {
+  /* The project's frame, as a `w / h` pair. `Preview` overrides it inline from the store,
+     and the canvas inherits it — declared here rather than on `.canvas`, because a
+     declaration on the element that *reads* it shadows the inherited override and pins the
+     frame at 16:9 for ever. The value below is only the shape a project starts at. */
+  --frame-ratio: 16 / 9;
   flex: 1;
   min-height: 0;
   display: grid;
@@ -832,9 +882,10 @@ select:focus-visible {
 }
 .canvas {
   /* As wide as the stage allows, unless the height gives out first — then as wide as a
-     16:9 frame of the stage's height. `cqh` is the stage's content box. */
-  width: min(100%, calc(100cqh * 16 / 9));
-  aspect-ratio: 16 / 9;
+     frame of the stage's own height. `cqh` is the stage's content box, which is why a
+     9:16 frame shrinks to fit instead of running off the bottom. */
+  width: min(100%, calc(100cqh * var(--frame-ratio)));
+  aspect-ratio: var(--frame-ratio);
   border-radius: var(--r-md);
   position: relative;
   overflow: hidden;
@@ -843,6 +894,11 @@ select:focus-visible {
   border: 1px solid var(--line-strong);
   background: var(--video-black);
 }
+/* Each fills the frame the way the export does, so what is on screen is what gets written:
+   `photo_filter` scales a photo to *cover* the frame and crops it, and `video_filter` fits
+   a video inside it and pads the rest black rather than throwing footage away. The two only
+   differ once the frame stops matching the source — which is exactly what changing the
+   aspect ratio does. */
 .canvas img,
 .canvas video {
   position: absolute;
@@ -851,8 +907,6 @@ select:focus-visible {
   height: 100%;
   will-change: transform;
 }
-/* A photo covers the frame and a video is letterboxed into it — the same two fits
-   `photo_filter` and `video_filter` give them, so the preview is the export. */
 .canvas img {
   object-fit: cover;
 }

@@ -28,6 +28,7 @@
  *   `failed` with an **Interrupted** error and offers Retry. It never re-sends itself.
  */
 
+import { DEFAULT_ASPECT_RATIO, isAspectRatio } from './aspect';
 import {
   MAX_PX_PER_SECOND,
   MIN_CLIP_DURATION_MS,
@@ -117,6 +118,12 @@ export interface ProjectFile {
   audioTracks: AudioTrack[];
   cutPrompts: Record<string, string>;
   cutModes: Record<string, TransitionMode>;
+  /**
+   * The shape of the project's frame — an `ASPECT_RATIOS` id. Additive, and deliberately
+   * *not* a version bump: a file written before it existed simply reads as 16:9, which is
+   * the only frame those projects ever had.
+   */
+  aspectRatio: string;
   /** Absent in a project written before there was anywhere to put it. */
   view?: SavedView;
   /** Only ever the live ones, and never a film leg. Absent when there were none. */
@@ -130,6 +137,7 @@ export interface ProjectDocument {
   audioTracks: AudioTrack[];
   cutPrompts: Record<string, string>;
   cutModes: Record<string, TransitionMode>;
+  aspectRatio: string;
   view?: SavedView;
   generations?: Record<string, Generation>;
 }
@@ -157,6 +165,7 @@ export function toProjectFile(doc: ProjectDocument): ProjectFile {
     audioTracks: doc.audioTracks,
     cutPrompts: doc.cutPrompts,
     cutModes: doc.cutModes,
+    aspectRatio: doc.aspectRatio,
   };
   if (doc.view) file.view = { ...doc.view };
 
@@ -246,6 +255,7 @@ export function readProjectFile(raw: unknown): ProjectRead {
     cutModes: prunedCutKeys(record(raw.cutModes), live, (v) =>
       v === 'insert' || v === 'replace' ? v : null,
     ),
+    aspectRatio: readAspectRatio(raw.aspectRatio),
   };
 
   const view = readView(raw.view);
@@ -307,6 +317,7 @@ export function hydrate(
     audioTracks: file.audioTracks,
     cutPrompts: file.cutPrompts,
     cutModes: file.cutModes,
+    aspectRatio: file.aspectRatio,
   };
   if (file.view) doc.view = file.view;
   if (file.generations) doc.generations = hydrateGenerations(file.generations);
@@ -476,6 +487,19 @@ function readView(raw: unknown): SavedView | null {
     // Snapping is on unless the file says otherwise, which is also the app's own default.
     snapping: raw.snapping !== false,
   };
+}
+
+/**
+ * The frame the project was drawn at.
+ *
+ * The one field here that is *defaulted* rather than refused: every project written before
+ * this setting existed is missing it and is a perfectly good 16:9 project, so absent and
+ * unrecognised both mean the same thing. Refusing the file over a ratio a later build
+ * added would throw away a whole timeline over its shape.
+ */
+function readAspectRatio(raw: unknown): string {
+  const id = str(raw);
+  return id !== null && isAspectRatio(id) ? id : DEFAULT_ASPECT_RATIO;
 }
 
 function readGeneration(raw: unknown): SavedGeneration | null {

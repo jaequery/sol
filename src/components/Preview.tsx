@@ -1,5 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
 import { useEditor } from '../state/store';
+import { ASPECT_RATIOS, aspectRatio, aspectValue } from '../lib/aspect';
 import { clipAt } from '../lib/timeline';
 import {
   eachMedia,
@@ -22,21 +30,25 @@ import { Icon } from './Icon';
 /**
  * The preview.
  *
- * A photo is drawn covering the frame and a video letterboxed into it, exactly as the
- * export renders each. A video element owns the clock while its clip plays — the playhead
- * follows its `currentTime` (see `lib/preview-sync`), so the frame on screen and the
- * timecode cannot disagree. The next video clip on the track stays mounted invisibly,
- * primed to its in-point, so crossing a cut into it needs no load and no seek. A gap
- * between two clips is black here, exactly as the exporter renders it.
+ * A photo is drawn covering the frame and a video is fitted inside it, exactly as the
+ * export renders each (`photo_filter` crops, `video_filter` pads — footage is never thrown
+ * away). The frame's own shape is the project's aspect ratio. A video element
+ * owns the clock while its clip plays — the playhead follows its `currentTime` (see
+ * `lib/preview-sync`), so the frame on screen and the timecode cannot disagree. The next
+ * video clip on the track stays mounted invisibly, primed to its in-point, so crossing a
+ * cut into it needs no load and no seek. A gap between two clips is black here, exactly
+ * as the exporter renders it.
  *
  * On top of that framing sits the clip's own: the crop, quarter turn, flips and zoom it
- * carries. `lib/transform` works out where the four layers below go, from the same numbers
- * the exporter builds its filter chain out of, so what is on screen is what is written.
+ * carries. `lib/transform` works out where the four layers below go — from the project's
+ * frame shape and the same numbers the exporter builds its filter chain out of — so what
+ * is on screen is what is written, at whatever shape the frame happens to be.
  */
 export function Preview() {
   const clips = useEditor((s) => s.clips);
   const assets = useEditor((s) => s.assets);
   const playheadMs = useEditor((s) => s.playheadMs);
+  const frame = useEditor((s) => s.aspectRatio);
   const croppingClipId = useEditor((s) => s.croppingClipId);
 
   const syncNow = usePreviewSync();
@@ -47,7 +59,7 @@ export function Preview() {
 
   if (clips.length === 0) {
     return (
-      <div className="stage">
+      <div className="stage" style={frameStyle(frame)}>
         <div className="stage__empty">
           <Icon name="film" size={36} />
           <b>Nothing to preview yet</b>
@@ -66,10 +78,10 @@ export function Preview() {
   const cropping = Boolean(clip && croppingClipId === clip.id && !missing);
 
   return (
-    <div className="stage">
-      <div className="canvas" data-testid="preview-canvas">
+    <div className="stage" style={frameStyle(frame)}>
+      <div className="canvas" data-testid="preview-canvas" data-aspect={frame}>
         {pool.map(({ clip: c, src }) => (
-          <Framed key={c.id} geo={framingOf(c, croppingClipId)}>
+          <Framed key={c.id} geo={framingOf(c, croppingClipId, frame)}>
             <PreviewVideo
               clip={c}
               src={src}
@@ -80,7 +92,7 @@ export function Preview() {
         ))}
 
         {clip?.kind === 'photo' && asset?.src && !asset.missing && (
-          <Framed geo={framingOf(clip, croppingClipId)}>
+          <Framed geo={framingOf(clip, croppingClipId, frame)}>
             <img src={asset.src} alt={clip.name} draggable={false} />
           </Framed>
         )}
@@ -98,7 +110,7 @@ export function Preview() {
           </div>
         )}
 
-        {cropping && clip && <CropOverlay clip={clip} />}
+        {cropping && clip && <CropOverlay clip={clip} frame={frame} />}
 
         {/* No timecode here: the transport directly below is the timecode, and a second
             copy of the same number on the frame was the one thing the frame did not need. */}
@@ -119,9 +131,9 @@ export function Preview() {
  * reach the part of the picture they are cropping *to* rather than only the part they
  * already cropped *from*.
  */
-function framingOf(clip: Clip, croppingClipId: string | null): PreviewGeometry {
+function framingOf(clip: Clip, croppingClipId: string | null, frame: string): PreviewGeometry {
   const t = clipTransform(clip);
-  return previewGeometry(croppingClipId === clip.id ? croppingTransform(t) : t);
+  return previewGeometry(croppingClipId === clip.id ? croppingTransform(t) : t, aspectValue(frame));
 }
 
 /**
@@ -207,7 +219,7 @@ const CORNERS: CropHandle[] = ['nw', 'ne', 'sw', 'se'];
  * end up; a box with no width yet (a frame that has not been laid out) simply does not
  * move, rather than dividing by zero.
  */
-function CropOverlay({ clip }: { clip: Clip }) {
+function CropOverlay({ clip, frame }: { clip: Clip; frame: string }) {
   const setClipCrop = useEditor((s) => s.setClipCrop);
   const endCrop = useEditor((s) => s.endCrop);
   const boxRef = useRef<HTMLDivElement | null>(null);
@@ -216,7 +228,9 @@ function CropOverlay({ clip }: { clip: Clip }) {
   );
 
   const crop = clipTransform(clip).crop;
-  const fit = previewGeometry(croppingTransform(clipTransform(clip))).fit;
+  // The same box the picture is fitted into while the tool is open, so the rectangle's
+  // fractions are the ones the clip stores — whatever shape the project's frame is.
+  const fit = previewGeometry(croppingTransform(clipTransform(clip)), aspectValue(frame)).fit;
 
   useEffect(() => {
     if (!drag) return;
@@ -313,4 +327,53 @@ function usePreviewSync(): () => void {
   }, [syncNow]);
 
   return syncNow;
+}
+
+/**
+ * The frame's shape, handed to CSS.
+ *
+ * A custom property rather than a rule per ratio, so `lib/aspect` stays the only place
+ * that knows which shapes exist: `16 / 9` serves both the `aspect-ratio` and the
+ * `calc(100cqh * …)` that keeps a tall frame inside a short stage.
+ */
+function frameStyle(id: string): CSSProperties {
+  const { w, h } = aspectRatio(id);
+  return { '--frame-ratio': `${w} / ${h}` } as CSSProperties;
+}
+
+/**
+ * The frame's shape, as a control.
+ *
+ * It lives in the preview's panel head rather than in Settings because it is a property of
+ * *this project* and its whole effect is visible right below it — you pick 9:16 and the
+ * frame turns on its side while you watch. Settings is for the machine (credentials,
+ * models); the frame is the edit.
+ */
+export function AspectRatioPicker() {
+  const value = useEditor((s) => s.aspectRatio);
+  const setAspectRatio = useEditor((s) => s.setAspectRatio);
+
+  return (
+    <div className="aspect-pick">
+      <Icon name="frame" size={13} />
+      {/* "Frame aspect ratio", not "Aspect ratio": the create sheet's own aspect control
+          can be on screen at the same time, over this very panel, and two controls with
+          one name is how you pick the wrong one. This is the project's frame. */}
+      <label className="visually-hidden" htmlFor="frame-aspect">
+        Frame aspect ratio
+      </label>
+      <select
+        id="frame-aspect"
+        value={value}
+        title="The shape of the frame — what the preview draws and the export writes"
+        onChange={(e) => setAspectRatio(e.target.value)}
+      >
+        {ASPECT_RATIOS.map((a) => (
+          <option key={a.id} value={a.id}>
+            {a.id} · {a.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
 }

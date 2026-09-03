@@ -44,7 +44,8 @@ export type IconName =
   | 'flip-h'
   | 'flip-v'
   | 'crop'
-  | 'frame';
+  | 'frame'
+  | 'move';
 
 /** Lucide-style 24-unit paths; `fill` marks the few solid glyphs (transport). */
 const PATHS: Record<IconName, { d: string[]; fill?: boolean }> = {
@@ -153,8 +154,16 @@ const PATHS: Record<IconName, { d: string[]; fill?: boolean }> = {
       'M5 16v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3z',
     ],
   },
+  // Crop marks, for the tool that draws a rectangle on the picture. The *project's* frame
+  // shape wears `frame` — two controls that are regularly on screen together, so they must
+  // not wear one glyph.
   crop: { d: ['M6 2v14a2 2 0 0 0 2 2h14', 'M18 22V8a2 2 0 0 0-2-2H2'] },
   frame: { d: ['M8 3H5a2 2 0 0 0-2 2v3', 'M21 8V5a2 2 0 0 0-2-2h-3', 'M3 16v3a2 2 0 0 0 2 2h3', 'M16 21h3a2 2 0 0 0 2-2v-3'] },
+  // Four arrows out of a centre: the standard "this moves and scales" affordance, for the
+  // inspector card that does both.
+  move: {
+    d: ['M5 9l-3 3 3 3', 'M9 5l3-3 3 3', 'M9 19l3 3 3-3', 'M19 9l3 3-3 3', 'M2 12h20', 'M12 2v20'],
+  },
 };
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'name'> {

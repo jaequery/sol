@@ -407,7 +407,7 @@ function TransformCard({ clip, offline }: { clip: Clip; offline: boolean }) {
   return (
     <div className="card">
       <div className="card__head">
-        <Icon name="frame" size={15} />
+        <Icon name="move" size={15} />
         <span className="card__title">Transform</span>
       </div>
       <div className="card__body">

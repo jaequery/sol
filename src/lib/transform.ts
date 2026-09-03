@@ -15,15 +15,20 @@
  *   a crop rectangle dragged over a sideways clip is a rectangle of what they can see.
  * - **fit** puts the cropped picture back inside the export frame without stretching it, so
  *   a crop of a shape the frame does not have — or a quarter turn, which is always one —
- *   sits on black rather than being squashed into 16:9.
+ *   sits on black rather than being squashed into the frame's shape.
  * - **zoom last**, on the composed frame, so the number means the same thing whatever is
  *   under it: 2× is twice as close, black bars and all.
  *
  * The thing being transformed is **the framed picture**: the source already fitted to the
  * export frame — a photo cover-cropped to it, a video letterboxed into it, exactly as
  * `photo_filter` and `video_filter` do it and exactly as the preview shows it. So a crop is
- * a fraction of a 16:9 picture on both sides of the app, and no part of this has to know
- * how many pixels the source file happened to have.
+ * a fraction of the *frame's* picture on both sides of the app, and no part of this has to
+ * know how many pixels the source file happened to have.
+ *
+ * What shape that frame is belongs to the project (`lib/aspect`), not to this module and
+ * not to a clip — so `previewGeometry` is handed it rather than assuming one. A crop is a
+ * fraction either way, which is what lets a project be turned on its side without every
+ * clip's framing having to be re-derived.
  */
 
 import {
@@ -36,9 +41,6 @@ import {
   type ClipTransform,
   type CropRect,
 } from '../types/project';
-
-/** The export frame's shape, and the preview canvas's. 1920×1080, and `.canvas` in the CSS. */
-export const FRAME_ASPECT = 16 / 9;
 
 /** The whole picture — what `crop` is until something narrows it. */
 export const FULL_CROP: CropRect = { x: 0, y: 0, width: 1, height: 1 };
@@ -239,11 +241,16 @@ function centred(width: number, height: number): LayerStyle {
 /**
  * Where each of the four layers goes, for one transform, in a frame of the given shape.
  *
- * Everything is a percentage of the layer above, so none of this needs to know how many
- * pixels the canvas is on screen — the same numbers are right on a laptop and on a 5K
+ * `frameAspect` is how many times wider than tall the frame is — `aspectValue(id)` for the
+ * project's ratio. It has no default on purpose: a silent 16:9 would draw a vertical
+ * project's clips at the wrong shape and look like a rounding bug rather than a missing
+ * argument.
+ *
+ * Everything else is a percentage of the layer above, so none of this needs to know how
+ * many pixels the canvas is on screen — the same numbers are right on a laptop and on a 5K
  * display, and right in a test where nothing has been laid out at all.
  */
-export function previewGeometry(t: ClipTransform, frameAspect = FRAME_ASPECT): PreviewGeometry {
+export function previewGeometry(t: ClipTransform, frameAspect: number): PreviewGeometry {
   const turned = t.rotation === 90 || t.rotation === 270;
   // The rotated picture, in frame heights: the frame itself, or the frame on its side.
   const rotW = turned ? 1 : frameAspect;
