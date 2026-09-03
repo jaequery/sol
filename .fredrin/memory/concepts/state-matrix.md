@@ -15,7 +15,7 @@ hi-fi walkthrough artifact.
 | 5 | **Unsupported / unreadable file** | Probe failed or MIME not in the allowlist | Inline error row in the bin naming the file and the reason; other files in the same drop still import | Dismiss, or re-import |
 | 6 | **Media offline** | Source file moved/deleted after import | Clip renders hatched with a "media offline" badge; preview shows the reason; export is blocked with a pointer to the clip | Remove the clip and re-import (there is no relink) |
 | 6a | **Bin has media** | One or more imports succeeded | The bin head keeps a **+ Import** button whatever the bin holds, so a second import never depends on the empty state's CTA | Click + Import |
-| 6d | **Two ways media gets in** | Any state | Beside + Import the bin head carries **✦ Generate**, which opens the compose panel (section 12). Importing is untouched by it: the two are separate actions on the same panel, and neither is behind the other. While the panel is open a tile is a reference picker rather than a drag source (row 6c stands down) | Click either |
+| 6d | **Two ways media gets in** | Any state | Beside + Import the bin head carries **✦ Generate**, which opens the create sheet (section 12). Importing is untouched by it: the two are separate actions on the same panel, and neither is behind the other. While the sheet is open a tile is a reference picker rather than a drag source (row 6c stands down) — the sheet floats over the preview stage, not over the bin, precisely so that stays possible | Click either |
 | 6c | **Tile dragged out of the bin** | Press a bin tile and carry it over the track (or Enter on a focused tile) | The track lights in accent and the insertion marker shows where it will land, exactly as an OS file drag does. Releasing over the track adds the asset there — a photo or video at the boundary nearest the pointer, a sound on a new lane at the exact release point — as a **fresh copy**, so an asset can appear on the track as often as it is dragged. Enter adds it at the playhead. Released anywhere else, or taken back off the track, nothing is added. A tile whose file has gone (state 6) is not a source at all — it keeps its ✕ and nothing else | Drag it again, or delete the clip |
 | 6b | **Media removed** | ✕ on a bin tile | The tile goes, and so do that asset's clips on the timeline — a clip with no media could only ever render as "media offline". Any in-flight generation on those clips is cancelled, the selection falls back to nothing, and the playhead clamps to the shorter timeline. Emptying the bin returns it to state 1 | Re-import |
 
@@ -242,32 +242,47 @@ everything else.
 | 92b | **A render interrupted by the restart** | The app closed while a generation was in flight | It comes back as an ordinary failed card — a red **✕ FAILED** chip on its cut, or a card at the top of the media bin for a photo — reading **Interrupted**: *"SolCut closed while this was rendering. Nothing was sent again — Retry to start it over."* **Retry** and **Dismiss**, exactly as any failure. Nothing re-submits itself, and the bar's "n rendering" count stays at zero. It is written down only while the render is actually running, so the report is made once and the next save lets it go | Retry, or Dismiss |
 | 92c | **A film leg interrupted** | The same, for a leg of a three-photo film | Nothing. A film's own state is not part of the project, so a leg has nothing to come back to; the record is refused rather than restored into a card that could never act | Start the film again |
 
-## 12. Generating a photo (the compose panel)
+## 12. Generating a photo or a video (the create sheet)
 
-The media bin's other way in: describe a photo and Higgsfield makes it — from the prompt
-alone, or **on top of** photos already in the bin, attached as references. It runs through
-the same CLI, the same job loop and the same `generation:update` events as a transition,
-so every generation state in section 3 applies here too; the rows below are only what is
-particular to a photo.
+The media bin's other way in: describe a photo or a video and Higgsfield makes it. A photo
+comes from the prompt alone or **on top of** photos already in the bin, attached as
+references; a video comes from the words and nothing else — text-to-video, with no still on
+either end of it, which is what distinguishes it from the transitions of section 4. Both run
+through the same CLI, the same job loop and the same `generation:update` events as a
+transition, so every generation state in section 3 applies here too; the rows below are only
+what is particular to the bin's own generations.
 
-The panel lives *inside* the bin rather than over it, because the bin is the reference
-picker — covering the tiles would defeat the flow. The result lands in the bin and nowhere
-else: the timeline is never edited on the user's behalf.
+The sheet floats **over the preview stage**, which is the widest surface on screen, and
+covers exactly the stage — from under the column's own head to above the transport. It
+deliberately does *not* cover the bin: in photo mode every usable tile there is a reference
+toggle, and covering them would defeat the flow. It is not a modal either — no scrim, no
+`aria-modal`, no focus trap, because trapping Tab would put those same tiles out of keyboard
+reach. (It used to live inside the bin, a 280px column; that is what made it read as a form
+rather than a tool.)
+
+The **Photo | Video** switch changes four things — the prompt's label, the one hint line, the
+disclosed options and the action — and moves nothing. The typed prompt survives it, because
+deciding a described shot should move is a change of mind about the medium, not the shot.
+
+Either result lands in the bin and nowhere else: the timeline is never edited on the user's
+behalf.
 
 | # | State | Trigger | What is shown | Way out |
 |---|---|---|---|---|
 | 92 | **Closed** | Default | Nothing but the **✦ Generate** button in the bin head | Click ✦ Generate |
-| 93 | **Composing** | ✦ Generate clicked | A prompt box (focused) spanning the bin's columns, one line of guidance, an **Options** disclosure and a full-width **✦ Generate image**. Model and aspect ratio are behind Options, closed — the default path is type, then Generate | Generate, Cancel, or Escape |
-| 94 | **Draft kept** | Cancel or Escape while composing | The panel closes and the prompt, the references and the picks are still there when it reopens. Only a generation that actually went clears them | Reopen |
-| 95 | **Picking references** | Panel open | Every usable bin photo becomes a toggle: an accent border and a number in click order. Its ✕ stands down while composing — removing is not this screen's task. Videos, audio, offline photos, and photos with no file on disk (a browser drop) are not offered at all, because they cannot be uploaded | Click a picked photo to take it off |
+| 93 | **Composing** | ✦ Generate clicked | The sheet over the stage: a head carrying the title, the **Photo \| Video** switch and a ✕; a focused prompt box; one line of guidance; an **Options** disclosure; and a **✦ Generate photo** / **✦ Generate video** action. Options is closed — the default path is type, then Generate | Generate, ✕, or Escape |
+| 94 | **Draft kept** | ✕ or Escape while composing | The sheet closes and the prompt, the references, the picks and the chosen mode are still there when it reopens. Only a generation that actually went clears them — and even then the mode survives, because that is which tool is in hand rather than a per-request option | Reopen |
+| 95 | **Picking references** | Sheet open in **Photo** mode | Every usable bin photo becomes a toggle: an accent border and a number in click order. Its ✕ stands down while composing — removing is not this screen's task. Videos, audio, offline photos, and photos with no file on disk (a browser drop) are not offered at all, because they cannot be uploaded | Click a picked photo to take it off |
 | 96 | **Reference limit** | The chosen model's cap is reached | Further photos simply do not attach; the hint reads "n of 14 references". Switching to a model with a smaller cap trims the picks to fit | Take one off |
-| 97 | **Options open** | Options clicked | **Image model** (Nano Banana Pro, Seedream 4.5, FLUX.2, GPT Image 2) and **Aspect ratio**. The ratios follow the model — each publishes its own set — and a ratio the new model does not take is swapped for one it does, rather than sent and refused | Hide options |
-| 98 | **Not connected** | No Higgsfield CLI on the machine | The panel refuses up front: **✦ Generate image** is dark and a callout says so with **Open settings →**. Nothing is sent (section 3's rule, at the bin) | Connect, or Cancel |
-| 99 | **Nothing asked for** | The prompt is empty or blank | **✦ Generate image** is dark. A prompt is always required, even where a model would accept references alone | Type something |
-| 100 | **Generating** | ✦ Generate image pressed | The panel closes and clears, and a shimmering tile joins the bin wearing ✦ and a ✕ — the same language an import already speaks. The editor stays fully usable, the title bar's "n rendering" chip counts it, and another photo can be asked for straight away | Wait, or ✕ to stop |
+| 97 | **Options open (photo)** | Options clicked in Photo mode | **Image model** (Nano Banana Pro, Seedream 4.5, FLUX.2, GPT Image 2) and **Aspect ratio**. The ratios follow the model — each publishes its own set — and a ratio the new model does not take is swapped for one it does, rather than sent and refused | Hide options |
+| 97a | **Options open (video)** | Options clicked in Video mode | **Video model** only — the same Higgsfield video catalog a transition uses, Seedance 2.5 by default, plus the Settings **Custom** entry when it is set. **No aspect ratio and no length**: a prompt-only request carries neither, so a control for either would be a lie. The local motion backends are absent — they composite between two supplied stills and there are none | Hide options |
+| 98 | **Not connected** | No Higgsfield CLI on the machine | The sheet refuses up front: the action is dark and a callout says so with **Open settings →**. Both modes are refused — there is no local generator to fall back on for either. Nothing is sent (section 3's rule, at the bin) | Connect, or ✕ |
+| 99 | **Nothing asked for** | The prompt is empty or blank | The action is dark. A prompt is always required, even where a model would accept references alone | Type something |
+| 100 | **Generating** | The action pressed | The sheet closes and clears (keeping its mode), and a shimmering tile joins the bin wearing ✦ and a ✕ — the same language an import already speaks. The editor stays fully usable, the title bar's "n rendering" chip counts it, and another photo can be asked for straight away | Wait, or ✕ to stop |
 | 101 | **Cancelled** | ✕ on a generating tile | The tile goes. Uploading a dozen references takes minutes, so the cancel is honoured the moment the submission is answered rather than a poll later; the job runs out on Higgsfield's side and its result is dropped | — |
-| 102 | **Failed** | The CLI or the job refused | An error row in the bin in the CLI's own words, with **Retry** (only when retrying could help) and **Dismiss**. The prompt and references are on the generation's record, so a retry re-sends exactly what the first attempt did — and a reference removed from the bin meanwhile is simply left out | Retry, or dismiss |
-| 103 | **Landed** | The job completed and the file downloaded | A new photo tile in the bin, named after the file itself, and one **Photo ready** toast. **Nothing on the timeline moves** — drag it on when you want it, exactly like an import. It is an ordinary photo asset with a real path, so it persists like any other (section 11) | Drag it to the track |
+| 102 | **Failed** | The CLI or the job refused | An error row in the bin in the CLI's own words, naming the kind it could not make, with **Retry** (only when retrying could help) and **Dismiss**. Everything the attempt sent is on the generation's record, so a retry re-sends exactly it — for a photo, a reference removed from the bin meanwhile is simply left out; a video's two fields cannot go stale | Retry, or dismiss |
+| 103 | **Landed (photo)** | The job completed and the file downloaded | A new photo tile in the bin, named after the file itself, and one **Photo ready** toast. **Nothing on the timeline moves** — drag it on when you want it, exactly like an import. It is an ordinary photo asset with a real path, so it persists like any other (section 11) | Drag it to the track |
+| 103a | **Landed (video)** | The job completed and the file downloaded | A new video tile in the bin wearing the VIDEO badge, and one **Video ready** toast. Nothing on the timeline moves, as above. The file is named `.mp4` by SolCut rather than from what the server said it served — the bin classifies by extension and nothing else — and its **length is measured as it lands**, because the bin-drag path is the one place nothing would ever measure it later: an unmeasured generated video would sit at the 5 s default for good | Drag it to the track |
 
 ## 13. Which project is open
 

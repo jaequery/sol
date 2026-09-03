@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { AudioMixer } from './components/AudioMixer';
+import { CreateSheet } from './components/CreateSheet';
 import { ExportDialog } from './components/ExportDialog';
 import { FilmWizard } from './components/FilmWizard';
 import { Inspector } from './components/Inspector';
@@ -36,12 +37,17 @@ export function App() {
       <TitleBar />
       <div className="body">
         <MediaBin />
-        <div className="col">
+        {/* `col--stage` only makes this column a positioning context. The create sheet
+            floats inside it, over the stage and nothing else — the bin stays visible and
+            clickable to its left, which is what a photo generation's reference picking
+            needs, and the timeline's height cannot push the sheet off. */}
+        <div className="col col--stage">
           <div className="panel-head">
             <span className="panel-head__title">Preview</span>
           </div>
           <Preview />
           <Transport />
+          <CreateSheet />
         </div>
         <Inspector />
       </div>

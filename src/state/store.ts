@@ -110,13 +110,33 @@ export interface ImportProblem {
  */
 export interface ImagePanel {
   open: boolean;
+  /**
+   * Which kind of media the sheet is currently making.
+   *
+   * The prompt is shared across a switch on purpose — describing a beach and then deciding
+   * it should move is a change of mind about the medium, not about the shot, and retyping
+   * it would be the panel punishing the user for switching.
+   */
+  mode: CreateMode;
   prompt: string;
-  /** Bin asset ids attached as references, in the order they were clicked. */
+  /** Bin asset ids attached as references, in the order they were clicked. Photo mode only. */
   referenceAssetIds: string[];
-  /** An `IMAGE_MODELS` id. */
+  /** An `IMAGE_MODELS` id. Photo mode only — see `videoModelId`. */
   modelId: string;
+  /**
+   * A `RENDER_MODELS` id (or `custom`), kept separate from `modelId` rather than sharing it.
+   *
+   * Sharing one field would be a quiet trap: `setImageModel` feeds its value to
+   * `imageAspectFor` and `imageReferenceLimit`, both of which fall back to `IMAGE_MODELS[0]`
+   * for an id they do not recognise — so a video model parked in `modelId` would silently
+   * start behaving as Nano Banana Pro.
+   */
+  videoModelId: string;
   aspect: string;
 }
+
+/** Photo or video — what the create sheet is pointed at. */
+export type CreateMode = 'photo' | 'video';
 
 /** Everything one image generation needs — the panel's draft, or a failed one's record. */
 export interface ImageRequestDraft {
@@ -126,14 +146,39 @@ export interface ImageRequestDraft {
   aspect: string;
 }
 
+/**
+ * Everything one prompt-only video generation needs.
+ *
+ * Two fields, and there is nothing missing: a text-to-video request carries no references
+ * and no aspect ratio, so a retry from a failed record is exact.
+ */
+export interface VideoRequestDraft {
+  prompt: string;
+  modelId: string;
+}
+
 export function emptyImagePanel(): ImagePanel {
   return {
     open: false,
+    mode: 'photo',
     prompt: '',
     referenceAssetIds: [],
     modelId: backend.DEFAULT_IMAGE_MODEL_ID,
+    videoModelId: backend.DEFAULT_MODEL_ID,
     aspect: backend.DEFAULT_IMAGE_ASPECT,
   };
+}
+
+/**
+ * The panel as it stands after a send: clean, but still pointed at the same kind of media.
+ *
+ * The mode is deliberately the one thing that survives. It is not a per-request option
+ * like the prompt or the model — it is which tool the user has in hand, and ejecting them
+ * back to photos every time they generate a video would be the panel forgetting what they
+ * are doing.
+ */
+function clearedPanel(mode: CreateMode): ImagePanel {
+  return { ...emptyImagePanel(), mode };
 }
 
 /**
@@ -438,8 +483,10 @@ export interface EditorState {
   placeFilmOnTimeline: () => void;
   dismissFilm: () => void;
 
-  // ---- generating a photo (the media bin's compose panel)
+  // ---- generating a photo or a video (the media bin's create sheet)
   openImagePanel: () => void;
+  /** Point the sheet at photos or at video. The typed prompt survives the switch. */
+  setCreateMode: (mode: CreateMode) => void;
   /** Put the panel away, keeping the draft — only a generation that went clears it. */
   closeImagePanel: () => void;
   setImagePrompt: (prompt: string) => void;
@@ -455,6 +502,13 @@ export interface EditorState {
    * leaves the panel alone.
    */
   startImageGeneration: (request?: ImageRequestDraft) => string | null;
+  setVideoModel: (modelId: string) => void;
+  /**
+   * Send one prompt-only video generation and return its id, or `null` when nothing was
+   * sent. Called with nothing it takes the sheet's draft and, on a successful send, clears
+   * and closes it; called with a request — a retry — it sends exactly that.
+   */
+  startVideoGeneration: (request?: VideoRequestDraft) => string | null;
 
   // ---- the saved project
   restoreProject: () => Promise<RestoreOutcome>;
@@ -634,10 +688,13 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     // A generation is doomed when any clip it works for is: either side of the cut, or the
     // transition clip it would replace.
-    // Film legs animate between photos, not clips, and an image generation is a photo the
-    // bin asked for — neither has a clip on the track that speaks for it.
+    // Film legs animate between photos, not clips, and a generated photo or video is media
+    // the bin asked for — none of the three has a clip on the track that speaks for it, so
+    // none of them is doomed by an edit to the track. Getting this wrong in the other
+    // direction is expensive rather than merely wrong: it would cancel a paid render
+    // because the user deleted some unrelated tile.
     const generationDoomed = (g: Generation) =>
-      g.target.kind === 'film' || g.target.kind === 'image'
+      g.target.kind === 'film' || g.target.kind === 'image' || g.target.kind === 'video'
         ? false
         : doomed.has(g.target.afterClipId) ||
           doomed.has(g.target.beforeClipId) ||
@@ -1066,6 +1123,13 @@ export const useEditor = create<EditorState>((set, get) => ({
         modelId: generation.modelId,
         aspect: target.aspect,
       });
+    } else if (target.kind === 'video') {
+      // The whole of a prompt-only request is the words and the model, and both are on the
+      // record — so unlike an image retry there is nothing that could have gone stale.
+      void get().startVideoGeneration({
+        prompt: generation.prompt,
+        modelId: generation.modelId,
+      });
     } else if (target.replacesClipId !== undefined) {
       get().regenerateTransition(target.replacesClipId);
     } else if (leg) {
@@ -1182,6 +1246,10 @@ export const useEditor = create<EditorState>((set, get) => ({
         // A photo goes into the bin and nowhere else: the timeline is the user's, and a
         // generation finishing mid-edit must not move anything they were working on.
         landImageResult(set, get, next, update.outputPath);
+      } else if (next.target.kind === 'video') {
+        // The same promise for a generated video — with one extra step a photo does not
+        // need, because a video has a length and nothing downstream would ever measure it.
+        landVideoResult(set, get, next, update.outputPath);
       } else {
         landCutResult(set, get, next, next.target, update.outputPath);
       }
@@ -1312,7 +1380,44 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     // The generation owns the prompt and the references now, so the panel starts clean —
     // and a second photo can be asked for while the first is still rendering.
-    if (!request) set({ imagePanel: emptyImagePanel() });
+    if (!request) set((st) => ({ imagePanel: clearedPanel(st.imagePanel.mode) }));
+    return id;
+  },
+
+  /**
+   * Point the sheet at photos or at video.
+   *
+   * Only the mode changes. The prompt in particular survives: deciding a described shot
+   * should move is a change of mind about the medium, not about the shot.
+   */
+  setCreateMode: (mode) => set((s) => ({ imagePanel: { ...s.imagePanel, mode } })),
+
+  setVideoModel: (videoModelId) =>
+    set((s) => ({ imagePanel: { ...s.imagePanel, videoModelId } })),
+
+  startVideoGeneration(request) {
+    const s = get();
+    if (!s.settings?.configured) {
+      get().pushToast({
+        tone: 'error',
+        title: 'Connect Higgsfield first',
+        detail: 'Generating a video runs through the Higgsfield CLI — Settings has the setup.',
+      });
+      return null;
+    }
+
+    const draft = request ?? {
+      prompt: s.imagePanel.prompt,
+      modelId: s.imagePanel.videoModelId,
+    };
+    const prompt = draft.prompt.trim();
+    if (!prompt) return null;
+
+    const id = launchGeneration(set, get, { kind: 'video' }, prompt, draft.modelId, {
+      kind: 'prompt',
+    });
+
+    if (!request) set((st) => ({ imagePanel: clearedPanel(st.imagePanel.mode) }));
     return id;
   },
 
@@ -2811,7 +2916,9 @@ type Submission =
        */
       spanMs?: number;
     }
-  | { kind: 'references'; paths: string[]; aspect: string };
+  | { kind: 'references'; paths: string[]; aspect: string }
+  /** A prompt-only video: the words are the whole submission. */
+  | { kind: 'prompt' };
 
 /**
  * Record a generation and submit it. The record lands synchronously (so callers get an id
@@ -2873,13 +2980,24 @@ function launchGeneration(
           provider,
           spanMs: submission.spanMs,
         });
-      } else {
+      } else if (submission.kind === 'references') {
         await backend.generateImage({
           generationId,
           prompt,
           references: submission.paths,
           model: backend.imageModelJob(modelId),
           aspectRatio: submission.aspect,
+        });
+      } else {
+        // `modelJob` throws rather than resolving a local backend's id to a Higgsfield
+        // job, which is the guard that matters here: those backends composite between two
+        // stills and cannot make a shot from words, so an id that reached this line would
+        // otherwise start a paid render nobody asked for. It also normalises `custom` to
+        // the model id Settings holds.
+        await backend.generateVideo({
+          generationId,
+          prompt,
+          model: backend.modelJob(modelId, get().settings?.customModel),
         });
       }
     } catch (error) {
@@ -2940,6 +3058,59 @@ function landImageResult(
   };
   set((s) => ({ assets: { ...s.assets, [asset.id]: asset } }));
   get().pushToast({ tone: 'ok', title: 'Photo ready', detail: generation.prompt });
+}
+
+/**
+ * A generated video, landing in the bin — and then measured.
+ *
+ * The same promise `landImageResult` makes: nothing on the timeline moves, and the user
+ * drags it on when they want it. The difference is the probe, and it is not optional.
+ *
+ * A video clip needs a length, and the bin-drag path is the one place nothing would ever
+ * supply one later: `placeAssetOnTimeline` passes the asset's own `durationMs` straight
+ * through, and `probeDurations` only ever patches the clip its own import created. So an
+ * unmeasured generated video would land at the 5 s default **and stay there for good**,
+ * however long the file really is. Measuring it here, once, is what makes it behave like
+ * any imported video — and `durationMs` persists with the project, so this never has to
+ * run again.
+ *
+ * Both guards on the probe's result are load-bearing:
+ *
+ * - `stillCurrent(epoch)` — the answer is about the project that asked. A probe resolving
+ *   after the user opened another project would otherwise write a length into whichever
+ *   one is open now.
+ * - the asset-presence check — a probe resolving after the user deleted the tile would
+ *   otherwise put the asset back as a `{ durationMs }`-only husk with no path and no name.
+ */
+function landVideoResult(
+  set: Setter,
+  get: () => EditorState,
+  generation: Generation,
+  outputPath: string,
+): void {
+  const asset: MediaAsset = {
+    id: makeId('asset'),
+    // The file's own name, as with a photo. The backend named it `.mp4` itself rather than
+    // from what the server said it served, which is what keeps the bin — whose only way of
+    // telling media apart is the extension — from reading this back as a photo.
+    name: outputPath.split(/[\\/]/).pop() || `ai-${generation.id}.mp4`,
+    kind: 'video',
+    path: outputPath,
+    src: backend.assetSrc(outputPath),
+    sizeBytes: 0,
+  };
+  set((s) => ({ assets: { ...s.assets, [asset.id]: asset } }));
+  get().pushToast({ tone: 'ok', title: 'Video ready', detail: generation.prompt });
+
+  const epoch = documentEpoch;
+  void probeVideoDurationMs(asset.src, DEFAULT_VIDEO_DURATION_MS).then((durationMs) => {
+    if (!stillCurrent(epoch)) return;
+    set((s) => ({
+      assets: s.assets[asset.id]
+        ? { ...s.assets, [asset.id]: { ...s.assets[asset.id], durationMs } }
+        : s.assets,
+    }));
+  });
 }
 
 function landCutResult(

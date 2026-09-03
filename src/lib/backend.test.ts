@@ -16,6 +16,7 @@ import {
   readinessHint,
   renderReady,
   RENDER_MODELS,
+  videoModelChoices,
   type AgentStatus,
   type SettingsView,
 } from './backend';
@@ -186,5 +187,38 @@ describe('whether a choice can render on this machine', () => {
 describe('the desktop shell’s permissions', () => {
   it('grants the window destroy that the close-flush depends on', () => {
     expect(capability.permissions).toContain('core:window:allow-destroy');
+  });
+});
+
+describe('the video model list', () => {
+  it('is the Higgsfield video models and nothing that cannot make a shot from words', () => {
+    const ids = videoModelChoices().map((c) => c.id);
+    expect(ids).toEqual(RENDER_MODELS.map((m) => m.id));
+    // The local backends composite between two supplied stills; with no stills there is
+    // nothing for them to composite, so an entry for them would always fail.
+    for (const backendId of AGENT_BACKENDS.map((b) => b.id)) {
+      expect(ids).not.toContain(backendId);
+    }
+  });
+
+  it('offers the Settings model only when it is not already listed', () => {
+    expect(videoModelChoices('').map((c) => c.id)).not.toContain(CUSTOM_MODEL_ID);
+    // A model id Settings holds that no listed entry already sends.
+    expect(videoModelChoices('some_new_job').map((c) => c.id)).toContain(CUSTOM_MODEL_ID);
+    // One that a listed entry already sends is not offered twice.
+    expect(videoModelChoices('seedance_2_5').map((c) => c.id)).not.toContain(CUSTOM_MODEL_ID);
+  });
+
+  it('keeps a selected custom entry on the list, so the control never shows an empty value', () => {
+    const ids = videoModelChoices('seedance_2_5', CUSTOM_MODEL_ID).map((c) => c.id);
+    expect(ids).toContain(CUSTOM_MODEL_ID);
+  });
+
+  /** Every id it offers must resolve to a real CLI job — including the custom one. */
+  it('offers only ids that resolve to a Higgsfield job', () => {
+    for (const choice of videoModelChoices('some_new_job')) {
+      expect(providerOf(choice.id)).toBe('higgsfield');
+      expect(modelJob(choice.id, 'some_new_job')).toBeTruthy();
+    }
   });
 });

@@ -1,5 +1,4 @@
 import { referenceEligible, useEditor } from '../state/store';
-import { ImageCompose } from './ImageCompose';
 import { Icon } from './Icon';
 
 /** The imported media, its loading skeletons, and anything that failed to import. */
@@ -25,11 +24,15 @@ export function MediaBin() {
   const dismissGeneration = useEditor((s) => s.dismissGeneration);
 
   const list = Object.values(assets);
-  // Photo generations are the bin's own: they are shown here, where their result lands,
-  // rather than in the inspector where a transition's progress belongs.
-  const photoJobs = Object.values(generations).filter((g) => g.target.kind === 'image');
-  const running = photoJobs.filter((g) => g.status === 'queued' || g.status === 'running');
-  const failed = photoJobs.filter((g) => g.status === 'failed');
+  // The bin's own generations — a photo asked for, or a video — are shown here, where
+  // their result lands, rather than in the inspector where a transition's progress
+  // belongs. Both kinds, because the sheet closes on send: this is the only place a
+  // generation can report progress, fail, or offer its Retry.
+  const binJobs = Object.values(generations).filter(
+    (g) => g.target.kind === 'image' || g.target.kind === 'video',
+  );
+  const running = binJobs.filter((g) => g.status === 'queued' || g.status === 'running');
+  const failed = binJobs.filter((g) => g.status === 'failed');
   const empty = list.length === 0 && importing === 0 && running.length === 0;
   // While the compose panel is open the bin is a reference picker, so a tile stops being
   // a drag source: adding to the timeline is not this screen's task, and two meanings for
@@ -51,15 +54,16 @@ export function MediaBin() {
           >
             <Icon name="import" size={13} /> Import
           </button>
-          {/* The other way media gets here. Its panel opens below, inside the bin, because
-              the bin's own photos are what a generation works on top of. Pressed while
-              the panel is open, it closes it again. */}
+          {/* The other way media gets here. Its sheet opens over the preview stage rather
+              than in this column, which is too narrow to compose in — but the bin stays a
+              reference picker while it is open, which is why the button lives here.
+              Pressed while the sheet is open, it closes it again. */}
           <button
             type="button"
             className={`panel-head__action${composing ? ' panel-head__action--on' : ''}`}
-            aria-label="Generate an image"
+            aria-label="Generate a photo or video"
             aria-pressed={composing}
-            title="Ask Higgsfield for a new photo"
+            title="Ask Higgsfield for a new photo or video"
             onClick={composing ? closeImagePanel : openImagePanel}
           >
             <Icon name="sparkle" size={13} /> Generate
@@ -67,8 +71,6 @@ export function MediaBin() {
         </div>
       </div>
       <div className="bin" data-composing={composing ? 'true' : undefined}>
-        <ImageCompose />
-
         {problems.length > 0 && (
           <div className="bin__problem" role="alert">
             <b>
@@ -87,7 +89,10 @@ export function MediaBin() {
 
         {failed.map((generation) => (
           <div key={generation.id} className="bin__problem" role="alert">
-            <b>{generation.error?.title ?? 'The photo could not be generated'}</b>
+            <b>
+              {generation.error?.title ??
+                `The ${generation.target.kind === 'video' ? 'video' : 'photo'} could not be generated`}
+            </b>
             {generation.error?.message}
             <div className="bin__problem-actions">
               {generation.error?.retryable !== false && (
@@ -101,7 +106,9 @@ export function MediaBin() {
               )}
               <button
                 type="button"
-                aria-label={`Dismiss the failed photo ${generation.prompt}`}
+                aria-label={`Dismiss the failed ${
+                  generation.target.kind === 'video' ? 'video' : 'photo'
+                } ${generation.prompt}`}
                 onClick={() => dismissGeneration(generation.id)}
               >
                 Dismiss

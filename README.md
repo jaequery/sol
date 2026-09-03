@@ -32,14 +32,28 @@ of cents rather than a plan credit. Both live in the same Model selector; see
   playhead when it comes within a few pixels. Click anywhere along the timeline — the
   ruler, a gap, a clip, an audio lane — and the playhead cues exactly there, so play runs
   from the point you clicked; hold the button down on the ruler to scrub.
-- **Photos you did not take.** The media bin generates as well as imports: **✦ Generate**
-  beside **+ Import** opens a prompt box, and Higgsfield makes the photo. Describe it and
-  that is the whole request — or click photos already in the bin to **generate on top of
-  them**, up to fourteen references, and the picture is made from yours. A quiet **Options**
-  disclosure picks the model (Nano Banana Pro by default, or Seedream 4.5, FLUX.2, GPT
-  Image 2) and the aspect ratio, which follows the model. The finished photo lands in the
-  bin as an ordinary photo — nothing moves on the timeline; you drag it on when you want
-  it, and from there it can be animated like any other.
+- **Photos and videos you did not shoot.** The media bin generates as well as imports:
+  **✦ Generate** beside **+ Import** opens a sheet over the preview stage — the bin stays
+  beside it, because in photo mode its tiles are the sheet's reference picker — and a
+  **Photo | Video** switch decides which kind Higgsfield makes. The prompt survives the
+  switch: deciding a described shot should move is a change of mind about the medium, not
+  about the shot.
+
+  **A photo** is described and that is the whole request — or click photos already in the
+  bin to **generate on top of them**, up to fourteen references, and the picture is made
+  from yours. A quiet **Options** disclosure picks the model (Nano Banana Pro by default,
+  or Seedream 4.5, FLUX.2, GPT Image 2) and the aspect ratio, which follows the model.
+
+  **A video** is made from the words alone — text-to-video, with no still on either end of
+  it, which is what makes it a different thing from the transitions below. Options picks
+  the model from the same video catalog a transition uses (Seedance 2.5 by default). There
+  is no aspect ratio and no length to set: the model decides both, so the sheet does not
+  pretend to offer them. The local motion backends are deliberately absent here — they
+  composite between two stills the editor hands them, and there are none.
+
+  Either way the result lands in the bin as ordinary media — nothing moves on the timeline;
+  you drag it on when you want it, and a generated photo can be animated like any other.
+  A generated video is measured as it lands, so it goes onto the track at its real length.
 - **Audio tracks.** Sound files (mp3, wav, ogg, flac, aac, m4a) get their own lanes below
   the track — as many as you like, via **♪ Add audio** or a drop. Each lane holds one
   sound: drag it along the lane to place it, drag its edges to trim it, and set its length,
@@ -153,8 +167,9 @@ What actually runs, per render:
 |---|---|
 | Submit a transition | `higgsfield generate create <model> --prompt … --start-image … --end-image … --json` — the CLI uploads the two stills itself; Seedance 2.5 additionally gets `--mode omni_reference`, the one mode in which it accepts frame inputs. The ack is the list of ids it queued (`["d2f79a31-…"]`) |
 | Submit a photo | `higgsfield generate create <image model> --prompt … --image … --aspect_ratio … --json`, with `--image` repeated once per reference. The references are the bin's own files and the CLI uploads them, so nothing is written to a temp file. **No `--mode`**: that rule belongs to Seedance 2.5's video frame inputs and image models publish no such value |
+| Submit a video | `higgsfield generate create <model> --prompt … --json`. Nothing else, and nothing to upload — a prompt-only video has no frames. **No `--mode` here either, Seedance 2.5 included**: that flag exists to unlock frame inputs and this job sends none, so asking for it would be asking for a mode whose whole justification is absent |
 | Poll | `higgsfield generate get <job_id> --json`, backing off 2s → 10s |
-| Result | the job's `result_url` on completion, downloaded next to the project. A photo is named from the response's own content type — the media bin classifies by extension and nothing else, so a file saved under the wrong one would come back as the wrong kind of media at the next launch |
+| Result | the job's `result_url` on completion, downloaded next to the project. A photo is named from the response's own content type; a **video is named `.mp4` by SolCut**, never from the content type — that path knows no video type and would fall back to `.png`, and since the media bin classifies by extension and nothing else, the file would come back as a photo that cannot draw. Both halves of that trap are held by tests |
 
 **Which model renders is picked per render, not in this dialog.** Every place a render
 starts — the cut card, a transition's Regenerate, the film wizard — carries a **Model**
@@ -378,7 +393,7 @@ src/                     React + TypeScript editor
   lib/project.ts         the saved project — what persists, and what a bad file may not do
   lib/backend.ts         the only place that talks to Tauri
   state/store.ts         zustand store
-  components/            title bar (+ the project menu), media bin (+ the compose panel),
+  components/            title bar (+ the project menu), media bin (+ the create sheet),
                          preview, inspector, timeline, film wizard, dialogs
 src-tauri/
   src/                   Tauri commands, the generation job loop, settings and project
@@ -426,9 +441,15 @@ GTK toolchain.
   but export needs the desktop app, which resolves real paths.
 - **The model decides the clip length.** The models publish fixed duration choices and
   the CLI defaults them, so the file's own length is what the timeline keeps, not
-  something the request asks for. Local motion is the same in spirit — the agent picks the
-  length — except that it is told how much track it is replacing, and the answer is clamped
-  to 1–8 seconds so one click can never trade two five-second photos for a blink.
+  something the request asks for. That holds for a generated video as much as for a
+  transition: the sheet offers no length because the request cannot carry one. Local motion
+  is the same in spirit — the agent picks the length — except that it is told how much track
+  it is replacing, and the answer is clamped to 1–8 seconds so one click can never trade two
+  five-second photos for a blink.
+- **A generated video has no aspect ratio to choose.** The image models publish an
+  `--aspect_ratio` and the sheet offers it; the video job types are not documented as taking
+  one, and SolCut does not guess at the CLI's flags — so a generated video comes back in
+  whatever frame its model defaults to. Vertical video is therefore not yet askable for.
 - **Local motion composites; it does not generate.** Sixteen `xfade` motions, chosen from
   your words. It will not invent what lies between two photos the way a video model does —
   it will move convincingly between them, for about two cents.
