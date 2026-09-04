@@ -80,6 +80,16 @@ export interface ImportResult {
   rejected: RejectedMedia[];
 }
 
+/** One cloud library this machine has — an import source the file panel can open in. */
+export interface CloudLibrary {
+  /** Stable across runs; the menu keys on this, never on the label. */
+  id: string;
+  /** What the menu says. */
+  label: string;
+  /** The folder the file panel opens in. */
+  path: string;
+}
+
 export interface GenerateInput {
   generationId: string;
   prompt: string;
@@ -612,9 +622,40 @@ export async function testApiKey(input: SettingsInput): Promise<KeyCheck> {
   return invoke<KeyCheck>('test_api_key', { input });
 }
 
+/**
+ * Import these files: anything iCloud is only holding a placeholder for is brought down
+ * first, and a photo in a format nothing here reads is converted on the way in.
+ *
+ * This is the one that acts. Use {@link probePaths} to merely ask.
+ */
 export async function importPaths(paths: string[]): Promise<ImportResult> {
   requireDesktop();
   return invoke<ImportResult>('import_media', { paths });
+}
+
+/**
+ * Where these files are, touching nothing — what a restored project asks about its own
+ * media.
+ *
+ * Deliberately a different command from {@link importPaths}: this one runs over every asset
+ * at every open, and asking the importer instead would turn opening a project into pulling
+ * back everything iCloud had evicted since it was last edited.
+ */
+export async function probePaths(paths: string[]): Promise<ImportResult> {
+  requireDesktop();
+  return invoke<ImportResult>('probe_media', { paths });
+}
+
+/**
+ * The cloud libraries this machine has, for the media bin's import menu.
+ *
+ * Guarded like `recentProjects` rather than refused: a browser has no libraries and a Mac
+ * not signed into iCloud has none either, and an empty list is the honest answer to both —
+ * the menu simply does not appear.
+ */
+export async function cloudLibraries(): Promise<CloudLibrary[]> {
+  if (!isDesktop()) return [];
+  return invoke<CloudLibrary[]>('cloud_libraries');
 }
 
 export async function generateAnimation(input: GenerateInput): Promise<void> {
@@ -733,13 +774,22 @@ export async function onWindowClose(cb: () => void | Promise<void>): Promise<() 
   });
 }
 
-export async function pickMediaFiles(): Promise<string[]> {
+/**
+ * The media picker, opened in `startIn` when a source was chosen for it.
+ *
+ * `startIn` is how the cloud library is reached: the panel is the same one, pointed at a
+ * folder, which is why choosing a cloud source needs no browser of our own.
+ */
+export async function pickMediaFiles(startIn?: string): Promise<string[]> {
   requireDesktop();
   const { open } = await import('@tauri-apps/plugin-dialog');
   const extensions = await invoke<string[]>('supported_extensions');
   const picked = await open({
     multiple: true,
-    filters: [{ name: 'Photos and videos', extensions }],
+    defaultPath: startIn,
+    // Named for what it has always actually held: `supported_extensions` chains the photo,
+    // video and audio lists, and said "Photos and videos" over the top of the third.
+    filters: [{ name: 'Photos, videos and audio', extensions }],
   });
   if (!picked) return [];
   return Array.isArray(picked) ? picked : [picked];

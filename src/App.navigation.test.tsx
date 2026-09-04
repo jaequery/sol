@@ -47,6 +47,8 @@ let storedSettings = { ...STORED_SETTINGS };
 /** Mutable so the browser-only branches are reachable, unlike the hard `true` next door. */
 let desktop = true;
 let ffmpegProbe: () => Promise<boolean> = async () => true;
+/** What this imaginary machine has iCloud-wise. Empty is the ordinary case. */
+let cloudLibs: backend.CloudLibrary[] = [];
 
 // The real module's pure exports (the model registry above all) come through untouched;
 // only the pieces that would reach for Tauri are stubbed.
@@ -73,6 +75,7 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   generateImage: (input: backend.GenerateImageInput) => generateImage(input),
   cancelGeneration: vi.fn(async () => {}),
   ffmpegAvailable: () => ffmpegProbe(),
+  cloudLibraries: async () => cloudLibs,
   exportTimeline: vi.fn(),
   onGenerationUpdate: async (cb: (u: GenerationUpdate) => void) => {
     emitGenerationUpdate = cb;
@@ -100,6 +103,7 @@ beforeEach(() => {
   storedSettings = { ...STORED_SETTINGS };
   desktop = true;
   ffmpegProbe = async () => true;
+  cloudLibs = [];
   resetEditor();
 
   consoleErrors = [];
@@ -541,6 +545,93 @@ describe('media bin', () => {
 });
 
 // ------------------------------------------------------------------------ compose panel
+
+describe('the import source menu', () => {
+  const ICLOUD = '/Users/jae/Library/Mobile Documents/com~apple~CloudDocs';
+
+  /** A machine signed into iCloud, and an App that has finished asking about it. */
+  async function mountWithICloud() {
+    cloudLibs = [{ id: 'icloud-drive', label: 'iCloud Drive', path: ICLOUD }];
+    await mount();
+    await waitFor(() => expect(useEditor.getState().cloudLibraries).toHaveLength(1));
+  }
+
+  beforeEach(() => {
+    vi.mocked(backend.pickMediaFiles).mockClear();
+    vi.mocked(backend.pickMediaFiles).mockResolvedValue([]);
+  });
+
+  it('is not a menu at all on a machine with no cloud library', async () => {
+    const user = userEvent.setup();
+    await mount();
+
+    // The whole point: with one source there is nothing to choose, so Import stays the
+    // button it has always been and goes straight to the panel.
+    const trigger = screen.getByRole('button', { name: 'Import media' });
+    expect(trigger).not.toHaveAttribute('aria-expanded');
+
+    await user.click(trigger);
+    expect(backend.pickMediaFiles).toHaveBeenCalledTimes(1);
+    expect(backend.pickMediaFiles).toHaveBeenCalledWith(undefined);
+    expect(screen.queryByRole('group', { name: 'Import from' })).not.toBeInTheDocument();
+  });
+
+  it('offers the machine’s libraries, and opens the panel inside the one that is picked', async () => {
+    const user = userEvent.setup();
+    await mountWithICloud();
+
+    const trigger = screen.getByRole('button', { name: 'Import media' });
+    await user.click(trigger);
+    // The trigger opens a menu; it does not also open a panel behind it.
+    expect(backend.pickMediaFiles).not.toHaveBeenCalled();
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+
+    const menu = screen.getByRole('group', { name: 'Import from' });
+    await user.click(within(menu).getByRole('button', { name: 'iCloud Drive…' }));
+
+    // The panel is the same one as ever, pointed at a folder — which is the whole feature.
+    expect(backend.pickMediaFiles).toHaveBeenCalledWith(ICLOUD);
+    expect(screen.queryByRole('group', { name: 'Import from' })).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('still offers the plain local picker beside it', async () => {
+    const user = userEvent.setup();
+    await mountWithICloud();
+
+    await user.click(screen.getByRole('button', { name: 'Import media' }));
+    await user.click(screen.getByRole('button', { name: 'This Mac…' }));
+
+    // No start folder: the panel opens wherever it opened before this feature existed.
+    expect(backend.pickMediaFiles).toHaveBeenCalledWith(undefined);
+  });
+
+  it('Escape closes it and hands focus back to the trigger', async () => {
+    const user = userEvent.setup();
+    await mountWithICloud();
+
+    const trigger = screen.getByRole('button', { name: 'Import media' });
+    await user.click(trigger);
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'This Mac…' })).toHaveFocus();
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('group', { name: 'Import from' })).not.toBeInTheDocument();
+    // Closing the menu under someone must not drop them at the top of the document.
+    expect(trigger).toHaveFocus();
+  });
+
+  it('a press anywhere else puts it away', async () => {
+    const user = userEvent.setup();
+    await mountWithICloud();
+
+    await user.click(screen.getByRole('button', { name: 'Import media' }));
+    expect(screen.getByRole('group', { name: 'Import from' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Generate a photo or video' }));
+    expect(screen.queryByRole('group', { name: 'Import from' })).not.toBeInTheDocument();
+  });
+});
 
 describe('the create sheet', () => {
   const PROMPT = 'Describe the photo to generate';

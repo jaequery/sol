@@ -1417,7 +1417,10 @@ mod tests {
         };
         let f = clip_filter(&spec(), &clip);
         // The letterbox first, the mirror after it, and the same tail every part ends on.
-        assert!(f.starts_with("scale=640:360:force_original_aspect_ratio=decrease"), "{f}");
+        assert!(
+            f.starts_with("scale=640:360:force_original_aspect_ratio=decrease"),
+            "{f}"
+        );
         assert!(f.contains(",hflip,"), "{f}");
         assert!(f.ends_with("setsar=1,fps=30,format=yuv420p"), "{f}");
     }
@@ -1433,7 +1436,10 @@ mod tests {
         );
         assert_eq!(ops[0], "transpose=1");
         // On its side it is 9:16 in a 16:9 frame, so it has to be refitted onto black.
-        assert!(ops[1].contains("force_original_aspect_ratio=decrease"), "{ops:?}");
+        assert!(
+            ops[1].contains("force_original_aspect_ratio=decrease"),
+            "{ops:?}"
+        );
         assert!(ops[1].contains("pad=640:360"), "{ops:?}");
         assert_eq!(
             transform_ops(
@@ -1561,7 +1567,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert!(ops[0].contains(&format!("iw*{}", num(MAX_CLIP_ZOOM))), "{ops:?}");
+        assert!(
+            ops[0].contains(&format!("iw*{}", num(MAX_CLIP_ZOOM))),
+            "{ops:?}"
+        );
     }
 
     #[test]

@@ -416,6 +416,19 @@ select:focus-visible {
   border-color: var(--accent-2);
   color: var(--accent-3);
 }
+/* The positioning context for a menu hung off a panel-head action — the job
+   `.titlebar .doc__project` does for the project menu. No `overflow` above it, and that is
+   deliberate for the same reason it is deliberate there. */
+.panel-head__menu {
+  position: relative;
+}
+/* `.menu` anchors left, which is right under the title bar's project name. This one hangs
+   off an action in `.panel-head__actions`, which `margin-left: auto` pushes to the right
+   edge of a 280px column — so a left-anchored popover would hang out over the preview. */
+.menu--source {
+  left: auto;
+  right: 0;
+}
 
 /* The frame's shape, in the preview's panel head. It wears the chrome of the actions
    beside it rather than `.field`'s sunken box: this is part of the panel's own bar, and a

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { referenceEligible, useEditor } from '../state/store';
 import { Icon } from './Icon';
 
@@ -10,6 +11,10 @@ export function MediaBin() {
   const problems = useEditor((s) => s.importProblems);
   const dismiss = useEditor((s) => s.dismissImportProblems);
   const importViaDialog = useEditor((s) => s.importViaDialog);
+  const cloudLibraries = useEditor((s) => s.cloudLibraries);
+  const importMenuOpen = useEditor((s) => s.importMenuOpen);
+  const openImportMenu = useEditor((s) => s.openImportMenu);
+  const closeImportMenu = useEditor((s) => s.closeImportMenu);
   const removeAsset = useEditor((s) => s.removeAsset);
   const draggingAssetId = useEditor((s) => s.draggingAssetId);
   const beginAssetDrag = useEditor((s) => s.beginAssetDrag);
@@ -22,6 +27,25 @@ export function MediaBin() {
   const cancelGeneration = useEditor((s) => s.cancelGeneration);
   const retryGeneration = useEditor((s) => s.retryGeneration);
   const dismissGeneration = useEditor((s) => s.dismissGeneration);
+
+  const importTrigger = useRef<HTMLButtonElement>(null);
+  // Import is a menu only when there is somewhere else to import *from*. On a machine with
+  // no cloud library — a Mac not signed into iCloud, or any other OS — it stays the single
+  // button it has always been, because a menu holding one item is a worse button.
+  const sources = cloudLibraries.length > 0;
+
+  useEffect(() => {
+    if (!importMenuOpen) return;
+    // The project menu's own shape: one global `pointerdown` listener, put up and taken
+    // down with the surface it belongs to. It watches `pointerdown` while the trigger opens
+    // on `click`, so the press that opened the menu cannot close it again.
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest('.panel-head__menu')) closeImportMenu();
+    };
+    window.addEventListener('pointerdown', onPointerDown);
+    return () => window.removeEventListener('pointerdown', onPointerDown);
+  }, [importMenuOpen, closeImportMenu]);
 
   const list = Object.values(assets);
   // The bin's own generations — a photo asked for, or a video — are shown here, where
@@ -45,15 +69,66 @@ export function MediaBin() {
         <span className="panel-head__title">Media</span>
         <div className="panel-head__actions">
           {/* Importing is not a first-run-only affordance: it stays here however full the bin is. */}
-          <button
-            type="button"
-            className="panel-head__action"
-            aria-label="Import media"
-            title="Import photos, videos and sounds from disk"
-            onClick={() => void importViaDialog()}
-          >
-            <Icon name="import" size={13} /> Import
-          </button>
+          {sources ? (
+            <div
+              className="panel-head__menu"
+              // Escape is caught here rather than only in `App.tsx`'s layer chain because
+              // this is where the focus is: a keyboard user pressing it is standing on the
+              // trigger or on a source, and closing the menu under them without handing
+              // focus back would drop them at the top of the document.
+              onKeyDown={(e) => {
+                if (e.key !== 'Escape' || !importMenuOpen) return;
+                e.stopPropagation();
+                closeImportMenu();
+                importTrigger.current?.focus();
+              }}
+            >
+              <button
+                ref={importTrigger}
+                type="button"
+                className={`panel-head__action${importMenuOpen ? ' panel-head__action--on' : ''}`}
+                // The same accessible name the plain button carries, so what this control
+                // is called does not depend on whether the machine happens to have iCloud.
+                aria-label="Import media"
+                aria-haspopup="true"
+                aria-expanded={importMenuOpen}
+                title="Import photos, videos and sounds"
+                onClick={importMenuOpen ? closeImportMenu : openImportMenu}
+              >
+                <Icon name="import" size={13} /> Import
+                <span aria-hidden="true">▾</span>
+              </button>
+              {importMenuOpen && (
+                <div className="menu menu--source" role="group" aria-label="Import from">
+                  {/* Direct children of `.menu`: `.menu > button` is a direct-child
+                      selector, and a wrapper would drop every row out of it. */}
+                  <button type="button" onClick={() => void importViaDialog()}>
+                    This Mac…
+                  </button>
+                  {cloudLibraries.map((library) => (
+                    <button
+                      key={library.id}
+                      type="button"
+                      title={library.path}
+                      onClick={() => void importViaDialog(library.path)}
+                    >
+                      {library.label}…
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="panel-head__action"
+              aria-label="Import media"
+              title="Import photos, videos and sounds from disk"
+              onClick={() => void importViaDialog()}
+            >
+              <Icon name="import" size={13} /> Import
+            </button>
+          )}
           {/* The other way media gets here. Its sheet opens over the preview stage rather
               than in this column, which is too narrow to compose in — but the bin stays a
               reference picker while it is open, which is why the button lives here.
@@ -121,7 +196,16 @@ export function MediaBin() {
           <div className="bin__empty">
             <b>No media yet</b>
             Drop photos, videos and audio on the timeline, or{' '}
-            <button type="button" className="linklike" onClick={importViaDialog}>
+            <button
+              type="button"
+              className="linklike"
+              // Wrapped, not passed: `importViaDialog` takes the folder to open in, and
+              // handing it the click event straight would point the panel at "[object
+              // MouseEvent]". The empty state deliberately stays the plain This-Mac import —
+              // a call to action is one unambiguous thing to do, and the head button above
+              // is where the other source lives.
+              onClick={() => void importViaDialog()}
+            >
               import
             </button>
             .

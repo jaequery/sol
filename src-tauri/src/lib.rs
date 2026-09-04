@@ -1,9 +1,10 @@
 //! SolCut desktop shell.
 //!
-//! The interesting logic lives in two dependency-free crates — `solcut-higgsfield` for
-//! generation through the official Higgsfield CLI and `solcut-render` for the ffmpeg
-//! export — so it can be tested without a GUI toolchain. This file is the Tauri surface
-//! over them: commands, background jobs, events.
+//! The interesting logic lives in dependency-free crates — `solcut-higgsfield` for
+//! generation through the official Higgsfield CLI, `solcut-render` for the ffmpeg export,
+//! `solcut-agent` for the local motion backends and `solcut-intake` for the machine-specific
+//! edges of an import — so it can be tested without a GUI toolchain. This file is the Tauri
+//! surface over them: commands, background jobs, events.
 
 pub mod media;
 pub mod project;
@@ -44,6 +45,10 @@ pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("SOLCUT_BUI
 pub struct AppState {
     config_dir: PathBuf,
     media_dir: PathBuf,
+    /// Where a photo the editor cannot read is put once it has been converted. Beside the
+    /// generated media and for the same reason: a saved project points at these files by
+    /// path, so they have to outlive the session that made them.
+    imported_dir: PathBuf,
     /// Where a project goes when there is no open one to sit beside. Resolved once at
     /// launch because finding it needs Tauri, and `project.rs` — which does the naming —
     /// deliberately has no Tauri dependency.
@@ -432,14 +437,47 @@ async fn test_api_key(
     })
 }
 
+/// The import the user asked for: anything iCloud is only holding a placeholder for is
+/// brought down first, and a photo in a format nothing here reads is converted.
+///
+/// `async` for the reason `recent_projects` above is: a synchronous command runs on the
+/// main thread, and this one can wait minutes on a download.
 #[tauri::command]
-fn import_media(paths: Vec<String>) -> media::ImportResult {
-    media::import(&paths)
+async fn import_media(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<media::ImportResult, String> {
+    let dir = state.imported_dir.clone();
+    Ok(media::import(&paths, &dir).await)
+}
+
+/// Where these files are, touching nothing — the question a restored project asks about its
+/// own media. Deliberately *not* `import_media`: this runs over every asset at every open,
+/// and a probe that downloaded would turn opening a project into pulling back everything
+/// iCloud had evicted since it was last edited.
+///
+/// `async` for the same reason: it stats every path, and a sleeping drive must not freeze
+/// the window.
+#[tauri::command]
+async fn probe_media(paths: Vec<String>) -> Result<media::ImportResult, String> {
+    Ok(media::probe(&paths))
 }
 
 #[tauri::command]
 fn supported_extensions() -> Vec<&'static str> {
     media::supported_extensions()
+}
+
+/// The cloud libraries this machine actually has, for the media bin's import menu.
+///
+/// Empty is the ordinary answer, not a failure: a Mac not signed into iCloud has no library
+/// to offer, and the menu simply does not appear.
+#[tauri::command]
+fn cloud_libraries(app: AppHandle) -> Vec<solcut_intake::CloudLibrary> {
+    app.path()
+        .home_dir()
+        .map(|home| solcut_intake::libraries(&home))
+        .unwrap_or_default()
 }
 
 /// Start a generation. Returns as soon as the job is handed to the CLI; everything after
@@ -1071,6 +1109,7 @@ pub fn run() {
             // cache purge would turn finished renders into missing media. Nothing outlived
             // a session before projects were saved, which is why this was ever a cache.
             let media_dir = app.path().app_data_dir()?.join("generated");
+            let imported_dir = app.path().app_data_dir()?.join("imported");
             // Not created here, and not failed over either: a box with no documents
             // directory still has a config directory, and a first project has to land
             // somewhere. `new_project_path` makes the folder when it actually uses it.
@@ -1083,6 +1122,7 @@ pub fn run() {
             app.manage(AppState {
                 config_dir,
                 media_dir,
+                imported_dir,
                 documents_dir,
                 cancelled: Mutex::new(HashSet::new()),
             });
@@ -1101,7 +1141,9 @@ pub fn run() {
             test_connection,
             test_api_key,
             import_media,
+            probe_media,
             supported_extensions,
+            cloud_libraries,
             generate_animation,
             generate_image,
             generate_video,

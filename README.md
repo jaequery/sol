@@ -40,6 +40,23 @@ of cents rather than a plan credit. Both live in the same Model selector; see
   film does not come back with a horizontal transition sitting in the middle of it. It is
   saved with the project. Inside the frame nothing changes: a photo fills it and is cropped,
   a video fits inside it and is letterboxed — in the preview exactly as in the export.
+- **Media from iCloud, not only from this disk.** On a Mac signed into iCloud, **+ Import**
+  is a source menu — **This Mac…** and **iCloud Drive…** — and picking the cloud source
+  opens the ordinary file panel already inside that folder. There is no browser of our own
+  to learn, because the one the OS ships is better than one we would write. On a machine
+  with no cloud library the button is exactly the button it always was: a menu holding one
+  item is a worse button.
+
+  What the menu is really for is what happens next. A file iCloud has evicted leaves a
+  hidden placeholder where it used to be, so the path the panel hands back names a file that
+  is not on disk — and SolCut used to reject it as "the file could not be read at that
+  path". Now it asks for the bytes and waits for them, all the picked files at once, and the
+  bin shows the same skeletons it shows for any import until they land. And because a photo
+  shot on an iPhone is **HEIC**, which neither the webview nor a stock ffmpeg can read, one
+  is converted to a JPEG on the way in with macOS's own `sips` — so the commonest photo in
+  anybody's cloud library is a photo you can actually put on the timeline. Photos, videos
+  and sounds all come through the one picker.
+
 - **Photos and videos you did not shoot.** The media bin generates as well as imports:
   **✦ Generate** beside **+ Import** opens a sheet over the preview stage — the bin stays
   beside it, because in photo mode its tiles are the sheet's reference picker — and a
@@ -316,8 +333,8 @@ pnpm typecheck                                        # tsc --noEmit
 pnpm lint                                             # eslint
 pnpm audit:css                                        # app.css uses only tokens.css colours and the 4px spacing scale
 pnpm test                                             # vitest — timeline logic + acceptance flow
-cargo test -p solcut-agent -p solcut-higgsfield -p solcut-render
-cargo clippy -p solcut-agent -p solcut-higgsfield -p solcut-render --all-targets -- -D warnings
+cargo test -p solcut-agent -p solcut-higgsfield -p solcut-intake -p solcut-render
+cargo clippy -p solcut-agent -p solcut-higgsfield -p solcut-intake -p solcut-render --all-targets -- -D warnings
 cargo fmt --all --check
 cargo clippy -p solcut --all-targets -- -D warnings   # the shell; needs the libraries above
 ```
@@ -325,7 +342,7 @@ cargo clippy -p solcut --all-targets -- -D warnings   # the shell; needs the lib
 ### Checking the shell without a GUI toolchain
 
 That last line is the one that is easy to skip, and skipping it is how a `solcut` lib that
-did not compile once reached `main` with every other check green: the three crates above
+did not compile once reached `main` with every other check green: the crates above
 are deliberately Tauri-free so they build anywhere, which leaves `src-tauri/src` — the
 commands, the settings view, the job loop — compiled by nothing at all. Its `#[cfg(test)]`
 modules are worse off again, because a plain `cargo build` never reaches them; that is
@@ -432,10 +449,12 @@ design/                  the approved concept and the hi-fi UX walkthrough
   notes/                     ticket sweeps and working notes
 ```
 
-The two crates under `src-tauri/crates/` are deliberately free of Tauri and GUI
+The four crates under `src-tauri/crates/` are deliberately free of Tauri and GUI
 dependencies: the interesting logic (CLI invocation and output handling, ffmpeg
-filter-graph and argv building) is then testable on any machine, including CI without a
-GTK toolchain.
+filter-graph and argv building, and the machine-specific edges of an import — which cloud
+libraries exist, whether a file is still only in iCloud, and converting a photo format
+nothing here can read) is then testable on any machine, including CI without a GTK
+toolchain.
 
 ## Known limits
 
@@ -451,6 +470,25 @@ GTK toolchain.
 - **A clip's head stops at the clip in front of it.** Pulling the head left reveals more of
   the source, so it needs empty track to move into; it stops at the neighbour's end (or at
   0:00) rather than shoving anything out of the way. The tail is the edge that pushes.
+- **A file coming down from iCloud has two minutes, and no cancel.** Each picked file gets
+  its own budget and they all come down at once, so one slow 4K video is not the reason the
+  photos behind it fail. Past that it is handed back as a problem in the bin — "still
+  downloading from iCloud" — rather than waited on for ever. The window is never frozen
+  while this happens and the editor stays usable, but there is no progress bar and no way to
+  stop it short of quitting. Opening a *project* never triggers any of this: that asks a
+  separate, read-only command, so a Mac on "Optimise Storage" does not start pulling its
+  whole library back the moment a project opens.
+- **A file iCloud has already downloaded but not filled in** — macOS keeps some files as
+  real names with no bytes behind them — imports without waiting, because it looks present.
+  The bytes arrive when something first reads it, which can make a later export appear to
+  stall rather than the import.
+- **HEIC conversion needs macOS.** It shells out to `sips`, which is part of the OS; there
+  is nothing to install, but there is also nothing to fall back on elsewhere, and a HEIC on
+  another platform is refused by name rather than converted. The converted JPEG lives beside
+  the generated media in app data, and is reused rather than remade on a second import. A
+  Mac App Store build would break the iCloud download for a different reason — the sandbox
+  does not let the child process run — but direct distribution and notarisation are
+  unaffected.
 - **Export needs ffmpeg on `PATH`.** It is checked before anything is written, and refused
   with instructions rather than half-rendered.
 - **A tile is dragged with the mouse, not a finger.** The bin scrolls, and a touch drag
