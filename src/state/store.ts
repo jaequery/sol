@@ -361,6 +361,16 @@ export interface EditorState {
   importing: number;
   importProblems: ImportProblem[];
   /**
+   * The cloud libraries this machine has, read once at launch.
+   *
+   * Empty is the ordinary case and the reason this is a list rather than a flag: with
+   * nothing to choose between, the bin's **+ Import** stays the plain button it has always
+   * been. A menu holding one item is not a choice, it is a worse button.
+   */
+  cloudLibraries: backend.CloudLibrary[];
+  /** Whether the bin's import source menu is showing. */
+  importMenuOpen: boolean;
+  /**
    * The bin tile a pointer is currently carrying, if any. Transient, but the drag starts in
    * one panel and lands in another, which is exactly what the one flat store is for — the
    * timeline is the only thing that knows where a drop would land, so it owns the geometry.
@@ -452,7 +462,11 @@ export interface EditorState {
   // ---- media
   addFiles: (files: File[], index?: number, audioStartMs?: number) => Promise<void>;
   addPaths: (paths: string[], index?: number, audioStartMs?: number) => Promise<void>;
-  importViaDialog: () => Promise<void>;
+  /** Open the media picker, in `startIn` when a source was chosen for it. */
+  importViaDialog: (startIn?: string) => Promise<void>;
+  /** Show the bin's import source menu, or put it away. */
+  openImportMenu: () => void;
+  closeImportMenu: () => void;
   addAudioViaDialog: () => Promise<void>;
   removeAsset: (assetId: string) => void;
   dismissImportProblems: () => void;
@@ -606,6 +620,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   animateRun: null,
   importing: 0,
   importProblems: [],
+  cloudLibraries: [],
+  importMenuOpen: false,
   draggingAssetId: null,
 
   settings: null,
@@ -686,13 +702,19 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
   },
 
-  async importViaDialog() {
+  async importViaDialog(startIn) {
+    // The menu has done its job the moment a source is picked; leaving it standing behind
+    // the file panel would have it waiting there when the panel closes.
+    set({ importMenuOpen: false });
     try {
-      await get().addPaths(await backend.pickMediaFiles());
+      await get().addPaths(await backend.pickMediaFiles(startIn));
     } catch (error) {
       get().pushToast({ tone: 'error', title: 'Could not open the file picker', detail: message(error) });
     }
   },
+
+  openImportMenu: () => set({ importMenuOpen: true }),
+  closeImportMenu: () => set({ importMenuOpen: false }),
 
   /** The timeline's "add audio" action: a picker narrowed to sound files, dropped at the playhead. */
   async addAudioViaDialog() {
@@ -1960,6 +1982,13 @@ export const useEditor = create<EditorState>((set, get) => ({
     } catch {
       set({ ffmpegAvailable: false });
     }
+    // And a third, for the same reason: which cloud libraries this machine has says nothing
+    // about either of the two above, and a failure to look must not take them with it.
+    try {
+      set({ cloudLibraries: await backend.cloudLibraries() });
+    } catch {
+      set({ cloudLibraries: [] });
+    }
   },
 
   openSettings: () => set({ settingsOpen: true, connectionMessage: null }),
@@ -2597,8 +2626,9 @@ function commitImport(
   if (accepted.length === 0 && problems.length === 0) return;
   // The choke point every import lands through, which is why the epoch is checked here
   // rather than at each caller: a rule kept in three places is one a fourth caller forgets.
-  // `import_media` stats every path on the main thread, so a large import is seconds long
-  // and a project switch inside that window is ordinary.
+  // `import_media` stats every path, and waits on any of them iCloud is still holding, so
+  // an import is seconds long — minutes, for media that has to come down — and a project
+  // switch inside that window is ordinary.
   if (!stillCurrent(epoch)) return;
 
   set((s) => {
@@ -2674,10 +2704,13 @@ async function probeDurations(set: Setter, epoch: number, accepted: Imported[]) 
 /**
  * Ask the filesystem which restored media is actually still where it was left.
  *
- * Runs *after* the project is on screen, deliberately: `import_media` is a synchronous
- * Tauri command doing a blocking stat per path, so probing first would hold the window
- * shut while a sleeping drive or an unmounted share woke up. It imports nothing — the
- * command only reads — so this is a question, not an edit.
+ * Runs *after* the project is on screen, deliberately: it is a stat per path, so probing
+ * first would hold the window shut while a sleeping drive or an unmounted share woke up.
+ *
+ * `probe_media`, never `import_media`. The two are separate commands precisely so this one
+ * can stay a question: the importer brings down anything iCloud is only holding a
+ * placeholder for, and asking *it* here would turn opening a project into pulling back
+ * every file iCloud had evicted since it was last edited.
  */
 async function probeRestoredMedia(
   set: Setter,
@@ -2695,7 +2728,7 @@ async function probeRestoredMedia(
   let gone: Set<string> = new Set();
   if (paths.length > 0) {
     try {
-      const result = await backend.importPaths(paths);
+      const result = await backend.probePaths(paths);
       const found = new Set((result?.imported ?? []).map((item) => item.path));
       gone = new Set(paths.filter((path) => !found.has(path)));
     } catch {

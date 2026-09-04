@@ -21,4 +21,5 @@ serde_json.workspace = true
 tokio.workspace = true
 solcut-agent = { path = "crates/agent" }
 solcut-higgsfield = { path = "crates/higgsfield" }
+solcut-intake = { path = "crates/intake" }
 solcut-render = { path = "crates/render" }

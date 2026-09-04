@@ -48,6 +48,7 @@ vi.mock('./lib/backend', async (importOriginal) => ({
   testConnection: vi.fn(),
   testApiKey: vi.fn(),
   importPaths: vi.fn(),
+  probePaths: vi.fn(),
   loadProject: vi.fn(),
   saveProject: vi.fn(),
   recentProjects: vi.fn(async () => []),
@@ -116,8 +117,11 @@ beforeEach(() => {
 
   vi.mocked(backend.loadProject).mockImplementation(async () => stored);
   vi.mocked(backend.saveProject).mockImplementation(saveProject);
-  // The restore probe goes through the same command an import does: it only stats.
-  vi.mocked(backend.importPaths).mockImplementation(async (paths: string[]) => ({
+  vi.mocked(backend.importPaths).mockClear();
+  // The restore probe has a command of its own — one that only ever stats. Standing in for
+  // it here rather than for `importPaths` is what lets the test below prove the importer is
+  // never the one asked.
+  vi.mocked(backend.probePaths).mockImplementation(async (paths: string[]) => ({
     imported: paths
       .filter((p) => onDisk.has(p))
       .map((p) => ({ path: p, name: p.split('/').pop() ?? p, kind: 'photo' as const, sizeBytes: 1 })),
@@ -221,12 +225,27 @@ describe('media that went missing between sessions', () => {
 
   /** Only the probe failed. Calling all of it missing would make a working project look broken. */
   it('assumes the media is fine when the probe itself fails', async () => {
-    vi.mocked(backend.importPaths).mockRejectedValue(new Error('the disk went away'));
+    vi.mocked(backend.probePaths).mockRejectedValue(new Error('the disk went away'));
     launch();
 
     await waitFor(() => expect(useEditor.getState().clips).toHaveLength(1));
-    await waitFor(() => expect(backend.importPaths).toHaveBeenCalled());
+    await waitFor(() => expect(backend.probePaths).toHaveBeenCalled());
     expect(useEditor.getState().assets.asset_p.missing).toBeUndefined();
+  });
+
+  /**
+   * The regression the cloud import could most easily have caused.
+   *
+   * `import_media` brings down anything iCloud is only holding a placeholder for. This runs
+   * over every asset in the project at every open — so if it were the importer being asked,
+   * opening a project on a Mac with "Optimise Storage" on would silently start downloading
+   * every file iCloud had evicted since it was last edited.
+   */
+  it('asks where the media is without ever asking for it back', async () => {
+    launch();
+
+    await waitFor(() => expect(backend.probePaths).toHaveBeenCalled());
+    expect(backend.importPaths).not.toHaveBeenCalled();
   });
 });
 

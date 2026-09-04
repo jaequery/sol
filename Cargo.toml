@@ -4,6 +4,7 @@ members = [
     "src-tauri",
     "src-tauri/crates/agent",
     "src-tauri/crates/higgsfield",
+    "src-tauri/crates/intake",
     "src-tauri/crates/render",
 ]
 

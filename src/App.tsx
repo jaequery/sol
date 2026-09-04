@@ -352,6 +352,10 @@ function useKeyboardShortcuts() {
         else if (store.newProjectName !== null) store.cancelNewProject();
         // Above the film panel, which it is drawn over and which stays open behind it.
         else if (store.projectMenuOpen) store.closeProjectMenu();
+        // The bin's import source menu. It also catches Escape itself, so that a keyboard
+        // user standing on it gets focus handed back to the trigger; this is the case where
+        // focus is somewhere else entirely and there is nowhere to hand it back to.
+        else if (store.importMenuOpen) store.closeImportMenu();
         else if (store.filmWizardOpen) store.closeFilmWizard();
         // The compose panel keeps its draft when it closes, so Escape here is a way out
         // rather than a way to lose a typed prompt.

@@ -48,6 +48,8 @@ export function resetEditor(): void {
     imagePanel: emptyImagePanel(),
     importProblems: [],
     importing: 0,
+    cloudLibraries: [],
+    importMenuOpen: false,
     draggingAssetId: null,
     toasts: [],
     exportState: null,
