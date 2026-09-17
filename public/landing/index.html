@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SolCut — AI-Powered Video Editor</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      :root {
+        /* Design tokens from SolCut "Midnight Studio" */
+        --bg: #0b0c10;
+        --panel: #131520;
+        --panel-2: #1a1d2b;
+        --panel-3: #222639;
+        --line: #262a3d;
+        --line-soft: #1d2130;
+        --line-strong: #343954;
+        --ink: #eef0f8;
+        --ink-2: #a3a9c4;
+        --ink-3: #7e85a3;
+        --accent: #7c5cff;
+        --accent-2: #a78bfa;
+        --accent-3: #dcd3ff;
+        --accent-dim: #241d4d;
+        --accent-solid: #6a4ae0;
+        --accent-solid-hover: #5b40d6;
+        --ok: #34d399;
+        --font: 'Inter', 'SF Pro Text', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        --mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', 'SF Mono', Menlo, monospace;
+        --r: 8px;
+        --r-lg: 14px;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        font-family: var(--font);
+        background: var(--bg);
+        color: var(--ink);
+        line-height: 1.6;
+      }
+
+      /* Header / Navigation */
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        background: rgba(11, 12, 16, 0.95);
+        backdrop-filter: blur(8px);
+        border-bottom: 1px solid var(--line);
+        padding: 16px 24px;
+      }
+
+      .header-content {
+        max-width: 1200px;
+        margin: 0 auto;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .logo {
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: -0.5px;
+        color: var(--accent);
+      }
+
+      nav {
+        display: flex;
+        gap: 32px;
+        align-items: center;
+      }
+
+      nav a {
+        color: var(--ink-2);
+        text-decoration: none;
+        font-size: 14px;
+        transition: color 120ms cubic-bezier(0.2, 0, 0, 1);
+      }
+
+      nav a:hover {
+        color: var(--accent);
+      }
+
+      .nav-cta {
+        background: var(--accent-solid);
+        color: white;
+        padding: 10px 20px;
+        border-radius: var(--r);
+        font-size: 14px;
+        cursor: pointer;
+        border: none;
+        transition: background 120ms cubic-bezier(0.2, 0, 0, 1);
+      }
+
+      .nav-cta:hover {
+        background: var(--accent-solid-hover);
+      }
+
+      /* Hero Section */
+      .hero {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 80px 24px;
+        text-align: center;
+      }
+
+      .hero h1 {
+        font-size: 56px;
+        font-weight: 700;
+        line-height: 1.2;
+        margin-bottom: 24px;
+        letter-spacing: -1px;
+      }
+
+      .hero .tagline {
+        font-size: 20px;
+        color: var(--ink-2);
+        margin-bottom: 32px;
+        max-width: 600px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+
+      .hero-cta {
+        display: inline-flex;
+        gap: 16px;
+        margin-bottom: 60px;
+      }
+
+      .btn {
+        padding: 14px 32px;
+        border-radius: var(--r);
+        font-size: 16px;
+        font-weight: 500;
+        cursor: pointer;
+        border: none;
+        text-decoration: none;
+        display: inline-block;
+        transition: all 120ms cubic-bezier(0.2, 0, 0, 1);
+      }
+
+      .btn-primary {
+        background: var(--accent-solid);
+        color: white;
+      }
+
+      .btn-primary:hover {
+        background: var(--accent-solid-hover);
+        transform: translateY(-2px);
+      }
+
+      .btn-secondary {
+        background: var(--panel-2);
+        color: var(--accent);
+        border: 1px solid var(--line-strong);
+      }
+
+      .btn-secondary:hover {
+        background: var(--panel-3);
+        border-color: var(--accent);
+      }
+
+      .hero-graphic {
+        width: 100%;
+        max-width: 800px;
+        height: 400px;
+        background: linear-gradient(135deg, var(--panel-2) 0%, var(--panel-3) 100%);
+        border-radius: var(--r-lg);
+        margin: 0 auto;
+        border: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 48px;
+        color: var(--accent-dim);
+      }
+
+      /* Features Section */
+      .features {
+        background: var(--panel);
+        padding: 80px 24px;
+        margin-top: 40px;
+      }
+
+      .features-content {
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      .section-title {
+        font-size: 36px;
+        font-weight: 700;
+        text-align: center;
+        margin-bottom: 60px;
+      }
+
+      .features-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 32px;
+      }
+
+      .feature-card {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: var(--r);
+        padding: 32px;
+        transition: all 120ms cubic-bezier(0.2, 0, 0, 1);
+      }
+
+      .feature-card:hover {
+        background: var(--panel-3);
+        border-color: var(--accent);
+        transform: translateY(-4px);
+      }
+
+      .feature-icon {
+        font-size: 32px;
+        margin-bottom: 16px;
+        display: block;
+      }
+
+      .feature-card h3 {
+        font-size: 18px;
+        font-weight: 600;
+        margin-bottom: 12px;
+      }
+
+      .feature-card p {
+        font-size: 14px;
+        color: var(--ink-2);
+      }
+
+      /* CTA / Email Section */
+      .cta-section {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 80px 24px;
+      }
+
+      .cta-box {
+        background: linear-gradient(135deg, var(--panel-2) 0%, var(--panel-3) 100%);
+        border: 1px solid var(--accent-dim);
+        border-radius: var(--r-lg);
+        padding: 60px 40px;
+        text-align: center;
+      }
+
+      .cta-box h2 {
+        font-size: 32px;
+        font-weight: 700;
+        margin-bottom: 16px;
+      }
+
+      .cta-box p {
+        font-size: 16px;
+        color: var(--ink-2);
+        margin-bottom: 32px;
+      }
+
+      .email-form {
+        display: flex;
+        gap: 12px;
+        max-width: 450px;
+        margin: 0 auto;
+        flex-wrap: wrap;
+      }
+
+      .email-input {
+        flex: 1;
+        min-width: 200px;
+        padding: 14px 16px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--r);
+        color: var(--ink);
+        font-family: var(--font);
+        font-size: 14px;
+        transition: border-color 120ms cubic-bezier(0.2, 0, 0, 1);
+      }
+
+      .email-input:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(124, 92, 255, 0.1);
+      }
+
+      .email-input::placeholder {
+        color: var(--ink-3);
+      }
+
+      .email-submit {
+        padding: 14px 32px;
+        background: var(--accent-solid);
+        color: white;
+        border: none;
+        border-radius: var(--r);
+        font-family: var(--font);
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 120ms cubic-bezier(0.2, 0, 0, 1);
+        white-space: nowrap;
+      }
+
+      .email-submit:hover {
+        background: var(--accent-solid-hover);
+      }
+
+      .email-submit:active {
+        transform: scale(0.98);
+      }
+
+      .form-message {
+        margin-top: 12px;
+        font-size: 14px;
+        color: var(--ok);
+        display: none;
+      }
+
+      .form-message.show {
+        display: block;
+      }
+
+      /* Footer */
+      footer {
+        background: var(--panel-2);
+        border-top: 1px solid var(--line);
+        padding: 40px 24px;
+        margin-top: 60px;
+      }
+
+      .footer-content {
+        max-width: 1200px;
+        margin: 0 auto;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 32px;
+        margin-bottom: 40px;
+      }
+
+      .footer-col h4 {
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 16px;
+        color: var(--accent);
+      }
+
+      .footer-col a {
+        display: block;
+        font-size: 13px;
+        color: var(--ink-3);
+        text-decoration: none;
+        margin-bottom: 10px;
+        transition: color 120ms cubic-bezier(0.2, 0, 0, 1);
+      }
+
+      .footer-col a:hover {
+        color: var(--accent);
+      }
+
+      .footer-bottom {
+        text-align: center;
+        padding-top: 24px;
+        border-top: 1px solid var(--line);
+        font-size: 12px;
+        color: var(--ink-3);
+      }
+
+      /* Responsive */
+      @media (max-width: 768px) {
+        header {
+          padding: 12px 16px;
+        }
+
+        .header-content {
+          flex-direction: column;
+          gap: 16px;
+        }
+
+        nav {
+          gap: 16px;
+          flex-wrap: wrap;
+          justify-content: center;
+        }
+
+        .hero {
+          padding: 60px 16px;
+        }
+
+        .hero h1 {
+          font-size: 40px;
+        }
+
+        .hero .tagline {
+          font-size: 16px;
+        }
+
+        .hero-graphic {
+          height: 300px;
+        }
+
+        .hero-cta {
+          flex-direction: column;
+        }
+
+        .btn {
+          width: 100%;
+        }
+
+        .features {
+          padding: 60px 16px;
+        }
+
+        .section-title {
+          font-size: 28px;
+          margin-bottom: 40px;
+        }
+
+        .features-grid {
+          gap: 20px;
+        }
+
+        .cta-section {
+          padding: 60px 16px;
+        }
+
+        .cta-box {
+          padding: 40px 24px;
+        }
+
+        .cta-box h2 {
+          font-size: 24px;
+        }
+
+        .email-form {
+          flex-direction: column;
+        }
+
+        .email-input {
+          min-width: unset;
+          width: 100%;
+        }
+
+        .email-submit {
+          width: 100%;
+        }
+
+        .footer-content {
+          gap: 24px;
+        }
+      }
+
+      @media (max-width: 480px) {
+        .hero h1 {
+          font-size: 28px;
+        }
+
+        .section-title {
+          font-size: 22px;
+        }
+
+        nav {
+          gap: 8px;
+        }
+
+        nav a {
+          font-size: 13px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Header -->
+    <header>
+      <div class="header-content">
+        <div class="logo">SolCut</div>
+        <nav>
+          <a href="#features">Features</a>
+          <a href="#cta">Get Started</a>
+          <a href="#footer">About</a>
+          <button class="nav-cta" onclick="document.getElementById('email').focus()">
+            Try Free
+          </button>
+        </nav>
+      </div>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero">
+      <h1>The AI-Powered Video Editor</h1>
+      <p class="tagline">
+        Create stunning videos in minutes. From AI photo-to-photo transitions to professional timeline editing.
+      </p>
+      <div class="hero-cta">
+        <button class="btn btn-primary" onclick="document.getElementById('email').focus()">
+          Get Started
+        </button>
+        <a href="#features" class="btn btn-secondary">Learn More</a>
+      </div>
+      <div class="hero-graphic">
+        📹 Video Canvas
+      </div>
+    </section>
+
+    <!-- Features Section -->
+    <section class="features" id="features">
+      <div class="features-content">
+        <h2 class="section-title">Why SolCut?</h2>
+        <div class="features-grid">
+          <div class="feature-card">
+            <span class="feature-icon">✨</span>
+            <h3>AI Transitions</h3>
+            <p>
+              Generate stunning photo-to-photo transitions with AI. Turn still images into
+              cinematic sequences automatically.
+            </p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">🎬</span>
+            <h3>Timeline Editing</h3>
+            <p>
+              Professional timeline interface with precise clip control. Trim, split, and arrange
+              your content effortlessly.
+            </p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">🎵</span>
+            <h3>Audio Mixing</h3>
+            <p>
+              Built-in audio mixer with multi-track support. Balance and synchronize your sound
+              perfectly.
+            </p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">📐</span>
+            <h3>Aspect Ratio Control</h3>
+            <p>
+              Automatically adapt your videos for any platform. Switch between formats with a single click.
+            </p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">⚡</span>
+            <h3>Fast Export</h3>
+            <p>
+              Export your finished videos quickly with professional quality. Multiple format support included.
+            </p>
+          </div>
+          <div class="feature-card">
+            <span class="feature-icon">🌙</span>
+            <h3>Dark Studio</h3>
+            <p>
+              Work in comfort with our Midnight Studio design. Beautiful, focused interface that's easy on the eyes.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta-section" id="cta">
+      <div class="cta-box">
+        <h2>Join Creators Making Videos Faster</h2>
+        <p>Get early access to SolCut and transform your video creation workflow</p>
+        <form class="email-form" onsubmit="handleSubmit(event)">
+          <input
+            type="email"
+            id="email"
+            class="email-input"
+            placeholder="you@example.com"
+            required
+            autocomplete="email"
+          />
+          <button type="submit" class="email-submit">Sign Up</button>
+        </form>
+        <div class="form-message" id="success-message">
+          ✓ Thanks for signing up! Check your email for updates.
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer id="footer">
+      <div class="footer-content">
+        <div class="footer-col">
+          <h4>Product</h4>
+          <a href="#">Features</a>
+          <a href="#">Pricing</a>
+          <a href="#">Download</a>
+        </div>
+        <div class="footer-col">
+          <h4>Resources</h4>
+          <a href="#">Documentation</a>
+          <a href="#">Tutorials</a>
+          <a href="#">Community</a>
+        </div>
+        <div class="footer-col">
+          <h4>Company</h4>
+          <a href="#">About</a>
+          <a href="#">Blog</a>
+          <a href="#">Contact</a>
+        </div>
+        <div class="footer-col">
+          <h4>Legal</h4>
+          <a href="#">Privacy</a>
+          <a href="#">Terms</a>
+          <a href="#">License</a>
+        </div>
+      </div>
+      <div class="footer-bottom">
+        &copy; 2026 SolCut. All rights reserved. | Powered by AI
+      </div>
+    </footer>
+
+    <script>
+      function handleSubmit(e) {
+        e.preventDefault();
+        const email = document.getElementById('email').value;
+        if (!email) return;
+
+        // Show success message
+        const message = document.getElementById('success-message');
+        message.classList.add('show');
+
+        // Clear input
+        document.getElementById('email').value = '';
+
+        // Hide message after 4 seconds
+        setTimeout(() => {
+          message.classList.remove('show');
+        }, 4000);
+      }
+    </script>
+  </body>
+</html>
